@@ -1,0 +1,193 @@
+openapi: 3.1.0
+info:
+  title: Astro Account Manager Loopback API
+  version: 1.0.0
+  description: >-
+    Opt-in local API. It binds only to 127.0.0.1 and requires an in-memory
+    bearer token on every request. Secret fields are rejected.
+servers:
+  - url: http://127.0.0.1:7963/api/v1
+security:
+  - LocalBearer: []
+paths:
+  /health:
+    get:
+      summary: Read redacted local service health
+      responses:
+        '200': { $ref: '#/components/responses/Success' }
+        '401': { $ref: '#/components/responses/Error' }
+  /accounts:
+    get:
+      summary: List local account metadata
+      parameters:
+        - in: query
+          name: q
+          schema: { type: string, maxLength: 120 }
+      responses:
+        '200': { $ref: '#/components/responses/Success' }
+        '401': { $ref: '#/components/responses/Error' }
+    post:
+      summary: Create a local account metadata profile
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AccountInput' }
+      responses:
+        '201': { $ref: '#/components/responses/Success' }
+        '400': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+  /accounts/{id}:
+    parameters:
+      - $ref: '#/components/parameters/OpaqueId'
+    patch:
+      summary: Update public account metadata
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AccountInput' }
+      responses:
+        '200': { $ref: '#/components/responses/Success' }
+        '400': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+    delete:
+      summary: Delete an account profile and its protected local vault entries
+      responses:
+        '200': { $ref: '#/components/responses/Success' }
+        '404': { $ref: '#/components/responses/Error' }
+  /accounts/{id}/launch:
+    parameters:
+      - $ref: '#/components/parameters/OpaqueId'
+    post:
+      summary: Launch an experience through the Windows Roblox protocol
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [place_id]
+              properties:
+                place_id: { type: integer, minimum: 1 }
+                job_id: { type: string, maxLength: 128 }
+      responses:
+        '200': { $ref: '#/components/responses/Success' }
+        '400': { $ref: '#/components/responses/Error' }
+        '502': { $ref: '#/components/responses/Error' }
+  /groups:
+    get:
+      summary: List groups
+      responses:
+        '200': { $ref: '#/components/responses/Success' }
+    post:
+      summary: Create a group
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/GroupInput' }
+      responses:
+        '201': { $ref: '#/components/responses/Success' }
+  /groups/{id}:
+    parameters:
+      - $ref: '#/components/parameters/OpaqueId'
+    patch:
+      summary: Update group state or presentation
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/GroupInput' }
+      responses:
+        '200': { $ref: '#/components/responses/Success' }
+    delete:
+      summary: Delete a group and leave members ungrouped
+      responses:
+        '200': { $ref: '#/components/responses/Success' }
+  /games:
+    get:
+      summary: List cached games
+      responses:
+        '200': { $ref: '#/components/responses/Success' }
+  /instances:
+    get:
+      summary: List observed Roblox processes
+      responses:
+        '200': { $ref: '#/components/responses/Success' }
+  /settings:
+    get:
+      summary: Read validated local preferences
+      responses:
+        '200': { $ref: '#/components/responses/Success' }
+  /activity:
+    get:
+      summary: Read redacted local activity history
+      responses:
+        '200': { $ref: '#/components/responses/Success' }
+  /backups:
+    post:
+      summary: Create a verified SQLite metadata backup
+      responses:
+        '201': { $ref: '#/components/responses/Success' }
+        '503': { $ref: '#/components/responses/Error' }
+components:
+  securitySchemes:
+    LocalBearer:
+      type: http
+      scheme: bearer
+      bearerFormat: opaque local token
+  parameters:
+    OpaqueId:
+      name: id
+      in: path
+      required: true
+      schema: { type: string, maxLength: 100 }
+  schemas:
+    AccountInput:
+      type: object
+      required: [username]
+      properties:
+        username: { type: string, maxLength: 120 }
+        display_name: { type: string, maxLength: 120 }
+        notes: { type: string, maxLength: 5000 }
+        group_id: { type: [string, 'null'] }
+        favorite: { type: boolean }
+        avatar_color: { type: string, enum: [violet, mint, coral, blue, amber] }
+        place_id: { type: integer, minimum: 1 }
+      additionalProperties: true
+      description: Credential-like fields are rejected by the HTTP server.
+    GroupInput:
+      type: object
+      properties:
+        name: { type: string, maxLength: 120 }
+        color: { type: string, enum: [violet, mint, coral, blue, amber, neutral] }
+        icon: { type: string, maxLength: 120 }
+        collapsed: { type: boolean }
+        favorite: { type: boolean }
+        order: { type: integer }
+      additionalProperties: false
+    Success:
+      description: Successful redacted result
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [data]
+            properties: { data: {} }
+    Error:
+      description: Safe standardized error
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [error]
+            properties:
+              error:
+                type: object
+                required: [code, message]
+                properties:
+                  code: { type: string }
+                  message: { type: string }
+                  details: { type: object, additionalProperties: true }

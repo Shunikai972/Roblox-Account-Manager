@@ -1,0 +1,44 @@
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "astro-account-manager"
+version = "4.0.0a1"
+description = "A modern, local-first Roblox account desktop manager"
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "GPL-3.0-or-later" }
+authors = [{ name = "Astro Account Manager contributors" }]
+dependencies = [
+  "cryptography>=43.0,<46",
+  "PyNaCl>=1.5,<2",
+  "psutil>=6.1,<8",
+  "pywebview==6.2.1",
+  "requests>=2.32,<3",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.3,<10",
+  "pytest-cov>=6,<8",
+  "pyinstaller>=6.11,<7",
+]
+
+[project.scripts]
+astro-account-manager = "main:main"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
+
+[tool.coverage.run]
+branch = true
+source = ["app"]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = false
+
+[tool.setuptools]
+packages = ["app", "app.backend", "app.backend.api", "app.backend.core", "app.backend.models", "app.backend.repositories", "app.backend.roblox", "app.backend.security", "app.backend.services", "app.backend.storage", "app.backend.watchers"]

@@ -1,0 +1,16 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+build/
+*.spec
+*.log
+data/
+coverage.xml
+htmlcov/
+
+# Exclude legacy RAM application folder
+Roblox.Account.Manager.3.7.2/

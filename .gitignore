@@ -14,3 +14,6 @@ htmlcov/
 
 # Exclude legacy RAM application folder
 Roblox.Account.Manager.3.7.2/
+
+# Sub-repository for documentation portal
+astro_docs/

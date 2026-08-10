@@ -2,7 +2,7 @@
 
 A modern, high-performance Windows desktop application for managing Roblox accounts, multi-instance gaming sessions, FastFlags optimization (FPS Unlocker & Potato Graphics Mode), and live Lua execution via the Nexus WebSocket RPC Server.
 
-[![Documentation Repository](https://img.shields.io/badge/Docs-Account--Manager--Doc-purple.svg)](https://github.com/Shunikai972/Account-Manager-Doc)
+[![Documentation Website](https://img.shields.io/badge/Docs-Live_GitHub_Pages-purple.svg)](https://shunikai972.github.io/Account-Manager-Doc/)
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
 [![Python 3.12](https://img.shields.io/badge/Python-3.12-brightgreen.svg)](https://python.org)
 
@@ -18,16 +18,17 @@ A modern, high-performance Windows desktop application for managing Roblox accou
 
 ---
 
-## 📖 Interactive Documentation
+## 📖 Live Documentation Portal
 
-The full developer guide, architecture overview, and API reference are available on the dedicated documentation repository:
+The full developer guide, architecture overview, and API reference are hosted live on GitHub Pages:
 
-👉 **[View Documentation Repository (Account-Manager-Doc)](https://github.com/Shunikai972/Account-Manager-Doc)**
+👉 **[Launch Live Documentation Portal (GitHub Pages)](https://shunikai972.github.io/Account-Manager-Doc/)**
 
-- [Architecture & Security Overview](https://github.com/Shunikai972/Account-Manager-Doc#features)
-- [FastFlags & Potato Graphics Configuration](https://github.com/Shunikai972/Account-Manager-Doc#potato-mode)
-- [Nexus WebSocket RPC Protocol](https://github.com/Shunikai972/Account-Manager-Doc#nexus-executor)
-- [Developer REST API Reference](https://github.com/Shunikai972/Account-Manager-Doc#developer-api)
+- [Architecture & Security Overview](https://shunikai972.github.io/Account-Manager-Doc/#features)
+- [FastFlags & Potato Graphics Configuration](https://shunikai972.github.io/Account-Manager-Doc/#potato-mode)
+- [Nexus WebSocket RPC Protocol](https://shunikai972.github.io/Account-Manager-Doc/#nexus-executor)
+- [Developer REST API Reference](https://shunikai972.github.io/Account-Manager-Doc/#developer-api)
+- [Documentation GitHub Repository](https://github.com/Shunikai972/Account-Manager-Doc)
 
 ---
 

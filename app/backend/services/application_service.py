@@ -10,6 +10,7 @@ import logging
 from pathlib import Path
 import sys
 import threading
+import time
 from typing import Any
 
 from app.backend.core.config import APP_VERSION, AppPaths, DEFAULT_SETTINGS, merge_settings
@@ -158,6 +159,7 @@ class ApplicationService:
         self.logger = logger or logging.getLogger("astro_account_manager.service")
         self._restore_lock = threading.RLock()
         self._watch_loop_lock = threading.RLock()
+        self._launch_lock = threading.RLock()
         self._watch_loop: MonitorPollingLoop | None = None
         self._watcher_requested = False
         self._oauth_results: dict[str, dict[str, Any]] = {}
@@ -652,26 +654,33 @@ class ApplicationService:
             place_id=self._positive_int(place_id, "Place ID"),
             job_id=self._optional_text(target_data.get("job_id") or target_data.get("jobId")),
         )
-        multi_instance_enabled = bool(
-            self.get_settings()["categories"].get("instances", {}).get("allow_multiple_launches", False)
-            or self.multi_instance.is_enabled
-        )
-        if multi_instance_enabled:
-            self.multi_instance.enable_multi_instance()
 
-        # Apply per-account or per-launch FPS Cap & Potato Graphics settings
-        launch_opts = account.metadata.get("launch_options", {}) if isinstance(account.metadata, dict) else {}
-        fps_target = target_data.get("fps") or target_data.get("fps_cap") or launch_opts.get("max_fps") or self.client_settings.get_fps_cap()
-        potato_mode = target_data.get("potato") if "potato" in target_data else (target_data.get("potato_graphics") if "potato_graphics" in target_data else launch_opts.get("potato_graphics", self.get_settings()["categories"].get("performance", {}).get("potato_graphics", False)))
-        try:
-            self.client_settings.patch_launch_settings(fps=int(fps_target) if fps_target else 0, potato_graphics=bool(potato_mode))
-        except Exception as patch_exc:
-            self.logger.warning(f"Could not apply launch ClientSettings: {patch_exc}")
+        with self._launch_lock:
+            multi_instance_enabled = bool(
+                self.get_settings()["categories"].get("instances", {}).get("allow_multiple_launches", False)
+                or self.multi_instance.is_enabled
+            )
+            if multi_instance_enabled:
+                self.multi_instance.enable_multi_instance()
 
-        try:
-            result = self.launcher.launch(launch_target)
-        except RobloxLaunchError as exc:
-            raise ExternalServiceError(str(exc), retryable=False) from exc
+            # Apply per-account or per-launch FPS Cap & Potato Graphics settings
+            launch_opts = account.metadata.get("launch_options", {}) if isinstance(account.metadata, dict) else {}
+            fps_target = target_data.get("fps") or target_data.get("fps_cap") or launch_opts.get("max_fps") or self.client_settings.get_fps_cap()
+            potato_mode = target_data.get("potato") if "potato" in target_data else (target_data.get("potato_graphics") if "potato_graphics" in target_data else launch_opts.get("potato_graphics", self.get_settings()["categories"].get("performance", {}).get("potato_graphics", False)))
+            try:
+                self.client_settings.patch_launch_settings(fps=int(fps_target) if fps_target else 0, potato_graphics=bool(potato_mode))
+            except Exception as patch_exc:
+                self.logger.warning(f"Could not apply launch ClientSettings: {patch_exc}")
+
+            try:
+                result = self.launcher.launch(launch_target)
+            except RobloxLaunchError as exc:
+                raise ExternalServiceError(str(exc), retryable=False) from exc
+
+            # Bounded flag initialization hold window (e.g. 1.2s max) to prevent FastFlags collision
+            # during rapid consecutive or parallel multi-account launches
+            if result.launched:
+                time.sleep(1.2)
 
         watcher_request_id = self._register_launch_intent(account, launch_target)
 

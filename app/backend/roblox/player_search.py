@@ -38,7 +38,7 @@ class PlayerSearchService:
             ]
         except Exception as exc:
             logger.error(f"Failed to search players for '{keyword}': {exc}")
-            raise RobloxServiceError(f"Impossible de rechercher le joueur: {exc}") from exc
+            raise RobloxServiceError(f"Could not search for player: {exc}") from exc
 
     def get_player_presence(self, user_id: int) -> dict[str, Any]:
         """Fetch presence and current experience destination for a player."""

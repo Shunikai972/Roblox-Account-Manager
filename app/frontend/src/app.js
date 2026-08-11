@@ -696,7 +696,7 @@ class OrbitApp {
       '<div style="display: flex; gap: 16px; align-items: flex-start;"><div style="flex: 1; min-width: 0;">' +
       (this.state.accountView === 'table' ? this.renderAccountsTable(filtered) : this.renderAccountGroups(filtered)) +
       '</div>' + this.renderClassicRamPanel() + '</div>' +
-      (selection ? '<div class="bulk-bar" role="status"><strong>' + selection + ' selected</strong><span>Move, launch, or remove in one go.</span><span class="toolbar-spacer"></span><button class="button button-sm" type="button" data-action="bulk-move">' + icon('folder') + ' Move</button><button class="button button-sm" type="button" data-action="bulk-launch">' + icon('play') + ' Launch</button><button class="button button-sm button-danger" type="button" data-action="bulk-delete">' + icon('trash') + ' Remove</button><button class="icon-button" type="button" data-action="clear-selection" aria-label="Clear selection">' + icon('x') + '</button></div>' : '');
+      (selection ? '<div class="bulk-bar" role="status"><strong>' + selection + ' selected</strong><span>Configure, move, launch, or remove in one go.</span><span class="toolbar-spacer"></span><button class="button button-sm" type="button" data-action="bulk-edit">' + icon('edit') + ' Bulk Edit</button><button class="button button-sm" type="button" data-action="bulk-move">' + icon('folder') + ' Move</button><button class="button button-sm" type="button" data-action="bulk-launch">' + icon('play') + ' Launch</button><button class="button button-sm button-danger" type="button" data-action="bulk-delete">' + icon('trash') + ' Remove</button><button class="icon-button" type="button" data-action="clear-selection" aria-label="Clear selection">' + icon('x') + '</button></div>' : '');
   }
 
   filteredAccounts() {
@@ -1201,6 +1201,17 @@ class OrbitApp {
       const count = modal.ids.length;
       title = 'Remove ' + count + ' account' + (count === 1 ? '' : 's') + '?'; sub = 'This removes local account profiles and any matching tracked instances.';
       body = '<form data-form="delete"><div class="modal-body"><p class="form-error">This action cannot be undone from this workspace. Create a backup first if you may need these profiles again.</p></div><footer class="modal-foot"><button class="button" type="button" data-action="close-modal">Cancel</button><button class="button button-danger" type="submit">' + icon('trash') + ' Remove account' + (count === 1 ? '' : 's') + '</button></footer></form>';
+    } else if (modal.kind === 'bulk-edit') {
+      const count = modal.ids.length;
+      title = 'Bulk Edit (' + count + ' account' + (count === 1 ? '' : 's') + ' selected)';
+      sub = 'Update Place ID, FPS Cap, Potato Mode, or Group for all selected accounts. Choose "Keep existing" for any field you do not wish to change.';
+      const groupOptions = '<option value="keep">-- Keep existing group --</option><option value="">No group (Ungrouped)</option>' + this.state.groups.map(function (group) { return '<option value="' + escapeHtml(group.id) + '">' + escapeHtml(group.name) + '</option>'; }).join('');
+      body = '<form data-form="bulk-edit"><div class="modal-body"><p class="form-error" hidden></p><div class="form-grid">' +
+        '<div class="field"><label for="bulk-place-id">Default Game ID (Place ID)</label><input id="bulk-place-id" name="saved_place_id" value="keep" placeholder="Keep existing or enter Place ID..." /></div>' +
+        '<div class="field"><label for="bulk-fps">Instance FPS Cap</label><select id="bulk-fps" name="max_fps"><option value="keep">-- Keep existing FPS --</option><option value="0">Default (App Setting)</option><option value="30">30 FPS</option><option value="60">60 FPS</option><option value="120">120 FPS</option><option value="144">144 FPS</option><option value="240">240 FPS</option><option value="360">360 FPS</option></select></div>' +
+        '<div class="field"><label for="bulk-potato">Potato Mode (FastFlags)</label><select id="bulk-potato" name="potato_graphics"><option value="keep">-- Keep existing Potato Mode --</option><option value="true">Enable Potato Mode</option><option value="false">Disable Potato Mode</option></select></div>' +
+        '<div class="field"><label for="bulk-group">Destination Group</label><select id="bulk-group" name="group_id">' + groupOptions + '</select></div>' +
+        '</div></div><footer class="modal-foot"><button class="button" type="button" data-action="close-modal">Cancel</button><button class="button button-primary" type="submit">' + icon('check') + ' Apply to ' + count + ' account' + (count === 1 ? '' : 's') + '</button></footer></form>';
     } else if (modal.kind === 'delete-group') {
       const group = modal.group || {};
       const memberCount = this.state.accounts.filter(function (account) { return String(account.group_id || '') === String(group.id || ''); }).length;
@@ -1455,6 +1466,7 @@ class OrbitApp {
     if (action === 'bulk-launch') { await this.bulkLaunch(); return; }
     if (action === 'toggle-favorite') { await this.toggleFavorite(button.dataset.id); return; }
     if (action === 'bulk-move') { this.openModal({ kind: 'move' }); return; }
+    if (action === 'bulk-edit') { this.openModal({ kind: 'bulk-edit', ids: Array.from(this.state.selected) }); return; }
     if (action === 'bulk-delete') { this.openModal({ kind: 'delete', ids: Array.from(this.state.selected) }); return; }
     if (action === 'select-game') { await this.loadGame(button.dataset.id, true); return; }
     if (action === 'toggle-game-favorite') { await this.toggleGameFavorite(button.dataset.id); return; }
@@ -1654,6 +1666,50 @@ class OrbitApp {
         await this.resync(); this.closeModal(); this.toast('success', editing ? 'Group updated' : 'Group created', values.name + (editing ? ' was updated.' : ' is ready for accounts.')); this.render();
       } else if (form.dataset.form === 'move') {
         await this.bridge.call('move_accounts', Array.from(this.state.selected), values.group_id || null); await this.resync(); this.state.selected.clear(); this.closeModal(); this.toast('success', 'Accounts moved', 'Your workspace was reorganized.'); this.render();
+      } else if (form.dataset.form === 'bulk-edit') {
+        const ids = Array.from(this.state.selected);
+        if (!ids.length) throw new Error('No accounts selected.');
+        const maxFpsVal = values.max_fps;
+        const potatoVal = values.potato_graphics;
+        const placeIdRaw = String(values.saved_place_id || '').trim();
+        const groupIdVal = values.group_id;
+
+        let count = 0;
+        for (const id of ids) {
+          const account = this.findAccount(id);
+          if (!account) continue;
+          const patch = {};
+          if (groupIdVal !== 'keep') patch.group_id = groupIdVal || null;
+          if (placeIdRaw !== 'keep') {
+            if (placeIdRaw && (!/^[1-9][0-9]*$/.test(placeIdRaw) || Number(placeIdRaw) <= 0)) {
+              throw new Error('Roblox Place ID must be a valid positive whole number or "keep".');
+            }
+            patch.saved_place_id = placeIdRaw ? Number(placeIdRaw) : null;
+          }
+          const metadata = Object.assign({}, account.metadata || {});
+          const launchOpts = Object.assign({}, metadata.launch_options || {});
+          let metaChanged = false;
+          if (maxFpsVal !== 'keep') {
+            launchOpts.max_fps = Number(maxFpsVal || 0);
+            metaChanged = true;
+          }
+          if (potatoVal !== 'keep') {
+            launchOpts.potato_graphics = potatoVal === 'true';
+            metaChanged = true;
+          }
+          if (metaChanged) {
+            metadata.launch_options = launchOpts;
+            patch.metadata = metadata;
+          }
+          if (Object.keys(patch).length) {
+            await this.bridge.call('update_account', id, patch);
+            count++;
+          }
+        }
+        await this.resync();
+        this.closeModal();
+        this.render();
+        this.toast('success', 'Bulk Edit Applied', count + ' account(s) updated successfully.');
       } else if (form.dataset.form === 'remove-game') {
         if (values.confirm !== 'on') throw new Error('Confirm the local game removal before continuing.');
         const game = this.state.games.find(function (item) { return String(item.place_id) === String(form.dataset.id); });
@@ -2129,14 +2185,25 @@ class OrbitApp {
 
   async loadGame(id, announce) {
     if (!id) return;
-    this.state.gameId = String(id); this.state.serversLoading = true;
+    const targetId = String(id);
+    this.state.gameId = targetId;
+    this.state.serversLoading = true;
     if (this.state.route === 'games') this.render();
     try {
-      const result = await Promise.all([this.bridge.call('get_game', id), this.bridge.call('list_servers', id)]);
-      this.state.gameDetail = unwrap(result[0]); this.state.servers = asArray(result[1]); this.state.serversLoading = false;
+      const result = await Promise.all([this.bridge.call('get_game', targetId), this.bridge.call('list_servers', targetId)]);
+      // Discard stale response if user selected a different game while loading
+      if (String(this.state.gameId) !== targetId) return;
+      this.state.gameDetail = unwrap(result[0]);
+      this.state.servers = asArray(result[1]);
+      this.state.serversLoading = false;
       if (this.state.route === 'games') this.render();
       if (announce) this.toast('success', 'Server list updated', this.state.servers.length + ' servers found.');
-    } catch (error) { this.state.serversLoading = false; if (this.state.route === 'games') this.render(); this.toast('error', 'Could not load servers', error.message); }
+    } catch (error) {
+      if (String(this.state.gameId) !== targetId) return;
+      this.state.serversLoading = false;
+      if (this.state.route === 'games') this.render();
+      this.toast('error', 'Could not load servers', error.message);
+    }
   }
 
   async joinServer(id) {

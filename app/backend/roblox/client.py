@@ -220,7 +220,7 @@ class RobloxClient:
         )
         universe_id = _as_positive_int(payload.get("universeId"))
         if universe_id is None:
-            raise NotFoundError("Aucun univers Roblox n'a Ã©tÃ© trouvÃ© pour ce PlaceId.")
+            raise NotFoundError("No Roblox universe was found for this PlaceId.")
         return universe_id
 
     def get_game_details(self, place_id: int) -> Game:

@@ -42,13 +42,13 @@ class WindowsRobloxLauncher:
         """Build a strictly validated experience URI without session data."""
 
         if not isinstance(target, LaunchTarget):
-            raise ValidationError("La cible de lancement Roblox est invalide.")
+            raise ValidationError("Roblox launch target is invalid.")
         if isinstance(target.place_id, bool) or not isinstance(target.place_id, int) or target.place_id <= 0:
-            raise ValidationError("Le PlaceId doit Ãªtre un entier positif.")
+            raise ValidationError("Place ID must be a positive integer.")
         if target.job_id is not None and (
             not isinstance(target.job_id, str) or not _JOB_ID.fullmatch(target.job_id)
         ):
-            raise ValidationError("Le JobId doit contenir uniquement des lettres, chiffres ou tirets.")
+            raise ValidationError("Job ID must contain only letters, numbers, or dashes.")
 
         parameters = {"placeId": str(target.place_id)}
         if target.job_id:
@@ -64,21 +64,21 @@ class WindowsRobloxLauncher:
 
         uri = self.build_uri(target)
         if self._platform_name().casefold() != "windows":
-            raise RobloxLaunchError("Le lancement local Roblox est disponible uniquement sous Windows.")
+            raise RobloxLaunchError("Local Roblox launching is available on Windows only.")
         if not self._protocol_checker():
-            raise RobloxLaunchError("Roblox n'est pas installÃ© ou son protocole Windows est indisponible.")
+            raise RobloxLaunchError("Roblox is not installed or its Windows protocol is unavailable.")
 
         opener = self._opener or getattr(os, "startfile", None)
         if not callable(opener):
-            raise RobloxLaunchError("Windows ne peut pas ouvrir le protocole Roblox.")
+            raise RobloxLaunchError("Windows cannot open the Roblox protocol.")
         try:
             opener(uri)
         except OSError:
-            raise RobloxLaunchError("Windows n'a pas pu lancer Roblox.") from None
+            raise RobloxLaunchError("Windows failed to launch Roblox.") from None
         except Exception:
             # Third-party protocol handlers sometimes attach request details to
             # their exception text.  Keep those diagnostics out of the bridge.
-            raise RobloxLaunchError("Windows n'a pas pu lancer Roblox.") from None
+            raise RobloxLaunchError("Windows failed to launch Roblox.") from None
         return LaunchResult(uri=uri, launched=True)
 
 

@@ -93,19 +93,19 @@ class RobloxPlayerLogDiscovery:
             max_directory_entries,
             minimum=1,
             maximum=_MAX_DIRECTORY_ENTRIES,
-            message="La limite de fichiers de logs Roblox est invalide.",
+            message="Roblox log file limit is invalid.",
         )
         self._max_candidates = _bounded_int(
             max_candidates,
             minimum=1,
             maximum=_MAX_CANDIDATES,
-            message="La limite de candidats de logs Roblox est invalide.",
+            message="Roblox log candidate limit is invalid.",
         )
         self._max_file_bytes = _bounded_int(
             max_file_bytes,
             minimum=1,
             maximum=_MAX_FILE_BYTES,
-            message="La taille maximale d'un log Roblox est invalide.",
+            message="Roblox log max file size is invalid.",
         )
 
     @property
@@ -241,14 +241,14 @@ class RobloxPlayerLogRuntime:
         max_history: int = _DEFAULT_MAX_HISTORY,
     ) -> None:
         if not callable(tailer_factory):
-            raise ValidationError("La fabrique de lecteur de logs Roblox est invalide.")
+            raise ValidationError("Roblox log tailer factory is invalid.")
         self._discovery = discovery or RobloxPlayerLogDiscovery()
         self._tailer_factory = tailer_factory
         self._max_history = _bounded_int(
             max_history,
             minimum=1,
             maximum=_MAX_HISTORY,
-            message="La limite d'historique des logs Roblox est invalide.",
+            message="Roblox log history limit is invalid.",
         )
         self._lock = RLock()
         self._tailer: RobloxLogTailer | None = None
@@ -275,7 +275,7 @@ class RobloxPlayerLogRuntime:
         """
 
         if not isinstance(process_scan_complete, bool):
-            raise ValidationError("L'état du scan de processus Roblox est invalide.")
+            raise ValidationError("Roblox process scan state is invalid.")
         discovery = self._discovery.discover()
         process_ids = _observed_process_ids(instances)
         with self._lock:

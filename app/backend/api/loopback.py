@@ -76,9 +76,9 @@ class LoopbackApiServer:
         logger: logging.Logger | None = None,
     ) -> None:
         if host != "127.0.0.1":
-            raise LoopbackApiError("L'API locale doit être liée à 127.0.0.1.")
+            raise LoopbackApiError("Local API host must be bound to 127.0.0.1.")
         if isinstance(port, bool) or not isinstance(port, int) or not 0 <= port <= 65535:
-            raise LoopbackApiError("Le port de l'API locale est invalide.")
+            raise LoopbackApiError("Local API port is invalid.")
         self._service = service
         self._token = _validated_token(token or secrets.token_urlsafe(32))
         self._host = host
@@ -115,7 +115,7 @@ class LoopbackApiServer:
                     (self._host, self._requested_port), _handler_type(self)
                 )
             except OSError as exc:
-                raise LoopbackApiError("Le port de l'API locale est indisponible.") from exc
+                raise LoopbackApiError("Local API port is unavailable.") from exc
             server.daemon_threads = True
             thread = threading.Thread(
                 target=server.serve_forever,
@@ -170,13 +170,13 @@ def _handler_type(api: LoopbackApiServer) -> type[BaseHTTPRequestHandler]:
             self._dispatch("DELETE")
 
         def do_OPTIONS(self) -> None:  # noqa: N802 - required stdlib callback name
-            self._send_error_payload(HTTPStatus.METHOD_NOT_ALLOWED, ValidationError("Méthode non autorisée."))
+            self._send_error_payload(HTTPStatus.METHOD_NOT_ALLOWED, ValidationError("Method not allowed."))
 
         def _dispatch(self, method: str) -> None:
             if not self._authenticated():
                 self._send_error_payload(
                     HTTPStatus.UNAUTHORIZED,
-                    SecurityError("Une authentification locale est requise."),
+                    SecurityError("Local authentication is required."),
                 )
                 return
             try:
@@ -189,12 +189,10 @@ def _handler_type(api: LoopbackApiServer) -> type[BaseHTTPRequestHandler]:
             except _RequestError as exc:
                 self._send_error_payload(HTTPStatus.BAD_REQUEST, ValidationError(exc.message))
             except Exception:
-                # Request bodies can contain personal metadata; never add them
-                # to diagnostics. The server-side traceback stays local.
                 api._logger.exception("Unexpected loopback API failure for %s %s", method, self.path.split("?", 1)[0])
                 self._send_error_payload(
                     HTTPStatus.INTERNAL_SERVER_ERROR,
-                    AppError("Une erreur interne est survenue.", code="internal_error"),
+                    AppError("An internal server error occurred.", code="internal_error"),
                 )
             else:
                 self._send_json(status, {"data": payload})
@@ -208,7 +206,7 @@ def _handler_type(api: LoopbackApiServer) -> type[BaseHTTPRequestHandler]:
                 place_id = _single_query(query, "PlaceId") or _single_query(query, "placeId")
                 job_id = _single_query(query, "JobId") or _single_query(query, "jobId")
                 if not acct:
-                    raise ValidationError("Le paramètre Account est requis.")
+                    raise ValidationError("The Account parameter is required.")
                 acc_id = _find_account_id(api._service, acct)
                 target = {}
                 if place_id and place_id.isdigit():
@@ -221,14 +219,14 @@ def _handler_type(api: LoopbackApiServer) -> type[BaseHTTPRequestHandler]:
                 acct = _single_query(query, "Account")
                 user = _single_query(query, "User")
                 if not acct or not user:
-                    raise ValidationError("Les paramètres Account et User sont requis.")
+                    raise ValidationError("The Account and User parameters are required.")
                 acc_id = _find_account_id(api._service, acct)
                 searched = api._service.search_players(user, limit=1)
                 if not searched:
-                    raise NotFoundError(f"Joueur '{user}' introuvable.")
+                    raise NotFoundError(f"Player '{user}' not found.")
                 presence = api._service.get_player_presence(searched[0]["user_id"])
                 if not presence.get("place_id"):
-                    raise ValidationError(f"Le joueur '{user}' n'est pas actuellement en jeu.")
+                    raise ValidationError(f"Player '{user}' is not currently in a game.")
                 target = {"place_id": presence["place_id"]}
                 if presence.get("job_id"):
                     target["job_id"] = presence["job_id"]
@@ -239,7 +237,7 @@ def _handler_type(api: LoopbackApiServer) -> type[BaseHTTPRequestHandler]:
                 place_id = _single_query(query, "PlaceId")
                 job_id = _single_query(query, "JobId")
                 if not acct or not place_id or not place_id.isdigit():
-                    raise ValidationError("Paramètres Account et PlaceId valides requis.")
+                    raise ValidationError("Valid Account and PlaceId parameters are required.")
                 acc_id = _find_account_id(api._service, acct)
                 return HTTPStatus.OK, api._service.update_account(acc_id, {"saved_place_id": int(place_id), "saved_job_id": job_id})
 
@@ -247,7 +245,7 @@ def _handler_type(api: LoopbackApiServer) -> type[BaseHTTPRequestHandler]:
                 acct = _single_query(query, "Account")
                 place_id = _single_query(query, "PlaceId")
                 if not acct or not place_id or not place_id.isdigit():
-                    raise ValidationError("Paramètres Account et PlaceId valides requis.")
+                    raise ValidationError("Valid Account and PlaceId parameters are required.")
                 acc_id = _find_account_id(api._service, acct)
                 server = api._service.get_random_server(int(place_id))
                 job_id = server["job_id"] if server else None
@@ -257,7 +255,7 @@ def _handler_type(api: LoopbackApiServer) -> type[BaseHTTPRequestHandler]:
                 acct = _single_query(query, "Account")
                 user = _single_query(query, "User")
                 if not acct or not user:
-                    raise ValidationError("Paramètres Account et User requis.")
+                    raise ValidationError("Account and User parameters are required.")
                 acc_id = _find_account_id(api._service, acct)
                 target_id = int(user) if user.isdigit() else (api._service.search_players(user, limit=1) or [{"user_id": 0}])[0]["user_id"]
                 return HTTPStatus.OK, api._service.block_account_user(acc_id, target_id)
@@ -266,7 +264,7 @@ def _handler_type(api: LoopbackApiServer) -> type[BaseHTTPRequestHandler]:
                 acct = _single_query(query, "Account")
                 user = _single_query(query, "User")
                 if not acct or not user:
-                    raise ValidationError("Paramètres Account et User requis.")
+                    raise ValidationError("Account and User parameters are required.")
                 acc_id = _find_account_id(api._service, acct)
                 target_id = int(user) if user.isdigit() else (api._service.search_players(user, limit=1) or [{"user_id": 0}])[0]["user_id"]
                 return HTTPStatus.OK, api._service.unblock_account_user(acc_id, target_id)
@@ -274,7 +272,7 @@ def _handler_type(api: LoopbackApiServer) -> type[BaseHTTPRequestHandler]:
             if method == "GET" and route in ("/GetCookie", "/api/v1/GetCookie"):
                 acct = _single_query(query, "Account")
                 if not acct:
-                    raise ValidationError("Le paramètre Account est requis.")
+                    raise ValidationError("The Account parameter is required.")
                 acc_id = _find_account_id(api._service, acct)
                 return HTTPStatus.OK, api._service.get_account_cookie(acc_id)
 
@@ -282,7 +280,7 @@ def _handler_type(api: LoopbackApiServer) -> type[BaseHTTPRequestHandler]:
                 acct = _single_query(query, "Account")
                 field = _single_query(query, "Field")
                 if not acct or not field:
-                    raise ValidationError("Paramètres Account et Field requis.")
+                    raise ValidationError("Account and Field parameters are required.")
                 acc_id = _find_account_id(api._service, acct)
                 accounts = api._service.list_accounts()
                 target_acc = next((a for a in accounts if a["id"] == acc_id), None)
@@ -295,7 +293,7 @@ def _handler_type(api: LoopbackApiServer) -> type[BaseHTTPRequestHandler]:
                 field = _single_query(query, "Field")
                 val = _single_query(query, "Value")
                 if not acct or not field:
-                    raise ValidationError("Paramètres Account et Field requis.")
+                    raise ValidationError("Account and Field parameters are required.")
                 acc_id = _find_account_id(api._service, acct)
                 accounts = api._service.list_accounts()
                 target_acc = next((a for a in accounts if a["id"] == acc_id), None)
@@ -307,21 +305,21 @@ def _handler_type(api: LoopbackApiServer) -> type[BaseHTTPRequestHandler]:
                 acct = _single_query(query, "Account")
                 alias = _single_query(query, "Alias")
                 if not acct:
-                    raise ValidationError("Le paramètre Account est requis.")
+                    raise ValidationError("The Account parameter is required.")
                 acc_id = _find_account_id(api._service, acct)
                 return HTTPStatus.OK, api._service.update_account(acc_id, {"display_name": alias or ""})
 
             if method == "GET" and route in ("/UnblockEveryone", "/api/v1/UnblockEveryone"):
                 acct = _single_query(query, "Account")
                 if not acct:
-                    raise ValidationError("Le paramètre Account est requis.")
+                    raise ValidationError("The Account parameter is required.")
                 acc_id = _find_account_id(api._service, acct)
                 return HTTPStatus.OK, api._service.unblock_all_account_users(acc_id)
 
             if method == "GET" and route in ("/GetBlockedList", "/api/v1/GetBlockedList"):
                 acct = _single_query(query, "Account")
                 if not acct:
-                    raise ValidationError("Le paramètre Account est requis.")
+                    raise ValidationError("The Account parameter is required.")
                 acc_id = _find_account_id(api._service, acct)
                 return HTTPStatus.OK, api._service.get_account_blocked_list(acc_id)
 
@@ -329,14 +327,14 @@ def _handler_type(api: LoopbackApiServer) -> type[BaseHTTPRequestHandler]:
                 acct = _single_query(query, "Account")
                 field = _single_query(query, "Field")
                 if not acct or not field:
-                    raise ValidationError("Paramètres Account et Field requis.")
+                    raise ValidationError("Account and Field parameters are required.")
                 acc_id = _find_account_id(api._service, acct)
                 return HTTPStatus.OK, api._service.update_account(acc_id, {field: None})
 
             if method == "GET" and route in ("/GetAlias", "/api/v1/GetAlias"):
                 acct = _single_query(query, "Account")
                 if not acct:
-                    raise ValidationError("Le paramètre Account est requis.")
+                    raise ValidationError("The Account parameter is required.")
                 acc_id = _find_account_id(api._service, acct)
                 accounts = api._service.list_accounts()
                 target_acc = next((a for a in accounts if a["id"] == acc_id), None)
@@ -345,7 +343,7 @@ def _handler_type(api: LoopbackApiServer) -> type[BaseHTTPRequestHandler]:
             if method == "GET" and route in ("/GetDescription", "/api/v1/GetDescription"):
                 acct = _single_query(query, "Account")
                 if not acct:
-                    raise ValidationError("Le paramètre Account est requis.")
+                    raise ValidationError("The Account parameter is required.")
                 acc_id = _find_account_id(api._service, acct)
                 accounts = api._service.list_accounts()
                 target_acc = next((a for a in accounts if a["id"] == acc_id), None)
@@ -355,7 +353,7 @@ def _handler_type(api: LoopbackApiServer) -> type[BaseHTTPRequestHandler]:
                 acct = _single_query(query, "Account")
                 desc = _single_query(query, "Description") or ""
                 if not acct:
-                    raise ValidationError("Le paramètre Account est requis.")
+                    raise ValidationError("The Account parameter is required.")
                 acc_id = _find_account_id(api._service, acct)
                 accounts = api._service.list_accounts()
                 target_acc = next((a for a in accounts if a["id"] == acc_id), None)
@@ -367,7 +365,7 @@ def _handler_type(api: LoopbackApiServer) -> type[BaseHTTPRequestHandler]:
                 acct = _single_query(query, "Account")
                 asset_id = _single_query(query, "AssetId")
                 if not acct or not asset_id or not asset_id.isdigit():
-                    raise ValidationError("Paramètres Account et AssetId requis.")
+                    raise ValidationError("Account and AssetId parameters are required.")
                 acc_id = _find_account_id(api._service, acct)
                 return HTTPStatus.OK, api._service.set_account_avatar(acc_id, [int(asset_id)])
 
@@ -382,7 +380,7 @@ def _handler_type(api: LoopbackApiServer) -> type[BaseHTTPRequestHandler]:
             if method == "GET" and route in ("/GetCSRFToken", "/api/v1/GetCSRFToken"):
                 acct = _single_query(query, "Account")
                 if not acct:
-                    raise ValidationError("Le paramètre Account est requis.")
+                    raise ValidationError("The Account parameter is required.")
                 acc_id = _find_account_id(api._service, acct)
                 ticket = api._service.generate_auth_ticket(acc_id)
                 return HTTPStatus.OK, {"csrf_token": ticket.get("ticket", "")}
@@ -391,7 +389,7 @@ def _handler_type(api: LoopbackApiServer) -> type[BaseHTTPRequestHandler]:
                 acct = _single_query(query, "Account")
                 cookie_str = _single_query(query, "Cookie")
                 if not acct or not cookie_str:
-                    raise ValidationError("Paramètres Account et Cookie requis.")
+                    raise ValidationError("Account and Cookie parameters are required.")
                 raw_text = f"{acct}::{cookie_str}"
                 return HTTPStatus.OK, api._service.import_bulk_accounts(raw_text)
 
@@ -442,7 +440,7 @@ def _handler_type(api: LoopbackApiServer) -> type[BaseHTTPRequestHandler]:
 
         @staticmethod
         def _raise_not_found() -> None:
-            raise NotFoundError("Endpoint local introuvable.")
+            raise NotFoundError("Local endpoint not found.")
 
         def _authenticated(self) -> bool:
             supplied = self.headers.get("Authorization", "")
@@ -454,23 +452,23 @@ def _handler_type(api: LoopbackApiServer) -> type[BaseHTTPRequestHandler]:
             if length == 0 and allow_empty:
                 return {}
             if length == 0:
-                raise _RequestError("Un corps JSON est requis.")
+                raise _RequestError("A JSON request body is required.")
             content_type = self.headers.get("Content-Type", "").split(";", 1)[0].strip().lower()
             if content_type != "application/json":
-                raise _RequestError("Le type de contenu doit être application/json.")
+                raise _RequestError("Content-Type must be application/json.")
             try:
                 decoded = json.loads(self.rfile.read(length).decode("utf-8"))
             except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-                raise _RequestError("Le corps JSON est invalide.") from exc
+                raise _RequestError("JSON request body is invalid.") from exc
             if not isinstance(decoded, dict):
-                raise _RequestError("Le corps JSON doit être un objet.")
+                raise _RequestError("JSON request body must be an object.")
             if _contains_sensitive_key(decoded):
-                raise SecurityError("Les secrets ne sont pas acceptés par l'API HTTP locale.")
+                raise SecurityError("Secrets are not accepted by the local HTTP API.")
             return decoded
 
         def _reject_nonempty_body(self) -> None:
             if self._content_length() != 0:
-                raise _RequestError("Cette opération n'accepte pas de corps de requête.")
+                raise _RequestError("This operation does not accept a request body.")
 
         def _content_length(self) -> int:
             raw_length = self.headers.get("Content-Length")
@@ -479,9 +477,9 @@ def _handler_type(api: LoopbackApiServer) -> type[BaseHTTPRequestHandler]:
             try:
                 length = int(raw_length)
             except ValueError as exc:
-                raise _RequestError("La taille de la requête est invalide.") from exc
+                raise _RequestError("Request content length is invalid.") from exc
             if length < 0 or length > MAX_JSON_BODY_BYTES:
-                raise _RequestError("La requête est trop volumineuse.")
+                raise _RequestError("Request payload is too large.")
             return length
 
         def _send_error_payload(self, status: HTTPStatus, error: AppError) -> None:
@@ -498,8 +496,6 @@ def _handler_type(api: LoopbackApiServer) -> type[BaseHTTPRequestHandler]:
             self.wfile.write(encoded)
 
         def log_message(self, format: str, *args: object) -> None:
-            # stdlib's default writes request details to stderr. Keep logs local
-            # and omit query strings/headers, which can accidentally contain a token.
             api._logger.debug("Loopback API request completed: %s", self.command)
 
     return Handler
@@ -512,9 +508,9 @@ class _RequestError(Exception):
 
 def _validated_token(value: str) -> str:
     if not isinstance(value, str) or len(value) < 32 or len(value) > 512:
-        raise LoopbackApiError("Le jeton de l'API locale doit contenir au moins 32 caractères.")
+        raise LoopbackApiError("Local API token must contain at least 32 characters.")
     if any(character.isspace() or ord(character) < 33 or ord(character) > 126 for character in value):
-        raise LoopbackApiError("Le jeton de l'API locale contient des caractères invalides.")
+        raise LoopbackApiError("Local API token contains invalid characters.")
     return value
 
 
@@ -525,7 +521,7 @@ def _find_account_id(service: Any, identifier: str) -> str:
             return acc["id"]
     if accounts:
         return accounts[0]["id"]
-    raise NotFoundError(f"Compte '{identifier}' introuvable.")
+    raise NotFoundError(f"Account '{identifier}' not found.")
 
 
 def _single_query(query: Mapping[str, list[str]], key: str) -> str | None:
@@ -533,16 +529,16 @@ def _single_query(query: Mapping[str, list[str]], key: str) -> str | None:
     if not values:
         return None
     if len(values) != 1:
-        raise _RequestError("Le paramètre de recherche est ambigu.")
+        raise _RequestError("Search query parameter is ambiguous.")
     value = values[0]
     if len(value) > 120:
-        raise _RequestError("Le paramètre de recherche est trop long.")
+        raise _RequestError("Search query parameter is too long.")
     return value or None
 
 
 def _opaque_identifier(value: str) -> str:
     if not value or len(value) > 100 or any(character.isspace() or ord(character) < 33 for character in value):
-        raise ValidationError("L'identifiant est invalide.")
+        raise ValidationError("Identifier is invalid.")
     return value
 
 

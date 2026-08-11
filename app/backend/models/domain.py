@@ -22,7 +22,7 @@ def legacy_group_order_key(
     previous_order: Any = 0,
     identifier: Any = "",
 ) -> tuple[int, int, str, str, int, str]:
-    """Return the stable order encoded by RAM 3.7.2 group-name prefixes.
+    """Return the stable order encoded by legacy group-name prefixes.
 
     The historical ObjectListView grouped by the raw name while rendering a
     leading one-to-three digit prefix (and one optional space) invisible.

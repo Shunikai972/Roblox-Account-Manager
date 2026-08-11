@@ -78,7 +78,7 @@ def test_startup_service_requires_confirmation_then_updates_registry_and_setting
     manager = _StartupManager()
     service = _service(tmp_path, startup_manager=manager)
     try:
-        with pytest.raises(ValidationError, match="Confirmez"):
+        with pytest.raises(ValidationError, match="Confirm"):
             service.set_windows_startup(True)
         assert manager.enable_calls == 0
         assert service.get_settings()["categories"]["general"]["start_with_windows"] is False
@@ -108,7 +108,7 @@ def test_bridge_forwards_confirmation_and_keeps_registry_paths_out_of_status(tmp
         assert status["available"] is True
         assert not any("path" in key.casefold() or "command" in key.casefold() for key in status)
 
-        with pytest.raises(RuntimeError, match="Confirmez"):
+        with pytest.raises(RuntimeError, match="Confirm"):
             bridge.set_windows_startup(True)
         assert manager.enable_calls == 0
 
@@ -123,7 +123,7 @@ def test_startup_setting_is_not_mutable_through_generic_settings_route(tmp_path:
     manager = _StartupManager()
     service = _service(tmp_path, startup_manager=manager)
     try:
-        with pytest.raises(ValidationError, match="action dédiée"):
+        with pytest.raises(ValidationError, match="dedicated"):
             service.update_settings({"categories": {"general": {"start_with_windows": True}}})
         assert manager.enable_calls == 0
         assert service.get_settings()["categories"]["general"]["start_with_windows"] is False
@@ -140,7 +140,7 @@ def test_failed_registry_change_does_not_update_persisted_startup_preference(tmp
     manager = _FailingStartupManager()
     service = _service(tmp_path, startup_manager=manager)
     try:
-        with pytest.raises(StorageError, match="n'a pas pu modifier"):
+        with pytest.raises(StorageError, match="could not modify"):
             service.set_windows_startup(True, confirm=True)
         assert manager.enable_calls == 1
         assert service.get_settings()["categories"]["general"]["start_with_windows"] is False

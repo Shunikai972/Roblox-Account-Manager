@@ -319,4 +319,4 @@ class DesktopBridge:
             raise RuntimeError(exc.message) from None
         except Exception:
             self._logger.exception("Unexpected bridge failure in %s", getattr(action, "__name__", "operation"))
-            raise RuntimeError("Une erreur inattendue est survenue. Consultez Diagnostics pour le détail.") from None
+            raise RuntimeError("An unexpected error occurred. See Diagnostics for details.") from None

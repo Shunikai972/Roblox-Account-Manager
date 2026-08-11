@@ -573,7 +573,7 @@ def test_complete_account_reorder_is_persisted_and_exposed_by_bridge(tmp_path: P
         assert [account["id"] for account in reordered] == [third["id"], first["id"], second["id"]]
         assert [account["sort_order"] for account in reordered] == [0, 1, 2]
         assert [account["id"] for account in bridge.list_accounts()] == [third["id"], first["id"], second["id"]]
-        with pytest.raises(RuntimeError, match="doublons"):
+        with pytest.raises(RuntimeError, match="duplicates"):
             bridge.reorder_accounts([third["id"], third["id"], second["id"]])
         assert [account["id"] for account in bridge.list_accounts()] == [third["id"], first["id"], second["id"]]
     finally:

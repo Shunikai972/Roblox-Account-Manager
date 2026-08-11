@@ -32,7 +32,7 @@ class BatchLauncher:
     def start_batch(self, account_ids: list[str], target: dict[str, Any] | None = None, delay_seconds: float = 2.5) -> dict[str, Any]:
         with self._lock:
             if self.status["in_progress"]:
-                raise RuntimeError("Un lancement en lot est déjà en cours.")
+                raise RuntimeError("A batch launch is already in progress.")
 
             self.queue = list(account_ids)
             self.target = target

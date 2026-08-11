@@ -137,31 +137,31 @@ class RobloxClient:
         username_resolution_min_interval_seconds: float = _USERNAME_RESOLUTION_MIN_INTERVAL_SECONDS,
     ) -> None:
         if not isinstance(timeout_seconds, (int, float)) or timeout_seconds <= 0:
-            raise ValidationError("Le dÃ©lai rÃ©seau doit Ãªtre positif.")
+            raise ValidationError("Network timeout must be positive.")
         if not isinstance(retry_attempts, int) or retry_attempts < 0:
-            raise ValidationError("Le nombre de tentatives doit Ãªtre positif ou nul.")
+            raise ValidationError("Retry attempts count must be positive or zero.")
         if (
             not isinstance(retry_backoff_seconds, (int, float))
             or retry_backoff_seconds < 0
         ):
-            raise ValidationError("Le dÃ©lai entre les tentatives est invalide.")
+            raise ValidationError("Retry backoff delay is invalid.")
 
         if not isinstance(profile_cache_ttl_seconds, (int, float)) or profile_cache_ttl_seconds <= 0:
-            raise ValidationError("Le TTL du cache de profil doit etre positif.")
+            raise ValidationError("Profile cache TTL must be positive.")
         if not isinstance(presence_cache_ttl_seconds, (int, float)) or presence_cache_ttl_seconds <= 0:
-            raise ValidationError("Le TTL du cache de presence doit etre positif.")
+            raise ValidationError("Presence cache TTL must be positive.")
         if (
             not isinstance(username_resolution_cache_ttl_seconds, (int, float))
             or username_resolution_cache_ttl_seconds <= 0
         ):
-            raise ValidationError("Le TTL du cache de resolution doit etre positif.")
+            raise ValidationError("Username resolution cache TTL must be positive.")
         if (
             not isinstance(username_resolution_min_interval_seconds, (int, float))
             or username_resolution_min_interval_seconds < 0
         ):
-            raise ValidationError("La limite locale de resolution est invalide.")
+            raise ValidationError("Username resolution min interval is invalid.")
         if not callable(clock):
-            raise ValidationError("L'horloge du client Roblox est invalide.")
+            raise ValidationError("Roblox client clock function is invalid.")
 
         self._http = session or requests.Session()
         self._timeout_seconds = float(timeout_seconds)
@@ -241,7 +241,7 @@ class RobloxClient:
         )
         entries = payload.get("data")
         if not isinstance(entries, list) or not entries:
-            raise NotFoundError("Cette expÃ©rience Roblox est introuvable.")
+            raise NotFoundError("This Roblox experience was not found.")
         for entry in entries:
             if isinstance(entry, Mapping):
                 return _to_game(
@@ -249,7 +249,7 @@ class RobloxClient:
                     fallback_place_id=fallback_place_id,
                     fallback_universe_id=validated_universe_id,
                 )
-        raise RobloxServiceError("Roblox a renvoyÃ© une rÃ©ponse de jeu invalide.")
+        raise RobloxServiceError("Roblox returned an invalid game response.")
 
     def search_games(self, query: str, *, limit: int = 20) -> tuple[Game, ...]:
         """Search public experiences by a human-entered title or keyword.
@@ -301,7 +301,7 @@ class RobloxClient:
         validated_limit = _page_size(limit)
         validated_cursor = _cursor(cursor)
         if not isinstance(sort_order, ServerSortOrder):
-            raise ValidationError("L'ordre de tri des serveurs est invalide.")
+            raise ValidationError("Server sort order is invalid.")
 
         parameters: dict[str, str | int] = {
             "sortOrder": sort_order.value,
@@ -315,7 +315,7 @@ class RobloxClient:
         )
         raw_servers = payload.get("data")
         if not isinstance(raw_servers, list):
-            raise RobloxServiceError("Roblox a renvoyÃ© une liste de serveurs invalide.")
+            raise RobloxServiceError("Roblox returned an invalid server list.")
 
         servers: list[Server] = []
         for raw_server in raw_servers:
@@ -410,7 +410,7 @@ class RobloxClient:
             )
             entries = payload.get("userPresences")
             if not isinstance(entries, list):
-                raise RobloxServiceError("Roblox a renvoye une presence invalide.")
+                raise RobloxServiceError("Roblox returned an invalid user presence response.")
             requested = set(missing)
             for entry in entries:
                 if not isinstance(entry, Mapping):
@@ -446,7 +446,7 @@ class RobloxClient:
         """Issue a bounded public request and normalize its JSON response."""
 
         if self._closed:
-            raise RobloxServiceError("Le client Roblox est fermÃ©.")
+            raise RobloxServiceError("Roblox client is closed.")
 
         last_status: int | None = None
         for attempt in range(self._retry_attempts + 1):
@@ -479,11 +479,11 @@ class RobloxClient:
                     payload = response.json()
                 except (AttributeError, TypeError, ValueError):
                     raise RobloxServiceError(
-                        "Roblox a renvoyÃ© une rÃ©ponse illisible.", retryable=False
+                        "Roblox returned an unreadable response.", retryable=False
                     ) from None
                 if not isinstance(payload, Mapping):
                     raise RobloxServiceError(
-                        "Roblox a renvoyÃ© une rÃ©ponse invalide.", retryable=False
+                        "Roblox returned an invalid response.", retryable=False
                     )
                 return payload
 
@@ -522,9 +522,9 @@ class SessionRobloxClient(RobloxClient):
         sleep: Sleep = time.sleep,
     ) -> None:
         if not isinstance(session_cookie, str) or not session_cookie.strip():
-            raise ValidationError("Une session Roblox est requise.")
+            raise ValidationError("A Roblox session cookie is required.")
         if len(session_cookie) > 8_192:
-            raise ValidationError("La session Roblox est invalide.")
+            raise ValidationError("Roblox session cookie is invalid.")
 
         http = session or requests.Session()
         _set_session_cookie(http, session_cookie)
@@ -547,7 +547,7 @@ class SessionRobloxClient(RobloxClient):
         user_id = _as_positive_int(payload.get("id"))
         username = _optional_text(payload.get("name"))
         if user_id is None or username is None:
-            raise RobloxServiceError("Roblox a renvoyÃ© un profil de session invalide.")
+            raise RobloxServiceError("Roblox returned an invalid session profile.")
         return AuthenticatedUser(
             user_id=user_id,
             username=username,
@@ -565,25 +565,25 @@ class SessionRobloxClient(RobloxClient):
 
 def _positive_id(value: object, field_name: str) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
-        raise ValidationError(f"{field_name} doit Ãªtre un entier positif.")
+        raise ValidationError(f"{field_name} must be a positive integer.")
     return value
 
 
 def _page_size(value: object) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= _MAX_PAGE_SIZE:
-        raise ValidationError(f"La taille de page doit Ãªtre comprise entre 1 et {_MAX_PAGE_SIZE}.")
+        raise ValidationError(f"Page size must be between 1 and {_MAX_PAGE_SIZE}.")
     return value
 
 
 def _search_query(value: object) -> str:
     if not isinstance(value, str):
-        raise ValidationError("La recherche doit Ãªtre du texte.")
+        raise ValidationError("Search query must be text.")
     normalized = " ".join(value.split())
     if not normalized:
-        raise ValidationError("La recherche ne peut pas Ãªtre vide.")
+        raise ValidationError("Search query cannot be empty.")
     if len(normalized) > _MAX_SEARCH_LENGTH:
         raise ValidationError(
-            f"La recherche ne peut pas dÃ©passer {_MAX_SEARCH_LENGTH} caractÃ¨res."
+            f"Search query cannot exceed {_MAX_SEARCH_LENGTH} characters."
         )
     return normalized
 
@@ -592,9 +592,9 @@ def _cursor(value: object) -> str | None:
     if value is None:
         return None
     if not isinstance(value, str) or not value or len(value) > _MAX_CURSOR_LENGTH:
-        raise ValidationError("Le curseur de pagination est invalide.")
+        raise ValidationError("Pagination cursor is invalid.")
     if any(character.isspace() or ord(character) < 32 for character in value):
-        raise ValidationError("Le curseur de pagination est invalide.")
+        raise ValidationError("Pagination cursor is invalid.")
     return value
 
 
@@ -605,15 +605,15 @@ def _status_code(response: object) -> int:
 
 def _http_error(status: int, *, retryable: bool) -> RobloxServiceError:
     if status == 404:
-        return RobloxServiceError("La ressource Roblox demandÃ©e est introuvable.", status_code=status)
+        return RobloxServiceError("The requested Roblox resource was not found.", status_code=status)
     if status == 429:
         return RobloxServiceError(
-            "Roblox limite temporairement les requÃªtes. RÃ©essayez bientÃ´t.",
+            "Roblox is temporarily rate-limiting requests. Please try again soon.",
             retryable=True,
             status_code=status,
         )
     if 400 <= status < 500:
-        return RobloxServiceError("Roblox a refusÃ© cette requÃªte.", status_code=status)
+        return RobloxServiceError("Roblox denied this request.", status_code=status)
     return RobloxServiceError(retryable=retryable, status_code=status or None)
 
 
@@ -694,7 +694,7 @@ def _to_public_profile(
     user_id = _as_positive_int(payload.get("id"))
     username = _bounded_optional_text(payload.get("name"), maximum=128)
     if user_id != expected_user_id or username is None:
-        raise RobloxServiceError("Roblox a renvoye un profil public invalide.")
+        raise RobloxServiceError("Roblox returned an invalid public user profile.")
     return PublicUserProfile(
         user_id=user_id,
         username=username,
@@ -711,7 +711,7 @@ def _headshot_from_payload(
 ) -> tuple[str | None, str | None]:
     entries = payload.get("data")
     if not isinstance(entries, list):
-        raise RobloxServiceError("Roblox a renvoye un avatar invalide.")
+        raise RobloxServiceError("Roblox returned an invalid avatar response.")
     for entry in entries:
         if not isinstance(entry, Mapping) or _as_positive_int(entry.get("targetId")) != expected_user_id:
             continue

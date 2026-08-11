@@ -128,25 +128,25 @@ class RobloxLogTailer:
     ) -> None:
         self._path = Path(path)
         if not isinstance(verify_data_model, bool):
-            raise ValidationError("La vérification DataModel doit être booléenne.")
+            raise ValidationError("DataModel verification must be boolean.")
         self._verify_data_model = verify_data_model
         self._max_read_bytes = _bounded_int(
             max_read_bytes,
             minimum=1,
             maximum=_MAX_READ_BYTES,
-            message="La taille de lecture des logs Roblox est invalide.",
+            message="Roblox log read size is invalid.",
         )
         self._max_line_bytes = _bounded_int(
             max_line_bytes,
             minimum=128,
             maximum=_MAX_LINE_BYTES,
-            message="La taille maximale d'une ligne de log Roblox est invalide.",
+            message="Roblox log max line size is invalid.",
         )
         self._max_events_per_poll = _bounded_int(
             max_events_per_poll,
             minimum=1,
             maximum=_MAX_EVENTS,
-            message="La limite d'événements de log Roblox est invalide.",
+            message="Roblox log event limit is invalid.",
         )
         self._clock = clock
         self._lock = RLock()

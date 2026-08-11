@@ -799,7 +799,7 @@ export class Bridge {
     const connection = await waitForPywebview(5000);
     if (connection.api) return new Bridge(connection.api, new PreviewBridge());
     if (connection.nativeHostSeen) {
-      throw new Error('Le bridge desktop Astro Account Manager n’a pas démarré. Relancez l’application ; aucun compte n’a été modifié.');
+      throw new Error('The Astro Account Manager desktop bridge did not start. Restart the application; no accounts were modified.');
     }
     return new Bridge(null, new PreviewBridge());
   }

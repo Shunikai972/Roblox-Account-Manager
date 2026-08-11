@@ -28,7 +28,7 @@ class BrowserLoginService:
 
         try:
             window = webview.create_window(
-                title="Connexion Roblox — Astro Account Manager",
+                title="Roblox Login — Astro Account Manager",
                 url="https://www.roblox.com/login",
                 width=900,
                 height=700,

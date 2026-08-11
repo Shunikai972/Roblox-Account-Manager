@@ -86,7 +86,7 @@ await app.refreshPublicPresence(account.id);
 if (!calls.some((call) => call[0] === 'refresh_account_public_profile' && call[1] === account.id)) throw new Error('Public profile refresh did not reach the bridge.');
 if (!calls.some((call) => call[0] === 'refresh_account_presence' && Array.isArray(call[1]) && call[1][0] === account.id)) throw new Error('Public presence refresh did not reach the bridge.');
 const card = app.renderAccountCard(app.state.accounts[0]);
-if (!card.includes('Actualiser le profil public') || !card.includes('Public Display') || !card.includes('Arcade') || !card.includes('public-avatar')) {{
+if (!card.includes('Refresh public profile') || !card.includes('Public Display') || !card.includes('Arcade') || !card.includes('public-avatar')) {{
   throw new Error('The refreshed public identity, presence, or Roblox CDN avatar was not rendered.');
 }}
 

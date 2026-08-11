@@ -48,10 +48,10 @@ class RobloxAuthTools:
                 if isinstance(data, dict) and "ticket" in data:
                     return str(data["ticket"])
 
-            raise RobloxServiceError(f"Le serveur Roblox a retourné le statut HTTP {res.status_code}.")
+            raise RobloxServiceError(f"Roblox server returned HTTP status {res.status_code}.")
         except Exception as exc:
             logger.error(f"Failed to generate auth ticket: {exc}")
-            raise RobloxServiceError(f"Impossible de générer le ticket d'authentification: {exc}") from exc
+            raise RobloxServiceError(f"Could not generate authentication ticket: {exc}") from exc
 
     def generate_rbx_player_uri(self, auth_ticket: str, place_id: int, job_id: str | None = None) -> str:
         """Format an rbx-player protocol URI using a valid auth ticket."""

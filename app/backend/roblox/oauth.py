@@ -79,16 +79,16 @@ class OAuthClientConfiguration:
     def __post_init__(self) -> None:
         client_id = self.client_id.strip() if isinstance(self.client_id, str) else ""
         if not client_id.isdecimal() or len(client_id) > 80:
-            raise OAuthConfigurationError("L'identifiant client OAuth Roblox est invalide.")
+            raise OAuthConfigurationError("Roblox OAuth client ID is invalid.")
         object.__setattr__(self, "client_id", client_id)
 
         _validate_loopback_redirect_uri(self.redirect_uri)
         if not isinstance(self.callback_timeout_seconds, int) or not 60 <= self.callback_timeout_seconds <= 900:
-            raise OAuthConfigurationError("Le délai de connexion OAuth doit être compris entre 60 et 900 secondes.")
+            raise OAuthConfigurationError("OAuth login timeout must be between 60 and 900 seconds.")
 
         normalized_scopes = tuple(str(scope).strip() for scope in self.scopes)
         if normalized_scopes != DEFAULT_SCOPES:
-            raise OAuthConfigurationError("Cette version ne demande que les permissions OAuth openid et profile.")
+            raise OAuthConfigurationError("This version requires openid and profile OAuth permissions.")
         object.__setattr__(self, "scopes", normalized_scopes)
 
 
@@ -200,7 +200,7 @@ class OAuthLoopbackCallbackServer:
     def __init__(self, redirect_uri: str, expected_state: str) -> None:
         parsed = _validate_loopback_redirect_uri(redirect_uri)
         if not _is_bounded_text(expected_state, maximum=256):
-            raise OAuthConfigurationError("L'état OAuth local est invalide.")
+            raise OAuthConfigurationError("Local OAuth state is invalid.")
         self._path = parsed.path
         self._expected_state = expected_state
         self._lock = threading.RLock()
@@ -236,7 +236,7 @@ class OAuthLoopbackCallbackServer:
     def start(self) -> None:
         with self._lock:
             if self._closed:
-                raise OAuthFlowError("La réception de connexion OAuth est fermée.")
+                raise OAuthFlowError("OAuth callback receiver is closed.")
             if self._started:
                 return
             self._started = True
@@ -323,7 +323,7 @@ class RobloxOAuthClient:
         now: WallClock | None = None,
     ) -> None:
         if not isinstance(timeout_seconds, (int, float)) or timeout_seconds <= 0:
-            raise OAuthConfigurationError("Le délai OAuth doit être positif.")
+            raise OAuthConfigurationError("OAuth timeout must be positive.")
         self._http = http or requests.Session()
         self._timeout_seconds = float(timeout_seconds)
         self._now = now or (lambda: datetime.now(UTC))
@@ -377,7 +377,7 @@ class RobloxOAuthClient:
         code_verifier: str,
     ) -> OAuthGrant:
         if not _is_bounded_text(code, maximum=4096) or not _is_bounded_text(code_verifier, maximum=128):
-            raise OAuthFlowError("La réponse de connexion Roblox est invalide.")
+            raise OAuthFlowError("Roblox authentication response is invalid.")
         payload = self._post_form(
             OAUTH_TOKEN_URL,
             {
@@ -410,10 +410,10 @@ class RobloxOAuthClient:
                 timeout=self._timeout_seconds,
             )
         except requests.RequestException:
-            raise OAuthFlowError("Roblox est indisponible pour vérifier la connexion.", retryable=True) from None
+            raise OAuthFlowError("Roblox is unavailable to verify connection.", retryable=True) from None
         except Exception:
-            raise OAuthFlowError("Roblox est indisponible pour vérifier la connexion.", retryable=True) from None
-        payload = _response_mapping(response, invalid_message="Roblox a renvoyé un profil OAuth invalide.")
+            raise OAuthFlowError("Roblox is unavailable to verify connection.", retryable=True) from None
+        payload = _response_mapping(response, invalid_message="Roblox returned an invalid OAuth profile.")
         return _identity_from_payload(payload)
 
     def _post_form(self, url: str, data: Mapping[str, str]) -> Mapping[str, Any]:
@@ -426,14 +426,14 @@ class RobloxOAuthClient:
                 timeout=self._timeout_seconds,
             )
         except requests.RequestException:
-            raise OAuthFlowError("Roblox est indisponible pour terminer la connexion.", retryable=True) from None
+            raise OAuthFlowError("Roblox is unavailable to complete connection.", retryable=True) from None
         except Exception:
-            raise OAuthFlowError("Roblox est indisponible pour terminer la connexion.", retryable=True) from None
-        return _response_mapping(response, invalid_message="Roblox a refusé la connexion OAuth.")
+            raise OAuthFlowError("Roblox is unavailable to complete connection.", retryable=True) from None
+        return _response_mapping(response, invalid_message="Roblox denied OAuth connection.")
 
     def _ensure_open(self) -> None:
         if self._closed:
-            raise OAuthFlowError("Le client OAuth est fermé.")
+            raise OAuthFlowError("OAuth client is closed.")
 
 
 class OAuthLoginCoordinator:
@@ -466,9 +466,9 @@ class OAuthLoginCoordinator:
     def start(self, config: OAuthClientConfiguration) -> OAuthLoginSnapshot:
         with self._lock:
             if self._closed:
-                raise OAuthFlowError("Le service de connexion OAuth est fermé.")
+                raise OAuthFlowError("OAuth login service is closed.")
             if self._active:
-                raise OAuthFlowError("Une connexion Roblox est déjà en attente dans le navigateur.")
+                raise OAuthFlowError("A Roblox login is already pending in the browser.")
             attempt = self._client.build_authorization_attempt(config, monotonic_now=self._monotonic())
             try:
                 receiver = self._callback_factory(config.redirect_uri, attempt.state)
@@ -476,18 +476,18 @@ class OAuthLoginCoordinator:
             except OAuthFlowError:
                 raise
             except OSError:
-                raise OAuthFlowError("Le port de retour OAuth est indisponible. Vérifiez la configuration.") from None
+                raise OAuthFlowError("OAuth callback port is unavailable. Check configuration.") from None
             except Exception:
-                raise OAuthFlowError("La réception de connexion OAuth n'a pas pu démarrer.") from None
+                raise OAuthFlowError("OAuth callback receiver could not start.") from None
 
             try:
                 opened = self._browser_open(attempt.authorization_url)
             except Exception:
                 receiver.close()
-                raise OAuthFlowError("Le navigateur système n'a pas pu être ouvert.") from None
+                raise OAuthFlowError("System browser could not be opened.") from None
             if opened is False:
                 receiver.close()
-                raise OAuthFlowError("Le navigateur système n'a pas pu être ouvert.")
+                raise OAuthFlowError("System browser could not be opened.")
 
             self._active[attempt.operation_id] = (config, attempt, receiver)
             return self._snapshot(attempt.operation_id, "waiting", attempt)
@@ -499,19 +499,19 @@ class OAuthLoginCoordinator:
                 terminal = self._terminal.get(operation_id)
                 if terminal is not None:
                     return terminal
-                raise ValidationError("Cette opération de connexion OAuth est introuvable.")
+                raise ValidationError("This OAuth login operation was not found.")
             config, attempt, receiver = active
             if self._monotonic() - attempt.created_monotonic >= config.callback_timeout_seconds:
-                return self._finish_terminal(operation_id, "expired", "La connexion Roblox a expiré. Relancez-la si nécessaire.")
+                return self._finish_terminal(operation_id, "expired", "Roblox login expired. Please try again.")
             callback = receiver.poll()
             if callback is None:
                 return self._snapshot(operation_id, "waiting", attempt)
             if not hmac.compare_digest(callback.state, attempt.state):
-                return self._finish_terminal(operation_id, "failed", "La réponse OAuth n'est pas valide.")
+                return self._finish_terminal(operation_id, "failed", "OAuth response is invalid.")
             if callback.error:
-                return self._finish_terminal(operation_id, "cancelled", "La connexion Roblox a été annulée ou refusée.")
+                return self._finish_terminal(operation_id, "cancelled", "Roblox login was cancelled or denied.")
             if not callback.code:
-                return self._finish_terminal(operation_id, "failed", "La réponse OAuth est incomplète.")
+                return self._finish_terminal(operation_id, "failed", "OAuth response is incomplete.")
 
             try:
                 grant = self._client.exchange_code(config, code=callback.code, code_verifier=attempt.code_verifier)
@@ -532,11 +532,11 @@ class OAuthLoginCoordinator:
                 terminal = self._terminal.get(operation_id)
                 if terminal is not None:
                     return terminal
-                raise ValidationError("Cette opération de connexion OAuth est introuvable.")
+                raise ValidationError("This OAuth login operation was not found.")
             _config, _attempt, receiver = active
             receiver.close()
             return self._remember_terminal(
-                OAuthLoginSnapshot(operation_id=operation_id, status="cancelled", message="Connexion Roblox annulée.")
+                OAuthLoginSnapshot(operation_id=operation_id, status="cancelled", message="Roblox login cancelled.")
             )
 
     def refresh(self, config: OAuthClientConfiguration, grant: OAuthGrant) -> tuple[OAuthGrant, OAuthIdentity]:
@@ -599,45 +599,45 @@ class OAuthGrantVault:
             protected = self._protector.protect(raw, description="Astro Account Manager Roblox OAuth grant")
             self._repository.save_protected_secret(account_id, OAUTH_GRANT_KIND, protected)
         except DPAPIUnavailableError as exc:
-            raise SecurityError("Le vault Windows n'est pas disponible pour protéger la connexion OAuth.") from exc
+            raise SecurityError("Windows vault is unavailable to protect OAuth login.") from exc
         except DPAPIError as exc:
-            raise SecurityError("La connexion OAuth n'a pas pu être protégée par Windows.") from exc
+            raise SecurityError("OAuth login could not be protected by Windows.") from exc
         except Exception:
-            raise OAuthFlowError("La connexion OAuth n'a pas pu être enregistrée localement.") from None
+            raise OAuthFlowError("OAuth login could not be saved locally.") from None
 
     def load(self, account_id: str) -> OAuthGrant | None:
         try:
             protected = self._repository.load_protected_secret(account_id, OAUTH_GRANT_KIND)
         except Exception:
-            raise OAuthFlowError("La connexion OAuth locale ne peut pas être lue.") from None
+            raise OAuthFlowError("Local OAuth login cannot be read.") from None
         if protected is None:
             return None
         try:
             raw = self._protector.unprotect(protected)
             payload = json.loads(raw.decode("utf-8"))
         except DPAPIUnavailableError as exc:
-            raise SecurityError("Le vault Windows n'est pas disponible pour lire la connexion OAuth.") from exc
+            raise SecurityError("Windows vault is unavailable to read OAuth login.") from exc
         except (DPAPIError, UnicodeDecodeError, ValueError, TypeError):
-            raise OAuthFlowError("La connexion OAuth locale est illisible. Reconnectez le compte.") from None
+            raise OAuthFlowError("Local OAuth login is readable. Please reconnect account.") from None
         if not isinstance(payload, Mapping) or payload.get("version") != 1:
-            raise OAuthFlowError("La connexion OAuth locale est invalide. Reconnectez le compte.")
+            raise OAuthFlowError("Local OAuth login is invalid. Please reconnect account.")
         return _grant_from_storage_payload(payload)
 
     def delete(self, account_id: str) -> bool:
         try:
             return bool(self._repository.delete_protected_secret(account_id, OAUTH_GRANT_KIND))
         except Exception:
-            raise OAuthFlowError("La connexion OAuth locale ne peut pas être supprimée.") from None
+            raise OAuthFlowError("Local OAuth login cannot be deleted.") from None
 
 
 def _validate_loopback_redirect_uri(value: object) -> Any:
     if not isinstance(value, str) or not value.strip() or len(value) > 512:
-        raise OAuthConfigurationError("L'URI de retour OAuth est invalide.")
+        raise OAuthConfigurationError("OAuth redirect URI is invalid.")
     try:
         parsed = urlsplit(value.strip())
         port = parsed.port
     except ValueError:
-        raise OAuthConfigurationError("L'URI de retour OAuth est invalide.") from None
+        raise OAuthConfigurationError("OAuth redirect URI is invalid.") from None
     if (
         parsed.scheme != "http"
         or parsed.hostname != "127.0.0.1"
@@ -652,7 +652,7 @@ def _validate_loopback_redirect_uri(value: object) -> Any:
         or parsed.password
     ):
         raise OAuthConfigurationError(
-            "L'URI OAuth doit être un callback HTTP local du type http://127.0.0.1:port/chemin."
+            "OAuth URI must be a local HTTP callback of form http://127.0.0.1:port/path."
         )
     return parsed
 
@@ -662,7 +662,7 @@ def _make_code_verifier() -> str:
     # bytes produce an 86-character verifier, within Roblox's documented range.
     verifier = secrets.token_urlsafe(64)
     if not 43 <= len(verifier) <= 128:  # Defensive against implementation changes.
-        raise OAuthFlowError("Le générateur PKCE local est invalide.")
+        raise OAuthFlowError("Local PKCE generator is invalid.")
     return verifier
 
 
@@ -687,8 +687,8 @@ def _response_mapping(response: Any, *, invalid_message: str) -> Mapping[str, An
     status = getattr(response, "status_code", 0)
     if not isinstance(status, int) or not 200 <= status < 300:
         if status in {400, 401, 403}:
-            raise OAuthFlowError("Roblox a refusé la connexion OAuth.")
-        raise OAuthFlowError("Roblox est indisponible pour terminer la connexion.", retryable=status == 429 or status >= 500)
+            raise OAuthFlowError("Roblox denied OAuth connection.")
+        raise OAuthFlowError("Roblox is unavailable to complete connection.", retryable=status == 429 or status >= 500)
     try:
         payload = response.json()
     except (AttributeError, TypeError, ValueError):
@@ -705,20 +705,20 @@ def _grant_from_payload(payload: Mapping[str, Any], *, now: datetime) -> OAuthGr
     expires_in = payload.get("expires_in")
     scope_value = payload.get("scope")
     if not _is_bounded_text(access_token, maximum=16_384) or not _is_bounded_text(refresh_token, maximum=16_384):
-        raise OAuthFlowError("Roblox a renvoyé une autorisation OAuth incomplète.")
+        raise OAuthFlowError("Roblox returned an incomplete OAuth authorization.")
     if id_token is not None and not _is_bounded_text(id_token, maximum=16_384):
-        raise OAuthFlowError("Roblox a renvoyé une autorisation OAuth invalide.")
+        raise OAuthFlowError("Roblox returned an invalid OAuth authorization.")
     if isinstance(expires_in, bool):
-        raise OAuthFlowError("Roblox a renvoyé une durée OAuth invalide.")
+        raise OAuthFlowError("Roblox returned an invalid OAuth duration.")
     try:
         seconds = int(expires_in)
     except (TypeError, ValueError):
-        raise OAuthFlowError("Roblox a renvoyé une durée OAuth invalide.") from None
+        raise OAuthFlowError("Roblox returned an invalid OAuth duration.") from None
     if not 1 <= seconds <= 86_400:
-        raise OAuthFlowError("Roblox a renvoyé une durée OAuth invalide.")
+        raise OAuthFlowError("Roblox returned an invalid OAuth duration.")
     scopes = tuple(scope for scope in str(scope_value or "").split() if scope)
     if not set(DEFAULT_SCOPES).issubset(scopes):
-        raise OAuthFlowError("Roblox n'a pas accordé les permissions de profil requises.")
+        raise OAuthFlowError("Roblox did not grant required profile permissions.")
     return OAuthGrant(
         access_token=access_token,
         refresh_token=refresh_token,
@@ -733,10 +733,10 @@ def _grant_from_storage_payload(payload: Mapping[str, Any]) -> OAuthGrant:
     try:
         expires_at = datetime.fromisoformat(str(expires_raw).replace("Z", "+00:00")).astimezone(UTC)
     except ValueError:
-        raise OAuthFlowError("La connexion OAuth locale est invalide. Reconnectez le compte.") from None
+        raise OAuthFlowError("Local OAuth login is invalid. Please reconnect account.") from None
     scopes_value = payload.get("scopes")
     if not isinstance(scopes_value, list) or not all(isinstance(item, str) for item in scopes_value):
-        raise OAuthFlowError("La connexion OAuth locale est invalide. Reconnectez le compte.")
+        raise OAuthFlowError("Local OAuth login is invalid. Please reconnect account.")
     return _grant_from_payload(
         {
             "access_token": payload.get("access_token"),
@@ -755,12 +755,12 @@ def _identity_from_payload(payload: Mapping[str, Any]) -> OAuthIdentity:
     try:
         user_id = int(raw_user_id)
     except (TypeError, ValueError):
-        raise OAuthFlowError("Roblox a renvoyé un profil OAuth invalide.") from None
+        raise OAuthFlowError("Roblox returned an invalid OAuth profile.") from None
     if user_id <= 0 or isinstance(raw_user_id, bool):
-        raise OAuthFlowError("Roblox a renvoyé un profil OAuth invalide.")
+        raise OAuthFlowError("Roblox returned an invalid OAuth profile.")
     username = _clean_public_text(payload.get("preferred_username"), maximum=120)
     if username is None:
-        raise OAuthFlowError("Roblox n'a pas renvoyé le username du profil connecté.")
+        raise OAuthFlowError("Roblox did not return logged in username.")
     display_name = _clean_public_text(payload.get("name") or payload.get("nickname"), maximum=120)
     avatar_url = _safe_https_url(payload.get("picture"))
     return OAuthIdentity(user_id=user_id, username=username, display_name=display_name, avatar_url=avatar_url)

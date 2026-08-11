@@ -95,7 +95,7 @@ class WindowsStartupManager:
                 registered=False,
                 enabled=False,
                 needs_repair=False,
-                reason="Le démarrage automatique est disponible uniquement sous Windows.",
+                reason="Automatic startup is available on Windows only.",
             )
         try:
             with self._lock:
@@ -107,7 +107,7 @@ class WindowsStartupManager:
                 registered=False,
                 enabled=False,
                 needs_repair=False,
-                reason="La valeur de démarrage Windows est inaccessible.",
+                reason="Windows startup value is inaccessible.",
             )
 
         registered = stored_value is not None
@@ -132,7 +132,7 @@ class WindowsStartupManager:
             with self._lock:
                 self._store.set_value(ASTRO_RUN_VALUE_NAME, self._expected_command)
         except StartupRegistrationError:
-            raise StartupRegistrationError("Le démarrage automatique n'a pas pu être activé.") from None
+            raise StartupRegistrationError("Automatic startup could not be enabled.") from None
         return self.inspect()
 
     def disable(self) -> WindowsStartupStatus:
@@ -143,7 +143,7 @@ class WindowsStartupManager:
             with self._lock:
                 self._store.delete_value(ASTRO_RUN_VALUE_NAME)
         except StartupRegistrationError:
-            raise StartupRegistrationError("Le démarrage automatique n'a pas pu être désactivé.") from None
+            raise StartupRegistrationError("Automatic startup could not be disabled.") from None
         return self.inspect()
 
     def _is_windows(self) -> bool:
@@ -151,7 +151,7 @@ class WindowsStartupManager:
 
     def _require_windows(self) -> None:
         if not self._is_windows():
-            raise StartupRegistrationError("Le démarrage automatique est disponible uniquement sous Windows.")
+            raise StartupRegistrationError("Automatic startup is available on Windows only.")
 
 
 class WindowsRunValueStore:
@@ -172,7 +172,7 @@ class WindowsRunValueStore:
             # ordinary disabled state, not an error.
             return None
         except (ImportError, OSError) as exc:
-            raise StartupRegistrationError("La valeur de démarrage Windows est inaccessible.") from exc
+            raise StartupRegistrationError("Windows startup value is inaccessible.") from exc
 
     def set_value(self, name: str, value: str) -> None:
         try:
@@ -186,7 +186,7 @@ class WindowsRunValueStore:
             ) as key:
                 winreg.SetValueEx(key, name, 0, winreg.REG_SZ, value)
         except (ImportError, OSError) as exc:
-            raise StartupRegistrationError("La valeur de démarrage Windows est inaccessible.") from exc
+            raise StartupRegistrationError("Windows startup value is inaccessible.") from exc
 
     def delete_value(self, name: str) -> bool:
         try:
@@ -206,21 +206,21 @@ class WindowsRunValueStore:
         except FileNotFoundError:
             return False
         except (ImportError, OSError) as exc:
-            raise StartupRegistrationError("La valeur de démarrage Windows est inaccessible.") from exc
+            raise StartupRegistrationError("Windows startup registry value is inaccessible.") from exc
 
 
 def _validated_executable_path(value: Path | str) -> Path:
     if not isinstance(value, (Path, str)):
-        raise ValidationError("Le chemin de démarrage Windows est invalide.")
+        raise ValidationError("Windows startup executable path is invalid.")
     candidate = Path(value)
     if not candidate.is_absolute() or candidate.suffix.casefold() != ".exe":
-        raise ValidationError("Le démarrage Windows exige un exécutable .exe absolu.")
+        raise ValidationError("Windows startup requires an absolute .exe executable.")
     try:
         resolved = candidate.resolve(strict=True)
     except OSError as exc:
-        raise ValidationError("L'exécutable de démarrage Windows est introuvable.") from exc
+        raise ValidationError("Windows startup executable was not found.") from exc
     if not resolved.is_file():
-        raise ValidationError("Le chemin de démarrage Windows doit désigner un fichier.")
+        raise ValidationError("Windows startup path must point to a file.")
     text = os.fspath(resolved)
     if (
         not text
@@ -228,7 +228,7 @@ def _validated_executable_path(value: Path | str) -> Path:
         or '"' in text
         or any(ord(character) < 32 for character in text)
     ):
-        raise ValidationError("Le chemin de démarrage Windows est invalide.")
+        raise ValidationError("Windows startup executable path is invalid.")
     return resolved
 
 

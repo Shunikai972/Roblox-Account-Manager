@@ -119,6 +119,7 @@ class ApplicationService:
         monitor: RobloxProcessMonitor | None = None,
         log_runtime: RobloxPlayerLogRuntime | Any | None = None,
         oauth_login: OAuthLoginCoordinator | None = None,
+        client_settings: ClientSettingsPatcher | None = None,
         logger: logging.Logger | logging.LoggerAdapter[logging.Logger] | None = None,
     ) -> None:
         self.paths = paths or AppPaths.for_current_user()
@@ -140,12 +141,12 @@ class ApplicationService:
                     self._windows_startup_manager = WindowsStartupManager(executable)
                 except ValidationError:
                     self._windows_startup_unavailable_reason = (
-                        "L'exécutable distribué requis pour le démarrage automatique est indisponible."
+                        "The distributed executable required for auto-startup is unavailable."
                     )
             else:
                 self._windows_startup_unavailable_reason = (
-                    "Le démarrage automatique est disponible dans l'exécutable Windows distribué, "
-                    "pas dans l'environnement Python de développement."
+                    "Auto-startup is available in the distributed Windows executable, "
+                    "not in the Python development environment."
                 )
         self.monitor = monitor or RobloxProcessMonitor()
         # This observer is intentionally separate from the process monitor.
@@ -162,7 +163,7 @@ class ApplicationService:
         self._oauth_results: dict[str, dict[str, Any]] = {}
         self._nexus_server: Any = None
         self.multi_instance = WindowsMultiInstanceController()
-        self.client_settings = ClientSettingsPatcher()
+        self.client_settings = client_settings or ClientSettingsPatcher()
         self.batch_launcher = BatchLauncher(launch_single_fn=self._batch_launch_single_adapter)
         self.auth_tools = RobloxAuthTools(roblox_client=self.roblox)
         self.account_utils = AccountUtils()
@@ -206,10 +207,10 @@ class ApplicationService:
         return [self._account_payload(item) for item in self.repository.list_accounts(search=query)]
 
     def create_account(self, payload: Mapping[str, Any]) -> dict[str, Any]:
-        data = self._require_mapping(payload, "Les données du compte")
-        username = self._required_text(data.get("username"), "Le username")
+        data = self._require_mapping(payload, "Account data")
+        username = self._required_text(data.get("username"), "Username")
         if self.repository.get_account_by_username(username) is not None:
-            raise ConflictError("Ce username existe déjà dans votre espace.")
+            raise ConflictError("This username already exists in your workspace.")
 
         group_id = self._optional_id(data.get("group_id"))
         if group_id:
@@ -232,9 +233,9 @@ class ApplicationService:
         try:
             saved = self.repository.save_account(account)
         except RepositoryConflictError as exc:
-            raise ConflictError("Ce username ou ce groupe est déjà utilisé.") from exc
+            raise ConflictError("This username or group is already in use.") from exc
         except RepositoryError as exc:
-            raise StorageError("Le compte n'a pas pu être enregistré.") from exc
+            raise StorageError("Account could not be saved.") from exc
 
         # The metadata row must exist before its vault entry can satisfy the
         # foreign-key constraint.  A failed vault write leaves a valid account
@@ -247,15 +248,15 @@ class ApplicationService:
                 saved = self.repository.save_account(saved)
             except RepositoryError as exc:
                 self.repository.delete_protected_secret(saved.id, "session")
-                raise StorageError("Le statut de session n'a pas pu être enregistré.") from exc
+                raise StorageError("Session status could not be saved.") from exc
 
-        self._activity("account", f"{saved.username} a été ajouté", account_id=saved.id)
-        self._notice("success", "Compte ajouté", f"{saved.username} est prêt à être organisé.")
+        self._activity("account", f"{saved.username} was added", account_id=saved.id)
+        self._notice("success", "Account Added", f"{saved.username} is ready in your workspace.")
         return self._account_payload(saved)
 
     def update_account(self, account_id: str, payload: Mapping[str, Any]) -> dict[str, Any]:
         existing = self._get_account(account_id)
-        data = self._require_mapping(payload, "Les données du compte")
+        data = self._require_mapping(payload, "Account data")
         group_id = self._optional_id(data.get("group_id", existing.group_id))
         if group_id:
             self._get_group(group_id)
@@ -292,6 +293,10 @@ class ApplicationService:
             ui_metadata["avatar_color"] = self._avatar_color(data["avatar_color"])
             metadata["ui"] = ui_metadata
             mutable["metadata"] = metadata
+        if "launch_options" in data and isinstance(data["launch_options"], Mapping):
+            metadata = dict(mutable.get("metadata") or {})
+            metadata["launch_options"] = dict(data["launch_options"])
+            mutable["metadata"] = metadata
         mutable["group_id"] = group_id
         mutable["id"] = existing.id
         mutable["has_session"] = existing.has_session
@@ -302,15 +307,15 @@ class ApplicationService:
         try:
             saved = self.repository.save_account(mutable)
         except RepositoryConflictError as exc:
-            raise ConflictError("Un autre compte utilise déjà ce username.") from exc
+            raise ConflictError("Another account is already using this username.") from exc
         except RepositoryError as exc:
-            raise StorageError("Le compte n'a pas pu être mis à jour.") from exc
-        self._activity("account", f"{saved.username} a été mis à jour", account_id=saved.id)
+            raise StorageError("Account could not be updated.") from exc
+        self._activity("account", f"{saved.username} was updated", account_id=saved.id)
         return self._account_payload(saved)
 
     def delete_accounts(self, account_ids: list[str] | tuple[str, ...]) -> dict[str, Any]:
         if not isinstance(account_ids, (list, tuple)) or not account_ids:
-            raise ValidationError("Sélectionnez au moins un compte à supprimer.")
+            raise ValidationError("Select at least one account to remove.")
         deleted: list[str] = []
         for account_id in dict.fromkeys(str(item) for item in account_ids if str(item).strip()):
             account = self._get_account(account_id)
@@ -320,46 +325,41 @@ class ApplicationService:
                     self._forget_account_in_monitor(account.id)
                     deleted.append(account.id)
             except RepositoryError as exc:
-                raise StorageError("Un compte n'a pas pu être supprimé.") from exc
-        self._activity("account", f"{len(deleted)} compte(s) supprimé(s)")
-        self._notice("info", "Comptes supprimés", f"{len(deleted)} compte(s) ont été retirés de cet appareil.")
+                raise StorageError("An account could not be removed.") from exc
+        self._activity("account", f"{len(deleted)} account(s) removed")
+        self._notice("info", "Accounts Removed", f"{len(deleted)} account(s) were removed from this device.")
         return {"deleted": deleted}
 
     def reorder_accounts(self, account_ids: list[str] | tuple[str, ...]) -> list[dict[str, Any]]:
-        """Persist one complete, user-chosen account order atomically.
-
-        The WinForms manager supported drag and drop in the account list.  A
-        complete list is intentionally required here so that stale frontend
-        state cannot accidentally drop or duplicate an account during a move.
-        """
+        """Persist one complete, user-chosen account order atomically."""
 
         if not isinstance(account_ids, (list, tuple)):
-            raise ValidationError("L'ordre des comptes doit être une liste complète.")
-        normalized_ids = [self._required_text(account_id, "Un identifiant de compte") for account_id in account_ids]
+            raise ValidationError("Account order must be a complete list.")
+        normalized_ids = [self._required_text(account_id, "An account ID") for account_id in account_ids]
         if len(normalized_ids) != len(set(normalized_ids)):
-            raise ValidationError("L'ordre des comptes contient des doublons.")
+            raise ValidationError("Account order contains duplicates.")
         try:
             ordered = self.repository.reorder_accounts(normalized_ids)
         except RepositoryError as exc:
-            raise ValidationError("L'ordre complet des comptes est invalide.") from exc
-        self._activity("account", f"Ordre de {len(ordered)} compte(s) mis à jour")
+            raise ValidationError("Complete account order is invalid.") from exc
+        self._activity("account", f"Order updated for {len(ordered)} account(s)")
         return [self._account_payload(account) for account in ordered]
 
     # Public Roblox profile, avatar and presence --------------------------
     def get_public_profile(self, user_id: int | str) -> dict[str, Any]:
         """Retrieve a credential-free public Roblox profile by numeric UserId."""
 
-        normalized = self._positive_int(user_id, "Le UserId")
+        normalized = self._positive_int(user_id, "User ID")
         try:
             profile = self.roblox.get_public_profile(normalized)
         except RobloxServiceError as exc:
             raise ExternalServiceError(str(exc), retryable=getattr(exc, "retryable", False)) from exc
         exporter = getattr(profile, "to_dict", None)
         if not callable(exporter):
-            raise ExternalServiceError("Le profil public Roblox est invalide.")
+            raise ExternalServiceError("Roblox public profile is invalid.")
         payload = exporter()
         if not isinstance(payload, Mapping):
-            raise ExternalServiceError("Le profil public Roblox est invalide.")
+            raise ExternalServiceError("Roblox public profile is invalid.")
         return dict(payload)
 
     def refresh_account_public_profile(self, account_id: str) -> dict[str, Any]:
@@ -372,7 +372,7 @@ class ApplicationService:
 
         account = self._get_account(account_id)
         if account.user_id is None:
-            raise ValidationError("Associez un UserId Roblox a ce compte avant d'actualiser son profil.")
+            raise ValidationError("Associate a Roblox User ID with this account before refreshing its profile.")
         profile = self.get_public_profile(account.user_id)
         metadata = dict(account.metadata)
         metadata["public_profile"] = {
@@ -434,15 +434,15 @@ class ApplicationService:
         """
 
         if not isinstance(account_ids, (list, tuple)) or not account_ids:
-            raise ValidationError("Selectionnez au moins un compte pour la presence.")
+            raise ValidationError("Select at least one account for presence.")
         unique_ids = list(dict.fromkeys(self._optional_id(value) for value in account_ids))
         if any(value is None for value in unique_ids):
-            raise ValidationError("Un identifiant de compte est invalide.")
+            raise ValidationError("An account ID is invalid.")
         if len(unique_ids) > 50:
-            raise ValidationError("La presence est limitee a 50 comptes par requete.")
+            raise ValidationError("Presence is limited to 50 accounts per request.")
         accounts = [self._get_account(str(account_id)) for account_id in unique_ids]
         if any(account.user_id is None for account in accounts):
-            raise ValidationError("Chaque compte selectionne doit avoir un UserId Roblox.")
+            raise ValidationError("Each selected account must have a Roblox User ID.")
         records = self.get_public_presence([int(account.user_id) for account in accounts if account.user_id is not None])
         by_user_id = {item.get("user_id"): item for item in records if isinstance(item.get("user_id"), int)}
         refreshed_at = _utc_now()
@@ -468,14 +468,14 @@ class ApplicationService:
         return [self._group_payload(item) for item in self.repository.list_groups()]
 
     def create_group(self, payload: Mapping[str, Any]) -> dict[str, Any]:
-        data = self._require_mapping(payload, "Les données du groupe")
-        name = self._required_text(data.get("name"), "Le nom du groupe")
+        data = self._require_mapping(payload, "Group data")
+        name = self._required_text(data.get("name"), "Group name")
         groups = self.repository.list_groups()
         order_value = data.get("order", data.get("sort_order", len(groups)))
         try:
             sort_order = int(order_value)
         except (TypeError, ValueError) as exc:
-            raise ValidationError("L'ordre du groupe doit être un entier.") from exc
+            raise ValidationError("Group sort order must be an integer.") from exc
         group = Group(
             name=name,
             color=self._group_color(data.get("color")),
@@ -485,15 +485,15 @@ class ApplicationService:
         try:
             saved = self.repository.save_group(group)
         except RepositoryError as exc:
-            raise StorageError("Le groupe n'a pas pu être enregistré.") from exc
-        self._activity("group", f"Groupe {saved.name} créé")
+            raise StorageError("Group could not be saved.") from exc
+        self._activity("group", f"Group {saved.name} created")
         return self._group_payload(saved)
 
     def update_group(self, group_id: str, payload: Mapping[str, Any]) -> dict[str, Any]:
         """Update persistent group presentation/state without touching members."""
 
         existing = self._get_group(group_id)
-        data = self._require_mapping(payload, "Les données du groupe")
+        data = self._require_mapping(payload, "Group data")
         mutable = existing.to_dict()
         aliases = {
             "favorite": "is_favorite",
@@ -507,7 +507,7 @@ class ApplicationService:
             if key in data:
                 mutable[key] = data[key]
         if "name" in mutable:
-            mutable["name"] = self._required_text(mutable["name"], "Le nom du groupe")
+            mutable["name"] = self._required_text(mutable["name"], "Group name")
         if "color" in mutable:
             mutable["color"] = self._group_color(mutable["color"])
         if "icon" in mutable:
@@ -516,15 +516,15 @@ class ApplicationService:
             try:
                 mutable["sort_order"] = int(mutable["sort_order"])
             except (TypeError, ValueError) as exc:
-                raise ValidationError("L'ordre du groupe doit être un entier.") from exc
+                raise ValidationError("Group sort order must be an integer.") from exc
         mutable["id"] = existing.id
         try:
             saved = self.repository.save_group(mutable)
         except RepositoryConflictError as exc:
-            raise ConflictError("Un groupe avec ce nom existe déjà.") from exc
+            raise ConflictError("A group with this name already exists.") from exc
         except RepositoryError as exc:
-            raise StorageError("Le groupe n'a pas pu être mis à jour.") from exc
-        self._activity("group", f"Groupe {saved.name} mis à jour")
+            raise StorageError("Group could not be updated.") from exc
+        self._activity("group", f"Group {saved.name} updated")
         return self._group_payload(saved)
 
     def delete_group(self, group_id: str) -> dict[str, Any]:
@@ -534,23 +534,23 @@ class ApplicationService:
         try:
             deleted = self.repository.delete_group(group_id)
         except RepositoryError as exc:
-            raise StorageError("Le groupe n'a pas pu être supprimé.") from exc
+            raise StorageError("Group could not be deleted.") from exc
         if not deleted:
-            raise NotFoundError("Ce groupe est introuvable.")
-        self._activity("group", f"Groupe {group.name} supprimé")
-        self._notice("info", "Groupe supprimé", "Les comptes associés sont désormais sans groupe.")
+            raise NotFoundError("Group not found.")
+        self._activity("group", f"Group {group.name} deleted")
+        self._notice("info", "Group Removed", "Associated accounts are now ungrouped.")
         return {"deleted": group_id}
 
     def move_accounts(self, account_ids: list[str] | tuple[str, ...], group_id: str | None) -> dict[str, Any]:
         if not isinstance(account_ids, (list, tuple)) or not account_ids:
-            raise ValidationError("Sélectionnez au moins un compte à déplacer.")
+            raise ValidationError("Select at least one account to move.")
         if group_id:
             self._get_group(group_id)
         try:
             moved = self.repository.move_accounts(account_ids, group_id)
         except RepositoryError as exc:
-            raise StorageError("Les comptes n'ont pas pu être déplacés.") from exc
-        self._activity("group", f"{moved} compte(s) réorganisé(s)")
+            raise StorageError("Accounts could not be moved.") from exc
+        self._activity("group", f"{moved} account(s) moved")
         return {"moved": list(account_ids), "count": moved, "group_id": group_id}
 
     # Games and servers -----------------------------------------------------
@@ -571,7 +571,7 @@ class ApplicationService:
         return [self._game_payload(item) for item in self.repository.list_games(favorites_only=True, limit=100)]
 
     def get_game(self, place_id: int | str) -> dict[str, Any]:
-        normalized = self._positive_int(place_id, "Le PlaceId")
+        normalized = self._positive_int(place_id, "Place ID")
         cached = self.repository.get_game_by_place_id(normalized)
         try:
             game = self.roblox.get_game_details(normalized)
@@ -583,26 +583,26 @@ class ApplicationService:
                 try:
                     cached = self._save_recent_game(cached)
                 except RepositoryError as storage_error:
-                    raise StorageError("Le jeu recent n'a pas pu etre enregistre.") from storage_error
+                    raise StorageError("Recent game could not be saved.") from storage_error
                 return self._game_payload(cached, stale=True)
             raise ExternalServiceError(str(exc), retryable=getattr(exc, "retryable", False)) from exc
         except RepositoryError as exc:
-            raise StorageError("Les détails du jeu n'ont pas pu être enregistrés.") from exc
+            raise StorageError("Game details could not be saved.") from exc
         return self._game_payload(game)
 
     def set_game_favorite(self, place_id: int | str, favorite: bool) -> dict[str, Any]:
         """Mark or unmark a persisted game favourite without touching recency."""
 
-        normalized = self._positive_int(place_id, "Le PlaceId")
+        normalized = self._positive_int(place_id, "Place ID")
         if not isinstance(favorite, bool):
-            raise ValidationError("L'etat favori du jeu est invalide.")
+            raise ValidationError("Game favorite state is invalid.")
         try:
             game = self.repository.get_game_by_place_id(normalized)
         except RepositoryError as exc:
-            raise StorageError("Le jeu local n'a pas pu etre lu.") from exc
+            raise StorageError("Local game record could not be read.") from exc
         if game is None:
             if not favorite:
-                raise NotFoundError("Ce jeu n'est pas enregistre localement.")
+                raise NotFoundError("This game is not saved locally.")
             try:
                 game = self.roblox.get_game_details(normalized)
             except RobloxServiceError as exc:
@@ -612,26 +612,26 @@ class ApplicationService:
             try:
                 saved = self.repository.save_game(game)
             except RepositoryError as exc:
-                raise StorageError("Le favori n'a pas pu etre enregistre.") from exc
+                raise StorageError("Game favorite could not be saved.") from exc
         else:
             try:
                 saved = self.repository.set_game_favorite(normalized, favorite)
             except RepositoryError as exc:
-                raise StorageError("Le favori n'a pas pu etre mis a jour.") from exc
-        self._activity("game", "Jeu ajoute aux favoris" if favorite else "Jeu retire des favoris", metadata={"place_id": normalized})
+                raise StorageError("Game favorite could not be updated.") from exc
+        self._activity("game", "Game added to favorites" if favorite else "Game removed from favorites", metadata={"place_id": normalized})
         return self._game_payload(saved)
 
     def remove_game(self, place_id: int | str) -> dict[str, Any]:
         """Remove one locally stored game record and its favourite marker."""
 
-        normalized = self._positive_int(place_id, "Le PlaceId")
+        normalized = self._positive_int(place_id, "Place ID")
         try:
             deleted = self.repository.delete_game_by_place_id(normalized)
         except RepositoryError as exc:
-            raise StorageError("Le jeu n'a pas pu etre retire.") from exc
+            raise StorageError("Game could not be removed.") from exc
         if not deleted:
-            raise NotFoundError("Ce jeu n'est pas enregistre localement.")
-        self._activity("game", "Jeu retire de la bibliotheque locale", metadata={"place_id": normalized})
+            raise NotFoundError("This game is not saved locally.")
+        self._activity("game", "Game removed from local library", metadata={"place_id": normalized})
         return {"deleted": normalized}
 
     def list_servers(self, place_id: int | str) -> list[dict[str, Any]]:
@@ -647,9 +647,9 @@ class ApplicationService:
         target_data = dict(target or {})
         place_id = target_data.get("place_id") or target_data.get("placeId") or account.saved_place_id
         if place_id is None:
-            raise ValidationError("Choisissez un PlaceId avant de lancer Roblox.")
+            raise ValidationError("Choose a Place ID before launching Roblox.")
         launch_target = LaunchTarget(
-            place_id=self._positive_int(place_id, "Le PlaceId"),
+            place_id=self._positive_int(place_id, "Place ID"),
             job_id=self._optional_text(target_data.get("job_id") or target_data.get("jobId")),
         )
         multi_instance_enabled = bool(
@@ -659,11 +659,12 @@ class ApplicationService:
         if multi_instance_enabled:
             self.multi_instance.enable_multi_instance()
 
-        # Apply FPS Cap & Potato Graphics (Global or per-session target)
-        fps_target = target_data.get("fps") or target_data.get("fps_cap") or self.client_settings.get_fps_cap()
-        potato_mode = bool(target_data.get("potato") or target_data.get("potato_graphics") or self.get_settings()["categories"].get("performance", {}).get("potato_graphics", False))
+        # Apply per-account or per-launch FPS Cap & Potato Graphics settings
+        launch_opts = account.metadata.get("launch_options", {}) if isinstance(account.metadata, dict) else {}
+        fps_target = target_data.get("fps") or target_data.get("fps_cap") or launch_opts.get("max_fps") or self.client_settings.get_fps_cap()
+        potato_mode = target_data.get("potato") if "potato" in target_data else (target_data.get("potato_graphics") if "potato_graphics" in target_data else launch_opts.get("potato_graphics", self.get_settings()["categories"].get("performance", {}).get("potato_graphics", False)))
         try:
-            self.client_settings.patch_launch_settings(fps=fps_target, potato_graphics=potato_mode)
+            self.client_settings.patch_launch_settings(fps=int(fps_target) if fps_target else 0, potato_graphics=bool(potato_mode))
         except Exception as patch_exc:
             self.logger.warning(f"Could not apply launch ClientSettings: {patch_exc}")
 
@@ -681,19 +682,14 @@ class ApplicationService:
         try:
             self.repository.save_account(account)
         except RepositoryError:
-            # The process hand-off has already happened.  Report the successful
-            # launch intent but record a diagnostic instead of claiming a failed
-            # launcher operation.
-            self._notice("warning", "Lancement envoyé", "Roblox a été ouvert, mais les métadonnées n'ont pas été mises à jour.")
+            self._notice("warning", "Launch Sent", "Roblox was opened, but metadata could not be updated.")
         if result.launched:
             try:
                 self._record_recent_game(launch_target.place_id)
             except RepositoryError:
-                # The Windows hand-off already succeeded. A failed history
-                # update must not turn it into a failed launch response.
-                self._notice("warning", "Lancement envoye", "Roblox a ete ouvert, mais le jeu recent n'a pas pu etre enregistre.")
-        self._activity("launch", f"Lancement demandé pour {account.username}", account_id=account.id, metadata={"place_id": launch_target.place_id})
-        self._notice("success", "Lancement demandé", f"Windows ouvre Roblox pour {account.username}.")
+                self._notice("warning", "Launch Sent", "Roblox was opened, but recent game history could not be saved.")
+        self._activity("launch", f"Launch requested for {account.username}", account_id=account.id, metadata={"place_id": launch_target.place_id})
+        self._notice("success", "Launch Requested", f"Windows is launching Roblox for {account.username}.")
         return {
             "accepted": bool(result.launched),
             "account_id": account.id,
@@ -725,8 +721,8 @@ class ApplicationService:
         """Ask Windows to launch a Roblox app already registered for this user."""
 
         result = self.uwp_manager.launch_package(package_full_name)
-        self._activity("launch", "Lancement UWP Roblox demandé", metadata={"uwp": True})
-        self._notice("success", "Lancement UWP demandé", "Windows ouvre l'application Roblox sélectionnée.")
+        self._activity("launch", "Roblox UWP launch requested", metadata={"uwp": True})
+        self._notice("success", "UWP Launch Requested", "Windows is launching the selected Roblox app.")
         return result.to_dict()
 
     # Process monitor -------------------------------------------------------
@@ -759,14 +755,14 @@ class ApplicationService:
 
         terminator = getattr(self.monitor, "terminate_known_process", None)
         if not callable(terminator):
-            raise ValidationError("La fermeture d'instance n'est pas disponible.")
+            raise ValidationError("Instance closing is unavailable.")
         before = next((item for item in self.monitor.current_instances() if item.pid == pid), None)
         result = terminator(pid, confirm=confirm)
         if result.status is TerminationStatus.TERMINATED and before is not None and before.account_id:
             self._set_account_runtime_status(before.account_id, "ready")
         self._activity(
             "instance",
-            f"Fermeture d'instance Roblox : {result.status.value}",
+            f"Roblox instance closing: {result.status.value}",
             account_id=before.account_id if before is not None else None,
             metadata={"pid": result.pid, "status": result.status.value},
         )
@@ -786,15 +782,15 @@ class ApplicationService:
         target_data = dict(target or {})
         place_id = target_data.get("place_id") or target_data.get("placeId") or account.saved_place_id
         if place_id is None:
-            raise ValidationError("Choisissez un PlaceId avant d'associer cette instance.")
+            raise ValidationError("Choose a Place ID before associating this instance.")
         binder = getattr(self.monitor, "bind_orphan", None)
         if not callable(binder):
-            raise ValidationError("L'association d'instance n'est pas disponible.")
+            raise ValidationError("Instance association is unavailable.")
         instance = binder(
-            self._positive_int(pid, "Le PID"),
+            self._positive_int(pid, "PID"),
             account_id=account.id,
             account_username=account.username,
-            place_id=self._positive_int(place_id, "Le PlaceId"),
+            place_id=self._positive_int(place_id, "Place ID"),
             job_id=self._optional_text(target_data.get("job_id") or target_data.get("jobId")),
             restart_policy=self._restart_policy_for(account),
             confirm=confirm,
@@ -802,7 +798,7 @@ class ApplicationService:
         self._set_account_runtime_status(account.id, "in_game")
         self._activity(
             "instance",
-            f"Instance associée à {account.username}",
+            f"Instance associated with {account.username}",
             account_id=account.id,
             metadata={"pid": instance.pid, "place_id": instance.place_id},
         )
@@ -819,10 +815,10 @@ class ApplicationService:
         try:
             saved = self.repository.save_account(account)
         except RepositoryError as exc:
-            raise StorageError("La règle de surveillance n'a pas pu être enregistrée.") from exc
+            raise StorageError("Watcher rule could not be saved.") from exc
         self._activity(
             "watcher",
-            f"Règle de relance mise à jour pour {saved.username}",
+            f"Relaunch rule updated for {saved.username}",
             account_id=saved.id,
             metadata={"auto_relaunch": normalized["auto_relaunch"]},
         )
@@ -839,10 +835,10 @@ class ApplicationService:
 
         config = self._oauth_configuration()
         if not self.vault.available:
-            raise SecurityError("Le vault Windows est requis avant de connecter un compte Roblox.")
+            raise SecurityError("Windows Vault is required before connecting a Roblox account.")
         snapshot = self.oauth_login.start(config)
         self._oauth_results.pop(snapshot.operation_id, None)
-        self._activity("oauth", "Connexion OAuth Roblox démarrée")
+        self._activity("oauth", "Roblox OAuth login started")
         return snapshot.as_public_dict()
 
     def poll_oauth_login(self, operation_id: str) -> dict[str, Any]:
@@ -860,8 +856,8 @@ class ApplicationService:
         account = self._persist_oauth_connection(result.identity, result.grant)
         payload = {**result.snapshot.as_public_dict(), "account": account}
         self._oauth_results[identifier] = payload
-        self._activity("oauth", f"{account['username']} a été connecté via OAuth", account_id=account["id"])
-        self._notice("success", "Compte connecté", f"{account['username']} a été associé via Roblox OAuth.")
+        self._activity("oauth", f"{account['username']} was connected via OAuth", account_id=account["id"])
+        self._notice("success", "Account Connected", f"{account['username']} was linked via Roblox OAuth.")
         return deepcopy(payload)
 
     def cancel_oauth_login(self, operation_id: str) -> dict[str, Any]:
@@ -870,7 +866,7 @@ class ApplicationService:
         identifier = self._oauth_operation_id(operation_id)
         self._oauth_results.pop(identifier, None)
         snapshot = self.oauth_login.cancel(identifier)
-        self._activity("oauth", "Connexion OAuth Roblox annulée")
+        self._activity("oauth", "Roblox OAuth login cancelled")
         return snapshot.as_public_dict()
 
     def refresh_oauth_account(self, account_id: str) -> dict[str, Any]:
@@ -881,17 +877,17 @@ class ApplicationService:
         grants = self._oauth_grant_vault()
         current_grant = grants.load(account.id)
         if current_grant is None:
-            raise NotFoundError("Ce compte n'est pas connecté via Roblox OAuth.")
+            raise NotFoundError("This account is not connected via Roblox OAuth.")
         refreshed_grant, identity = self.oauth_login.refresh(config, current_grant)
         if account.user_id is not None and account.user_id != identity.user_id:
-            raise SecurityError("Le profil OAuth reçu ne correspond pas au compte sélectionné.")
+            raise SecurityError("The received OAuth profile does not match the selected account.")
         saved = self._persist_oauth_connection(
             identity,
             refreshed_grant,
             expected_account_id=account.id,
             previous_grant=current_grant,
         )
-        self._activity("oauth", f"{saved['username']} a été actualisé via OAuth", account_id=saved["id"])
+        self._activity("oauth", f"{saved['username']} was refreshed via OAuth", account_id=saved["id"])
         return saved
 
     def disconnect_oauth_account(self, account_id: str) -> dict[str, Any]:
@@ -910,10 +906,10 @@ class ApplicationService:
         try:
             saved = self.repository.save_account(account)
         except RepositoryError as exc:
-            raise StorageError("Le statut de connexion OAuth n'a pas pu être mis à jour.") from exc
+            raise StorageError("OAuth connection status could not be updated.") from exc
         payload = self._account_payload(saved)
-        self._activity("oauth", f"{payload['username']} a été déconnecté localement", account_id=saved.id)
-        self._notice("info", "Connexion supprimée", "Les jetons OAuth locaux de ce compte ont été retirés.")
+        self._activity("oauth", f"{payload['username']} was disconnected locally", account_id=saved.id)
+        self._notice("info", "Connection Removed", "Local OAuth tokens for this account were removed.")
         return payload
 
     # Settings --------------------------------------------------------------
@@ -940,7 +936,7 @@ class ApplicationService:
         return flat
 
     def update_settings(self, values: Mapping[str, Any]) -> dict[str, Any]:
-        data = self._require_mapping(values, "Les paramètres")
+        data = self._require_mapping(values, "Settings parameters")
         nested_updates: dict[str, Any] = {}
         for key, value in data.items():
             if key == "categories" and isinstance(value, Mapping):
@@ -950,11 +946,11 @@ class ApplicationService:
             if path:
                 self._set_path(nested_updates, path, value)
         if not nested_updates:
-            raise ValidationError("Aucun paramètre reconnu n'a été fourni.")
+            raise ValidationError("No recognized settings parameters provided.")
         general_updates = nested_updates.get("general")
         if isinstance(general_updates, Mapping) and "start_with_windows" in general_updates:
             raise ValidationError(
-                "Utilisez l'action dédiée de démarrage Windows avec confirmation explicite."
+                "Use the dedicated Windows startup action with explicit confirmation."
             )
         candidate = merge_settings(self.get_settings()["categories"], nested_updates)
         self._validate_settings(candidate)
@@ -964,10 +960,10 @@ class ApplicationService:
             try:
                 self.repository.prune_recent_games(self._max_recent_games())
             except RepositoryError as exc:
-                raise StorageError("La limite des jeux recents n'a pas pu etre appliquee.") from exc
+                raise StorageError("Recent games limit could not be applied.") from exc
         self._configure_monitor_from_settings()
         self._sync_watcher_loop()
-        self._activity("settings", "Préférences mises à jour")
+        self._activity("settings", "Settings updated")
         return self.get_settings()
 
     def get_windows_startup_status(self) -> dict[str, Any]:
@@ -990,7 +986,7 @@ class ApplicationService:
                 "needs_repair": False,
                 "configured": configured,
                 "reason": self._windows_startup_unavailable_reason
-                or "Le démarrage automatique est indisponible.",
+                or "Automatic startup is unavailable.",
             }
         try:
             status = manager.inspect()
@@ -1003,7 +999,7 @@ class ApplicationService:
                 "enabled": False,
                 "needs_repair": False,
                 "configured": configured,
-                "reason": "La valeur de démarrage Windows est inaccessible.",
+                "reason": "Windows startup registration is inaccessible.",
             }
         payload = status.to_dict()
         payload["available"] = bool(payload.get("supported") and payload.get("accessible"))
@@ -1014,23 +1010,23 @@ class ApplicationService:
         """Explicitly enable or disable Astro's own current-user Run value."""
 
         if not isinstance(enabled, bool):
-            raise ValidationError("L'état du démarrage Windows doit être booléen.")
+            raise ValidationError("Windows startup state must be boolean.")
         if confirm is not True:
-            raise ValidationError("Confirmez la modification du démarrage automatique Windows.")
+            raise ValidationError("Confirm the Windows startup modification.")
         manager = self._windows_startup_manager
         if manager is None:
             raise ValidationError(
                 self._windows_startup_unavailable_reason
-                or "Le démarrage automatique est indisponible."
+                or "Automatic startup is unavailable."
             )
         try:
             status = manager.enable() if enabled else manager.disable()
         except StartupRegistrationError as exc:
-            raise StorageError("Windows n'a pas pu modifier le démarrage automatique.") from exc
+            raise StorageError("Windows could not modify automatic startup.") from exc
 
         status_payload = status.to_dict()
         if bool(status_payload.get("enabled")) is not enabled:
-            raise StorageError("Windows n'a pas confirmé la modification du démarrage automatique.")
+            raise StorageError("Windows did not confirm automatic startup modification.")
         try:
             self.repository.set_setting("general.start_with_windows", enabled)
         except RepositoryError as exc:
@@ -1041,15 +1037,15 @@ class ApplicationService:
                 manager.disable() if enabled else manager.enable()
             except StartupRegistrationError:
                 self.logger.error("Could not compensate Windows startup after a settings write failure.")
-            raise StorageError("Le réglage de démarrage Windows n'a pas pu être enregistré.") from exc
+            raise StorageError("Windows startup setting could not be saved.") from exc
 
-        self._activity("settings", "Démarrage Windows activé" if enabled else "Démarrage Windows désactivé")
+        self._activity("settings", "Windows startup enabled" if enabled else "Windows startup disabled")
         self._notice(
             "success" if enabled else "info",
-            "Démarrage Windows mis à jour",
-            "Astro Account Manager démarrera avec votre session Windows."
+            "Windows Startup Updated",
+            "Astro Account Manager will start with your Windows session."
             if enabled
-            else "Astro Account Manager ne démarrera plus automatiquement.",
+            else "Astro Account Manager will no longer start automatically.",
         )
         status_payload["available"] = bool(
             status_payload.get("supported") and status_payload.get("accessible")
@@ -1068,20 +1064,20 @@ class ApplicationService:
         try:
             dismissed = self.repository.dismiss_notification(notification_id)
         except RepositoryError as exc:
-            raise StorageError("La notification n'a pas pu être masquée.") from exc
+            raise StorageError("Notification could not be dismissed.") from exc
         if not dismissed:
-            raise NotFoundError("Cette notification est introuvable.")
+            raise NotFoundError("Notification not found.")
         return {"dismissed": notification_id}
 
     def backup_data(self) -> dict[str, Any]:
         if self.repository.database_path is None:
-            raise StorageError("Les backups ne sont pas disponibles pour une base mémoire.")
+            raise StorageError("Backups are not available for in-memory database.")
         try:
             record = self.backups.create_sqlite_backup(self.repository.database_path, label="manual")
         except BackupError as exc:
-            raise StorageError("Le backup n'a pas pu être créé.") from exc
-        self._activity("backup", "Backup local vérifié", metadata={"backup_id": record.backup_id})
-        self._notice("success", "Backup terminé", "Une copie vérifiée de vos métadonnées a été créée.")
+            raise StorageError("Backup could not be created.") from exc
+        self._activity("backup", "Verified local backup created", metadata={"backup_id": record.backup_id})
+        self._notice("success", "Backup Completed", "A verified copy of your workspace metadata has been created.")
         return {
             "id": record.backup_id,
             "path": str(self.paths.backups),
@@ -1096,7 +1092,7 @@ class ApplicationService:
         try:
             records = self.backups.list_backups(verify=True)
         except BackupError as exc:
-            raise StorageError("Les backups n'ont pas pu être lus.") from exc
+            raise StorageError("Backups could not be read.") from exc
         return [
             {
                 "id": record.backup_id,
@@ -1118,32 +1114,32 @@ class ApplicationService:
             exported = MetadataTransfer(self.repository).export_to(destination)
             size = exported.stat().st_size
         except (MetadataTransferError, OSError) as exc:
-            raise StorageError("Les métadonnées n'ont pas pu être exportées.") from exc
-        self._activity("export", "Métadonnées exportées", metadata={"filename": exported.name})
-        self._notice("success", "Export terminé", "Un export de métadonnées sans secret a été créé.")
+            raise StorageError("Metadata could not be exported.") from exc
+        self._activity("export", "Metadata exported", metadata={"filename": exported.name})
+        self._notice("success", "Export Completed", "A secret-free metadata export was created.")
         return {"path": str(exported), "filename": exported.name, "size": size, "classification": "public_metadata_only"}
 
     def import_metadata(self, path: str, *, confirm: bool = False) -> dict[str, Any]:
         """Import a portable public-metadata file after a verified safety backup."""
 
         if not confirm:
-            raise ValidationError("L'import exige une confirmation explicite.")
+            raise ValidationError("Import requires explicit confirmation.")
         if not isinstance(path, str) or not path.strip():
-            raise ValidationError("Le fichier de métadonnées est requis.")
+            raise ValidationError("Metadata file path is required.")
         if self.repository.database_path is None:
-            raise StorageError("L'import n'est pas disponible pour une base mémoire.")
+            raise StorageError("Import is not available for in-memory database.")
         try:
             safety = self.backups.create_sqlite_backup(self.paths.database, label="pre-metadata-import")
             report = MetadataTransfer(self.repository).import_from(path)
         except MetadataTransferError as exc:
-            raise ValidationError("Le fichier de métadonnées est invalide ou contient des données non autorisées.") from exc
+            raise ValidationError("Metadata file is invalid or contains unauthorized data.") from exc
         except BackupError as exc:
-            raise StorageError("Le backup de sécurité avant import n'a pas pu être créé.") from exc
+            raise StorageError("Pre-import safety backup could not be created.") from exc
         except RepositoryError as exc:
-            raise StorageError("Les métadonnées n'ont pas pu être importées.") from exc
+            raise StorageError("Metadata could not be imported.") from exc
         report_data = report.to_dict()
-        self._activity("import", "Métadonnées importées", metadata={"filename": Path(path).name, **report_data})
-        self._notice("success", "Import terminé", "Les métadonnées compatibles ont été ajoutées sans importer de secret.")
+        self._activity("import", "Metadata imported", metadata={"filename": Path(path).name, **report_data})
+        self._notice("success", "Import Completed", "Compatible metadata was added without importing secrets.")
         return {**report_data, "pre_import_backup": safety.backup_id, "classification": "public_metadata_only"}
 
     def restore_backup(self, backup_id: str, *, confirm: bool = False) -> dict[str, Any]:
@@ -1156,18 +1152,18 @@ class ApplicationService:
         """
 
         if not confirm:
-            raise ValidationError("La restauration exige une confirmation explicite.")
+            raise ValidationError("Restore requires explicit confirmation.")
         if not isinstance(backup_id, str) or not backup_id.strip():
-            raise ValidationError("Le backup à restaurer est invalide.")
+            raise ValidationError("Backup ID to restore is invalid.")
         if self.repository.database_path is None:
-            raise StorageError("La restauration n'est pas disponible pour une base mémoire.")
+            raise StorageError("Restore is not available for in-memory database.")
         watcher_was_requested = self._watcher_requested
         self._stop_watcher_worker()
         with self._restore_lock:
             try:
                 record = self.backups.get_backup(backup_id)
                 if record.source_name != self.paths.database.name or not self.backups.verify(record):
-                    raise BackupError("Ce backup n'est pas une copie vérifiée de la base Astro Account Manager.")
+                    raise BackupError("This backup is not a verified Astro Account Manager backup.")
                 safety = self.backups.create_sqlite_backup(self.paths.database, label="pre-restore")
                 self.repository.checkpoint()
                 self.repository.close()
@@ -1177,22 +1173,22 @@ class ApplicationService:
                 self._ensure_default_settings()
             except BackupError as exc:
                 self._reopen_repository_after_failed_restore()
-                raise StorageError("Le backup n'a pas pu être restauré.") from exc
+                raise StorageError("Backup could not be restored.") from exc
             except RepositoryError as exc:
                 self._reopen_repository_after_failed_restore()
-                raise StorageError("La base restaurée n'a pas pu être ouverte.") from exc
+                raise StorageError("Restored database could not be opened.") from exc
             except StorageError:
                 self._reopen_repository_after_failed_restore()
                 raise
             except OSError as exc:
                 self._reopen_repository_after_failed_restore()
-                raise StorageError("Le backup n'a pas pu être restauré.") from exc
+                raise StorageError("Backup could not be restored.") from exc
             finally:
                 self._configure_monitor_from_settings()
                 if watcher_was_requested:
                     self._sync_watcher_loop()
-        self._activity("restore", "Backup restauré", metadata={"backup_id": backup_id, "safety_backup_id": safety.backup_id})
-        self._notice("info", "Restauration terminée", "Le backup a été restauré ; une copie pré-restauration est disponible.")
+        self._activity("restore", "Backup restored", metadata={"backup_id": backup_id, "safety_backup_id": safety.backup_id})
+        self._notice("info", "Restore Completed", "Backup was restored; a pre-restore backup copy is available.")
         return {
             "restored": backup_id,
             "pre_restore_backup": safety.backup_id,
@@ -1209,11 +1205,11 @@ class ApplicationService:
 
         candidate = Path(path).expanduser()
         if not candidate.exists():
-            raise ValidationError("Le dossier legacy sélectionné est introuvable.")
+            raise ValidationError("Selected legacy directory was not found.")
         try:
             from app.backend.storage.legacy_migrator import LegacyDataMigrator
         except ImportError as exc:
-            raise MigrationError("Le module de migration legacy n'est pas disponible.") from exc
+            raise MigrationError("Legacy migration module is not available.") from exc
         migrator = LegacyDataMigrator(
             repository=self.repository,
             backup_manager=self.backups,
@@ -1229,10 +1225,10 @@ class ApplicationService:
                 password=password,
             )
         except (RepositoryError, DPAPIError, BackupError, ValueError) as exc:
-            raise MigrationError("La migration legacy n'a pas pu être terminée.") from exc
+            raise MigrationError("Legacy migration could not be completed.") from exc
         report_data = _migration_payload(report)
-        self._activity("migration", "Migration legacy analysée", metadata=report_data)
-        self._notice("info", "Migration terminée", "Consultez le rapport pour les éléments importés ou ignorés.")
+        self._activity("migration", "Legacy migration analyzed", metadata=report_data)
+        self._notice("info", "Migration Completed", "Review the report for imported or skipped items.")
         return report_data
 
     def get_diagnostics(self, *, include_logs: bool = True) -> dict[str, Any]:
@@ -1240,9 +1236,9 @@ class ApplicationService:
         logs = self._read_recent_log_lines() if include_logs else []
         services = [
             {"name": "Storage vault", "status": "healthy", "detail": f"Schema v{self.repository.schema_version}"},
-            {"name": "Windows DPAPI", "status": "healthy" if dpapi_status.available else "degraded", "detail": dpapi_status.reason or "CurrentUser vault disponible"},
-            {"name": "Instance watcher", "status": "healthy", "detail": f"{len(self.monitor.current_instances())} instance(s) observée(s)"},
-            {"name": "Roblox gateway", "status": "healthy", "detail": "Client public prêt"},
+            {"name": "Windows DPAPI", "status": "healthy" if dpapi_status.available else "degraded", "detail": dpapi_status.reason or "CurrentUser vault available"},
+            {"name": "Instance watcher", "status": "healthy", "detail": f"{len(self.monitor.current_instances())} instance(s) observed"},
+            {"name": "Roblox gateway", "status": "healthy", "detail": "Public client ready"},
         ]
         return {
             "status": "degraded" if any(item["status"] == "degraded" for item in services) else "healthy",
@@ -1318,17 +1314,17 @@ class ApplicationService:
             try:
                 sidecar.relative_to(self.paths.root.resolve())
             except ValueError as exc:
-                raise StorageError("Le chemin de restauration SQLite est invalide.") from exc
+                raise StorageError("SQLite restore path is invalid.") from exc
             try:
                 sidecar.unlink(missing_ok=True)
             except OSError as exc:
-                raise StorageError("Les fichiers temporaires SQLite ne peuvent pas être préparés.") from exc
+                raise StorageError("SQLite temporary files could not be prepared.") from exc
 
     def _oauth_configuration(self) -> OAuthClientConfiguration:
         oauth = self.get_settings()["categories"].get("oauth", {})
         if not isinstance(oauth, Mapping) or not bool(oauth.get("enabled")):
             raise ValidationError(
-                "La connexion OAuth Roblox n'est pas configurée. Activez-la avec un client ID et un callback enregistrés."
+                "Roblox OAuth connection is not configured. Enable it with a client ID and registered callback."
             )
         try:
             return OAuthClientConfiguration(
@@ -1363,9 +1359,9 @@ class ApplicationService:
         if expected_account_id is not None:
             target = self._get_account(expected_account_id)
             if target.user_id is not None and target.user_id != identity.user_id:
-                raise SecurityError("Le profil OAuth reçu ne correspond pas au compte sélectionné.")
+                raise SecurityError("The received OAuth profile does not match the selected account.")
             if existing is not None and existing.id != target.id:
-                raise ConflictError("Ce profil Roblox est déjà associé à un autre compte local.")
+                raise ConflictError("This Roblox profile is already linked to another local account.")
             existing = target
 
         created = existing is None
@@ -1381,9 +1377,9 @@ class ApplicationService:
             try:
                 existing = self.repository.save_account(account)
             except RepositoryConflictError as exc:
-                raise ConflictError("Ce profil Roblox est déjà présent dans votre espace.") from exc
+                raise ConflictError("This Roblox profile is already in your workspace.") from exc
             except RepositoryError as exc:
-                raise StorageError("Le profil Roblox n'a pas pu être enregistré.") from exc
+                raise StorageError("Roblox profile could not be saved.") from exc
 
         grants = self._oauth_grant_vault()
         if not created and previous_grant is None:
@@ -1429,7 +1425,7 @@ class ApplicationService:
                     self.repository.delete_account(existing.id)
                 except RepositoryError:
                     self.logger.warning("Could not remove incomplete OAuth account")
-            raise ConflictError("Le username Roblox est déjà associé à un autre compte local.") from exc
+            raise ConflictError("This Roblox username is already linked to another local account.") from exc
         except RepositoryError as exc:
             self._restore_or_remove_oauth_grant(existing.id, previous_grant)
             if created:
@@ -1437,7 +1433,7 @@ class ApplicationService:
                     self.repository.delete_account(existing.id)
                 except RepositoryError:
                     self.logger.warning("Could not remove incomplete OAuth account")
-            raise StorageError("Le profil OAuth n'a pas pu être finalisé.") from exc
+            raise StorageError("OAuth profile could not be finalized.") from exc
         return self._account_payload(saved)
 
     def _restore_or_remove_oauth_grant(self, account_id: str, previous_grant: OAuthGrant | None) -> None:
@@ -1461,12 +1457,12 @@ class ApplicationService:
             ]
             by_username = self.repository.get_account_by_username(identity.username)
         except RepositoryError as exc:
-            raise StorageError("Le compte OAuth ne peut pas être recherché.") from exc
+            raise StorageError("OAuth account could not be searched.") from exc
         if len(by_identity) > 1:
-            raise ConflictError("Plusieurs comptes locaux utilisent ce même identifiant Roblox.")
+            raise ConflictError("Multiple local accounts use this same Roblox user ID.")
         account = by_identity[0] if by_identity else by_username
         if by_identity and by_username is not None and by_username.id != by_identity[0].id:
-            raise ConflictError("Le username Roblox est déjà associé à un autre compte local.")
+            raise ConflictError("This Roblox username is already linked to another local account.")
         return account
 
     @staticmethod
@@ -1476,41 +1472,41 @@ class ApplicationService:
             or not 12 <= len(value) <= 128
             or any(character not in "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_" for character in value)
         ):
-            raise ValidationError("L'opération OAuth est invalide.")
+            raise ValidationError("OAuth operation is invalid.")
         return value
 
     def _store_session(self, account: Account, value: Any) -> None:
         if not isinstance(value, str) or not value.strip():
-            raise ValidationError("La session fournie est invalide.")
+            raise ValidationError("Provided session is invalid.")
         if len(value) > 8_192:
-            raise ValidationError("La session fournie est invalide.")
+            raise ValidationError("Provided session is invalid.")
         try:
             protected = self.vault.protect(value.encode("utf-8"), description="Astro Account Manager Roblox session")
         except DPAPIUnavailableError as exc:
-            raise SecurityError("Le vault Windows n'est pas disponible pour protéger cette session.") from exc
+            raise SecurityError("Windows vault is not available to protect this session.") from exc
         except DPAPIError as exc:
-            raise SecurityError("La session n'a pas pu être protégée par Windows.") from exc
+            raise SecurityError("Session could not be protected by Windows.") from exc
         try:
             self.repository.save_protected_secret(account.id, "session", protected)
         except RepositoryError as exc:
-            raise StorageError("La session n'a pas pu être enregistrée.") from exc
+            raise StorageError("Session could not be saved.") from exc
         account.has_session = True
 
     def _get_account(self, account_id: str) -> Account:
         try:
             return self.repository.get_account(account_id)
         except RepositoryNotFoundError as exc:
-            raise NotFoundError("Ce compte est introuvable.") from exc
+            raise NotFoundError("Account not found.") from exc
         except RepositoryError as exc:
-            raise StorageError("Le compte n'a pas pu être lu.") from exc
+            raise StorageError("Account could not be read.") from exc
 
     def _get_group(self, group_id: str) -> Group:
         try:
             return self.repository.get_group(group_id)
         except RepositoryNotFoundError as exc:
-            raise NotFoundError("Ce groupe est introuvable.") from exc
+            raise NotFoundError("Group not found.") from exc
         except RepositoryError as exc:
-            raise StorageError("Le groupe n'a pas pu être lu.") from exc
+            raise StorageError("Group could not be read.") from exc
 
     def _activity(self, kind: str, summary: str, *, account_id: str | None = None, metadata: Mapping[str, Any] | None = None) -> None:
         try:
@@ -1764,15 +1760,15 @@ class ApplicationService:
                     self._set_account_runtime_status(account.id, "launching")
                     self._activity(
                         "relaunch",
-                        f"Relance locale demandée pour {account.username}",
+                        f"Local relaunch requested for {account.username}",
                         account_id=account.id,
                         metadata={"place_id": target.place_id, "attempt": request.restart_attempt},
                     )
             except (AppError, RobloxLaunchError):
                 self._notice(
                     "warning",
-                    "Relance locale non effectuée",
-                    "La règle de relance a été consommée sans ouvrir de processus. Consultez Diagnostics.",
+                    "Local Relaunch Failed",
+                    "Relaunch rule was consumed without starting a process. Check Diagnostics.",
                 )
             finally:
                 if callable(record_result):
@@ -1809,7 +1805,7 @@ class ApplicationService:
         value: Any, *, existing: Any = None
     ) -> dict[str, Any]:
         if not isinstance(value, Mapping):
-            raise ValidationError("La règle de surveillance du compte est invalide.")
+            raise ValidationError("Account watcher rule is invalid.")
         baseline = {
             "auto_relaunch": False,
             "relaunch_delay_seconds": 15,
@@ -1823,18 +1819,18 @@ class ApplicationService:
                     baseline[key] = existing[key]
         unknown = set(value) - set(baseline)
         if unknown:
-            raise ValidationError("La règle de surveillance contient un champ inconnu.")
+            raise ValidationError("Account watcher rule contains an unknown field.")
         baseline.update(dict(value))
         if not isinstance(baseline["auto_relaunch"], bool):
-            raise ValidationError("L'option de relance du compte est invalide.")
+            raise ValidationError("Account relaunch option is invalid.")
         if not isinstance(baseline["relaunch_on_crash"], bool) or not isinstance(baseline["relaunch_on_exit"], bool):
-            raise ValidationError("Les déclencheurs de relance du compte sont invalides.")
+            raise ValidationError("Account relaunch triggers are invalid.")
         delay = baseline["relaunch_delay_seconds"]
         if isinstance(delay, bool) or not isinstance(delay, (int, float)) or not 1 <= float(delay) <= 3_600:
-            raise ValidationError("Le délai de relance du compte doit être compris entre 1 et 3 600 secondes.")
+            raise ValidationError("Account relaunch delay must be between 1 and 3600 seconds.")
         attempts = baseline["relaunch_max_attempts"]
         if isinstance(attempts, bool) or not isinstance(attempts, int) or not 0 <= attempts <= 20:
-            raise ValidationError("Le nombre de relances du compte doit être compris entre 0 et 20.")
+            raise ValidationError("Account relaunch attempt count must be between 0 and 20.")
         return {
             "auto_relaunch": baseline["auto_relaunch"],
             "relaunch_delay_seconds": float(delay),
@@ -1912,7 +1908,7 @@ class ApplicationService:
         if value is None:
             return None
         if not isinstance(value, str):
-            raise ValidationError("Le texte est invalide.")
+            raise ValidationError("Text is invalid.")
         return value.strip() or None
 
     @staticmethod
@@ -1920,7 +1916,7 @@ class ApplicationService:
         if value is None or value == "":
             return None
         if not isinstance(value, str) or len(value) > 100:
-            raise ValidationError("L'identifiant est invalide.")
+            raise ValidationError("ID is invalid.")
         return value
 
     @staticmethod
@@ -1928,7 +1924,7 @@ class ApplicationService:
         if value is None or value == "":
             return "violet"
         if not isinstance(value, str) or value not in _AVATAR_COLOR_TOKENS:
-            raise ValidationError("La couleur d'avatar est invalide.")
+            raise ValidationError("Avatar color is invalid.")
         return value
 
     @staticmethod
@@ -1936,32 +1932,32 @@ class ApplicationService:
         if value is None or value == "":
             return "violet"
         if not isinstance(value, str):
-            raise ValidationError("La couleur du groupe est invalide.")
+            raise ValidationError("Group color is invalid.")
         normalized = value.strip().lower()
         if normalized in _LEGACY_GROUP_COLOR_TOKENS:
             return _LEGACY_GROUP_COLOR_TOKENS[normalized]
         if _is_hex_color(normalized):
             return normalized
         if normalized not in _GROUP_COLOR_TOKENS:
-            raise ValidationError("La couleur du groupe est invalide.")
+            raise ValidationError("Group color is invalid.")
         return normalized
 
     @staticmethod
     def _optional_int(value: Any) -> int | None:
         if value is None or value == "":
             return None
-        return ApplicationService._positive_int(value, "La valeur")
+        return ApplicationService._positive_int(value, "The value")
 
     @staticmethod
     def _positive_int(value: Any, label: str) -> int:
         if isinstance(value, bool):
-            raise ValidationError(f"{label} est invalide.")
+            raise ValidationError(f"{label} is invalid.")
         try:
             result = int(value)
         except (TypeError, ValueError) as exc:
-            raise ValidationError(f"{label} doit être un entier positif.") from exc
+            raise ValidationError(f"{label} must be a positive integer.") from exc
         if result <= 0:
-            raise ValidationError(f"{label} doit être un entier positif.")
+            raise ValidationError(f"{label} must be a positive integer.")
         return result
 
     @staticmethod
@@ -1981,52 +1977,52 @@ class ApplicationService:
         general = values.get("general", {})
         max_recent_games = general.get("max_recent_games") if isinstance(general, Mapping) else None
         if isinstance(max_recent_games, bool) or not isinstance(max_recent_games, int) or not 1 <= max_recent_games <= 1_000:
-            raise ValidationError("La limite des jeux recents doit etre comprise entre 1 et 1000.")
+            raise ValidationError("Recent games limit must be between 1 and 1000.")
         if not isinstance(general.get("start_with_windows"), bool):
-            raise ValidationError("L'état du démarrage Windows est invalide.")
+            raise ValidationError("Windows startup state is invalid.")
         appearance = values.get("appearance", {})
         if appearance.get("theme") not in {"dark", "light", "system"}:
-            raise ValidationError("Le thème est invalide.")
+            raise ValidationError("Theme is invalid.")
         accent = appearance.get("accent")
         if not isinstance(accent, str) or not _is_hex_color(accent.lower()):
-            raise ValidationError("La couleur d'accent est invalide.")
+            raise ValidationError("Accent color is invalid.")
         if appearance.get("density") not in {"comfortable", "compact"}:
-            raise ValidationError("La densité d'interface est invalide.")
+            raise ValidationError("Interface density is invalid.")
         if not isinstance(appearance.get("reduced_motion"), bool):
-            raise ValidationError("La préférence de mouvement réduit est invalide.")
+            raise ValidationError("Reduced motion preference is invalid.")
         watcher = values.get("watcher", {})
         interval = watcher.get("scan_interval_seconds")
         if not isinstance(interval, int) or not 1 <= interval <= 300:
-            raise ValidationError("L'intervalle du watcher doit être compris entre 1 et 300 secondes.")
+            raise ValidationError("Watcher interval must be between 1 and 300 seconds.")
         if not isinstance(watcher.get("enabled"), bool):
-            raise ValidationError("L'état du watcher est invalide.")
+            raise ValidationError("Watcher state is invalid.")
         if not isinstance(watcher.get("termination_enabled"), bool):
-            raise ValidationError("L'option de fermeture des instances est invalide.")
+            raise ValidationError("Instance termination option is invalid.")
         if not isinstance(watcher.get("auto_relaunch_enabled"), bool):
-            raise ValidationError("L'option globale de relance est invalide.")
+            raise ValidationError("Global relaunch option is invalid.")
         if not isinstance(watcher.get("relaunch_on_crash"), bool) or not isinstance(watcher.get("relaunch_on_exit"), bool):
-            raise ValidationError("Les déclencheurs globaux de relance sont invalides.")
+            raise ValidationError("Global relaunch triggers are invalid.")
         for key, minimum, maximum, label in (
-            ("launch_match_timeout_seconds", 5, 300, "Le délai d'association de lancement"),
-            ("crash_window_seconds", 5, 3_600, "La fenêtre de crash"),
-            ("relaunch_delay_seconds", 1, 3_600, "Le délai de relance"),
+            ("launch_match_timeout_seconds", 5, 300, "Launch match timeout"),
+            ("crash_window_seconds", 5, 3_600, "Crash window"),
+            ("relaunch_delay_seconds", 1, 3_600, "Relaunch delay"),
         ):
             numeric = watcher.get(key)
             if isinstance(numeric, bool) or not isinstance(numeric, (int, float)) or not minimum <= float(numeric) <= maximum:
-                raise ValidationError(f"{label} est invalide.")
+                raise ValidationError(f"{label} is invalid.")
         attempts = watcher.get("relaunch_max_attempts")
         if isinstance(attempts, bool) or not isinstance(attempts, int) or not 0 <= attempts <= 20:
-            raise ValidationError("Le nombre maximal de relances est invalide.")
+            raise ValidationError("Maximum relaunch attempt count is invalid.")
         oauth = values.get("oauth", {})
         if not isinstance(oauth, Mapping) or not isinstance(oauth.get("enabled"), bool):
-            raise ValidationError("L'état de la connexion OAuth est invalide.")
+            raise ValidationError("OAuth connection state is invalid.")
         client_id = oauth.get("client_id")
         redirect_uri = oauth.get("redirect_uri")
         callback_timeout = oauth.get("callback_timeout_seconds")
         if not isinstance(client_id, str) or len(client_id) > 80:
-            raise ValidationError("L'identifiant client OAuth est invalide.")
+            raise ValidationError("OAuth client ID is invalid.")
         if not isinstance(redirect_uri, str):
-            raise ValidationError("L'URI de retour OAuth est invalide.")
+            raise ValidationError("OAuth redirect URI is invalid.")
         try:
             OAuthClientConfiguration(
                 client_id=client_id or "1",
@@ -2036,15 +2032,15 @@ class ApplicationService:
         except OAuthConfigurationError as exc:
             raise ValidationError(exc.message) from exc
         if bool(oauth.get("enabled")) and not client_id.strip():
-            raise ValidationError("Un client ID OAuth Roblox est requis lorsque la connexion est activée.")
+            raise ValidationError("A Roblox OAuth client ID is required when login is enabled.")
         api = values.get("api", {})
         if not isinstance(api.get("enabled"), bool):
-            raise ValidationError("L'état de l'API locale est invalide.")
+            raise ValidationError("Local API state is invalid.")
         if api.get("host") != "127.0.0.1":
-            raise ValidationError("L'API locale doit être liée à 127.0.0.1.")
+            raise ValidationError("Local API must be bound to 127.0.0.1.")
         port = api.get("port")
         if isinstance(port, bool) or not isinstance(port, int) or not 1 <= port <= 65535:
-            raise ValidationError("Le port de l'API locale est invalide.")
+            raise ValidationError("Local API port is invalid.")
 
     @staticmethod
     def _account_payload(account: Account) -> dict[str, Any]:
@@ -2198,14 +2194,14 @@ class ApplicationService:
             )
             self._nexus_server.on_log_callback = self._handle_nexus_client_log
         self._nexus_server.start()
-        self._activity("nexus", f"Serveur Nexus démarré sur ws://{target_host}:{target_port}/Nexus")
+        self._activity("nexus", f"Nexus Server started on ws://{target_host}:{target_port}/Nexus")
         return self.get_nexus_status()
 
     def stop_nexus_server(self) -> dict[str, Any]:
         if self._nexus_server is not None:
             self._nexus_server.stop()
             self._nexus_server = None
-            self._activity("nexus", "Serveur Nexus arrêté")
+            self._activity("nexus", "Nexus Server stopped")
         return self.get_nexus_status()
 
     def get_nexus_status(self) -> dict[str, Any]:
@@ -2230,9 +2226,9 @@ class ApplicationService:
         if self._nexus_server is None or not self._nexus_server.is_running:
             self.start_nexus_server()
         if self._nexus_server is None or not self._nexus_server.is_running:
-            raise ValidationError("Le serveur Nexus n'a pas pu être démarré.")
+            raise ValidationError("Nexus Server could not be started.")
         success = self._nexus_server.send_command(target_account, command_name, payload)
-        self._activity("nexus", f"Commande Nexus '{command_name}' envoyée à '{target_account}'")
+        self._activity("nexus", f"Nexus command '{command_name}' sent to '{target_account}'")
         return success
 
     def get_nexus_lua_script(self, host: str = "127.0.0.1", port: int = 5242) -> str:
@@ -2248,7 +2244,7 @@ class ApplicationService:
             try:
                 self.logger.info(f"Nexus auto-relaunching account {account.username}")
                 self.launch_account(account.id)
-                self._activity("nexus", f"Auto-relaunch déclenché pour {account.username}", account_id=account.id)
+                self._activity("nexus", f"Auto-relaunch triggered for {account.username}", account_id=account.id)
             except Exception as exc:
                 self.logger.error(f"Nexus auto-relaunch failed for {account.username}: {exc}")
 
@@ -2260,10 +2256,10 @@ class ApplicationService:
         if enabled:
             success = self.multi_instance.enable_multi_instance()
             if success:
-                self._activity("multi_instance", "Multi-instance Roblox activé (poignées singleton créées)")
+                self._activity("multi_instance", "Roblox Multi-instance enabled (singleton handles held)")
         else:
             self.multi_instance.disable_multi_instance()
-            self._activity("multi_instance", "Multi-instance Roblox désactivé")
+            self._activity("multi_instance", "Roblox Multi-instance disabled")
         return self.get_multi_instance_status()
 
     # FPS Cap & ClientSettings ------------------------------------------------
@@ -2274,13 +2270,13 @@ class ApplicationService:
     def set_fps_cap(self, fps: int) -> dict[str, Any]:
         success = self.client_settings.set_fps_cap(fps)
         if success:
-            self._activity("client_settings", f"Plafond FPS client Roblox défini à {fps}")
+            self._activity("client_settings", f"Roblox client FPS cap set to {fps}")
         return {"success": success, "fps": fps}
 
     def remove_fps_cap(self) -> dict[str, Any]:
         success = self.client_settings.remove_fps_cap()
         if success:
-            self._activity("client_settings", "Plafond FPS client Roblox supprimé")
+            self._activity("client_settings", "Roblox client FPS cap removed")
         return {"success": success}
 
     # Batch Launcher ---------------------------------------------------------
@@ -2289,12 +2285,12 @@ class ApplicationService:
 
     def start_batch_launch(self, account_ids: list[str], target: dict[str, Any] | None = None, delay_seconds: float = 2.5) -> dict[str, Any]:
         res = self.batch_launcher.start_batch(account_ids, target, delay_seconds)
-        self._activity("batch_launch", f"Lancement en lot démarré pour {len(account_ids)} compte(s) (délai: {delay_seconds}s)")
+        self._activity("batch_launch", f"Batch launch started for {len(account_ids)} account(s) (delay: {delay_seconds}s)")
         return res
 
     def cancel_batch_launch(self) -> dict[str, Any]:
         res = self.batch_launcher.cancel_batch()
-        self._activity("batch_launch", "Lancement en lot annulé par l'utilisateur")
+        self._activity("batch_launch", "Batch launch cancelled by user")
         return res
 
     def get_batch_launch_status(self) -> dict[str, Any]:
@@ -2305,36 +2301,36 @@ class ApplicationService:
         account = self._get_account(account_id)
         protected_blob = self.repository.load_protected_secret(account.id, "session")
         if not protected_blob:
-            raise ValidationError(f"Le compte {account.username} n'a pas de session stockée.")
+            raise ValidationError(f"Account {account.username} has no stored session.")
         try:
             raw_bytes = self.vault.unprotect(protected_blob)
             return raw_bytes.decode("utf-8").strip()
         except Exception as exc:
-            raise SecurityError("Impossible de déchiffrer la session stockée.") from exc
+            raise SecurityError("Could not decrypt stored session.") from exc
 
     def generate_auth_ticket(self, account_id: str) -> dict[str, Any]:
         cookie = self._get_account_cookie_raw(account_id)
         ticket = self.auth_tools.generate_auth_ticket(cookie)
-        self._activity("auth_tools", "Ticket d'authentification généré", account_id=account_id)
+        self._activity("auth_tools", "Auth ticket generated", account_id=account_id)
         return {"account_id": account_id, "ticket": ticket}
 
     def generate_rbx_player_link(self, account_id: str, place_id: int, job_id: str | None = None) -> dict[str, Any]:
         cookie = self._get_account_cookie_raw(account_id)
         ticket = self.auth_tools.generate_auth_ticket(cookie)
         link = self.auth_tools.generate_rbx_player_uri(ticket, place_id, job_id)
-        self._activity("auth_tools", "Lien rbx-player généré", account_id=account_id, metadata={"place_id": place_id})
+        self._activity("auth_tools", "rbx-player link generated", account_id=account_id, metadata={"place_id": place_id})
         return {"account_id": account_id, "ticket": ticket, "link": link}
 
     def get_account_cookie(self, account_id: str) -> dict[str, Any]:
         cookie = self._get_account_cookie_raw(account_id)
         account = self._get_account(account_id)
-        self._activity("auth_tools", "Session/cookie extrait pour copie", account_id=account_id)
+        self._activity("auth_tools", "Session/cookie extracted for copy", account_id=account_id)
         return {"account_id": account_id, "username": account.username, "cookie": cookie}
 
     def add_account_from_cookie(self, cookie: str, group_id: str | None = None) -> dict[str, Any]:
         """Validates a raw .ROBLOSECURITY cookie, resolves Roblox user profile, and persists to vault & SQLite."""
         if not cookie or not isinstance(cookie, str):
-            raise ValidationError("Le cookie .ROBLOSECURITY est requis.")
+            raise ValidationError(".ROBLOSECURITY cookie is required.")
         clean_cookie = cookie.strip()
 
         from app.backend.roblox.client import SessionRobloxClient
@@ -2342,7 +2338,7 @@ class ApplicationService:
         try:
             user = session_client.authenticated_user()
         except Exception as exc:
-            raise ValidationError(f"Échec de validation de la session Roblox: {exc}")
+            raise ValidationError(f"Roblox session validation failed: {exc}")
         finally:
             session_client.close()
 
@@ -2373,7 +2369,7 @@ class ApplicationService:
         saved = self.repository.save_account(account)
         protected_blob = self.vault.protect(clean_cookie.encode("utf-8"))
         self.repository.save_protected_secret(saved.id, "session", protected_blob)
-        self._activity("account", f"Compte {saved.username} connecté avec cookie", account_id=saved.id)
+        self._activity("account", f"Account {saved.username} logged in with cookie", account_id=saved.id)
         return saved.to_dict()
 
     def start_manual_browser_login(self, group_id: str | None = None) -> dict[str, Any]:
@@ -2434,68 +2430,68 @@ class ApplicationService:
             except Exception as exc:
                 self.logger.warning(f"Failed to bulk import account {fallback_name}: {exc}")
 
-        self._activity("bulk_import", f"{imported_count} compte(s) importé(s) en masse")
+        self._activity("bulk_import", f"{imported_count} account(s) bulk imported")
         return {"imported": imported_count, "total_parsed": len(parsed), "accounts": imported_accounts}
 
     # Window Positioner ------------------------------------------------------
     def position_instance_window(self, pid: int, x: int, y: int, width: int = 800, height: int = 600) -> dict[str, Any]:
         from app.backend.watchers.window_positioner import RobloxWindowPositioner
         success = RobloxWindowPositioner.position_window(pid, x, y, width, height)
-        self._activity("window", f"Positionnement fenêtre PID {pid} à ({x}, {y})")
+        self._activity("window", f"Positioned window PID {pid} at ({x}, {y})")
         return {"pid": pid, "success": success, "x": x, "y": y, "width": width, "height": height}
 
     # Extended Account Utilities & Features ----------------------------------
     def change_account_password(self, account_id: str, current_pass: str, new_pass: str) -> dict[str, Any]:
         cookie = self._get_account_cookie_raw(account_id)
         success = self.account_utils.change_password(cookie, current_pass, new_pass)
-        self._activity("account_utils", "Mot de passe changé", account_id=account_id)
+        self._activity("account_utils", "Password changed", account_id=account_id)
         return {"account_id": account_id, "success": success}
 
     def change_account_email(self, account_id: str, password: str, new_email: str) -> dict[str, Any]:
         cookie = self._get_account_cookie_raw(account_id)
         success = self.account_utils.change_email(cookie, password, new_email)
-        self._activity("account_utils", f"Email changé pour {new_email}", account_id=account_id)
+        self._activity("account_utils", f"Email changed to {new_email}", account_id=account_id)
         return {"account_id": account_id, "success": success}
 
     def logout_all_account_sessions(self, account_id: str) -> dict[str, Any]:
         cookie = self._get_account_cookie_raw(account_id)
         success = self.account_utils.logout_all_sessions(cookie)
-        self._activity("account_utils", "Déconnexion de toutes les sessions effectuée", account_id=account_id)
+        self._activity("account_utils", "Logged out all other sessions", account_id=account_id)
         return {"account_id": account_id, "success": success}
 
     def set_account_display_name(self, account_id: str, new_display_name: str) -> dict[str, Any]:
         cookie = self._get_account_cookie_raw(account_id)
         account = self._get_account(account_id)
         if not account.user_id:
-            raise ValidationError("UserId requis pour modifier le nom d'affichage.")
+            raise ValidationError("UserId required to update display name.")
         success = self.account_utils.set_display_name(cookie, account.user_id, new_display_name)
         account.display_name = new_display_name
         self.repository.save_account(account)
-        self._activity("account_utils", f"Display name mis à jour: {new_display_name}", account_id=account_id)
+        self._activity("account_utils", f"Display name updated: {new_display_name}", account_id=account_id)
         return {"account_id": account_id, "display_name": new_display_name, "success": success}
 
     def send_account_friend_request(self, account_id: str, target_user_id: int) -> dict[str, Any]:
         cookie = self._get_account_cookie_raw(account_id)
         success = self.account_utils.send_friend_request(cookie, target_user_id)
-        self._activity("account_utils", f"Invitation d'ami envoyée à {target_user_id}", account_id=account_id)
+        self._activity("account_utils", f"Friend request sent to {target_user_id}", account_id=account_id)
         return {"account_id": account_id, "target_user_id": target_user_id, "success": success}
 
     def block_account_user(self, account_id: str, target_user_id: int) -> dict[str, Any]:
         cookie = self._get_account_cookie_raw(account_id)
         success = self.account_utils.block_user(cookie, target_user_id)
-        self._activity("account_utils", f"Utilisateur {target_user_id} bloqué", account_id=account_id)
+        self._activity("account_utils", f"Blocked user {target_user_id}", account_id=account_id)
         return {"account_id": account_id, "target_user_id": target_user_id, "success": success}
 
     def unblock_account_user(self, account_id: str, target_user_id: int) -> dict[str, Any]:
         cookie = self._get_account_cookie_raw(account_id)
         success = self.account_utils.unblock_user(cookie, target_user_id)
-        self._activity("account_utils", f"Utilisateur {target_user_id} débloqué", account_id=account_id)
+        self._activity("account_utils", f"Unblocked user {target_user_id}", account_id=account_id)
         return {"account_id": account_id, "target_user_id": target_user_id, "success": success}
 
     def quick_log_in_account(self, account_id: str, code: str) -> dict[str, Any]:
         cookie = self._get_account_cookie_raw(account_id)
         success = self.account_utils.quick_log_in(cookie, code)
-        self._activity("account_utils", "Code Quick Log In validé", account_id=account_id)
+        self._activity("account_utils", "Quick Log In code submitted", account_id=account_id)
         return {"account_id": account_id, "code": code, "success": success}
 
     def get_account_blocked_list(self, account_id: str) -> list[dict[str, Any]]:
@@ -2505,13 +2501,13 @@ class ApplicationService:
     def unblock_all_account_users(self, account_id: str) -> dict[str, Any]:
         cookie = self._get_account_cookie_raw(account_id)
         count = self.account_utils.unblock_everyone(cookie)
-        self._activity("account_utils", f"Déblocage de tous les utilisateurs ({count})", account_id=account_id)
+        self._activity("account_utils", f"Unblocked all users ({count})", account_id=account_id)
         return {"account_id": account_id, "unblocked_count": count}
 
     def set_account_avatar(self, account_id: str, asset_ids: list[int]) -> dict[str, Any]:
         cookie = self._get_account_cookie_raw(account_id)
         success = self.account_utils.set_avatar(cookie, asset_ids)
-        self._activity("account_utils", f"Tenue d'avatar mise à jour", account_id=account_id)
+        self._activity("account_utils", "Avatar outfit updated", account_id=account_id)
         return {"account_id": account_id, "asset_ids": asset_ids, "success": success}
 
     def parse_vip_link(self, link: str) -> dict[str, Any] | None:
@@ -2529,7 +2525,7 @@ class ApplicationService:
     def close_beta_home_windows(self) -> dict[str, Any]:
         closed = BetaHomeCleaner.close_beta_home_windows()
         if closed:
-            self._activity("watcher", f"{closed} fenêtre(s) Beta Home fermée(s)")
+            self._activity("watcher", f"{closed} Beta Home window(s) closed")
         return {"closed_count": closed}
 
     def check_for_updates(self) -> dict[str, Any]:

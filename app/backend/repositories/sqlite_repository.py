@@ -896,7 +896,7 @@ class SQLiteRepository:
     def _migrate_v3_group_sort_order(self) -> None:
         """Freeze the legacy numeric group-prefix display order in SQLite.
 
-        RAM 3.7.2 used the group name as ObjectListView's key and stripped a
+        Legacy managers used the group name as ObjectListView's key and stripped a
         leading one-to-three digit prefix only when rendering the group title.
         Users therefore named groups such as ``001 Apple`` or ``1Apple`` to
         place them before other headers.  The explicit v3 order captures that

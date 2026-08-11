@@ -8,6 +8,8 @@ import os
 from pathlib import Path
 from typing import Any
 
+from app.backend.core.errors import ValidationError
+
 logger = logging.getLogger("astro.client_settings")
 
 
@@ -22,6 +24,15 @@ class ClientSettingsPatcher:
         self.settings_dir = base / "Roblox" / "ClientSettings"
         self.settings_file = self.settings_dir / "ClientAppSettings.json"
 
+    def read_settings(self) -> dict[str, Any]:
+        """Read all flags from ClientAppSettings.json."""
+        if not self.settings_file.is_file():
+            return {}
+        try:
+            return json.loads(self.settings_file.read_text(encoding="utf-8"))
+        except Exception:
+            return {}
+
     def get_fps_cap(self) -> int | None:
         """Read current DFIntTaskSchedulerTargetFps from ClientAppSettings.json."""
         if not self.settings_file.is_file():
@@ -35,6 +46,15 @@ class ClientSettingsPatcher:
 
     def set_fps_cap(self, fps: int) -> bool:
         """Set DFIntTaskSchedulerTargetFps in ClientAppSettings.json."""
+        if isinstance(fps, bool) or not isinstance(fps, (int, str)):
+            raise ValidationError("FPS cap must be an integer.")
+        try:
+            fps_val = int(fps)
+            if fps_val < 0 or fps_val > 1000:
+                raise ValidationError("FPS cap must be between 0 and 1000.")
+        except ValueError as exc:
+            raise ValidationError("FPS cap must be an integer.") from exc
+
         try:
             self.settings_dir.mkdir(parents=True, exist_ok=True)
             data: dict[str, Any] = {}
@@ -44,10 +64,12 @@ class ClientSettingsPatcher:
                 except Exception:
                     data = {}
 
-            data["DFIntTaskSchedulerTargetFps"] = int(fps)
+            data["DFIntTaskSchedulerTargetFps"] = fps_val
             self.settings_file.write_text(json.dumps(data, indent=4), encoding="utf-8")
-            logger.info(f"Client FPS cap set to {fps} in {self.settings_file}")
+            logger.info(f"Client FPS cap set to {fps_val} in {self.settings_file}")
             return True
+        except ValidationError:
+            raise
         except Exception as exc:
             logger.error(f"Failed to set client FPS cap: {exc}")
             return False

@@ -289,8 +289,8 @@ class OrbitApp {
       : '<p class="public-preview-unavailable">' + icon('info') + ' Public Roblox data is unavailable in Preview and is never simulated.</p>';
     const id = escapeHtml(account.id);
     const name = escapeHtml(account.display_name || account.username);
-    if (compact) return '<button class="icon-button" type="button" data-action="refresh-public-profile" data-id="' + id + '" aria-label="Actualiser le profil public de ' + name + '" title="Actualiser le profil public">' + icon('refresh') + '</button><button class="icon-button" type="button" data-action="refresh-public-presence" data-id="' + id + '" aria-label="Actualiser la présence publique de ' + name + '" title="Actualiser la présence publique">' + icon('activity') + '</button>';
-    return '<div class="public-account-actions"><button class="button button-sm" type="button" data-action="refresh-public-profile" data-id="' + id + '">' + icon('refresh') + ' Actualiser le profil public</button><button class="button button-sm" type="button" data-action="refresh-public-presence" data-id="' + id + '">' + icon('activity') + ' Actualiser la présence</button></div>';
+    if (compact) return '<button class="icon-button" type="button" data-action="refresh-public-profile" data-id="' + id + '" aria-label="Refresh public profile for ' + name + '" title="Refresh public profile">' + icon('refresh') + '</button><button class="icon-button" type="button" data-action="refresh-public-presence" data-id="' + id + '" aria-label="Refresh public presence for ' + name + '" title="Refresh public presence">' + icon('activity') + '</button>';
+    return '<div class="public-account-actions"><button class="button button-sm" type="button" data-action="refresh-public-profile" data-id="' + id + '">' + icon('refresh') + ' Refresh public profile</button><button class="button button-sm" type="button" data-action="refresh-public-presence" data-id="' + id + '">' + icon('activity') + ' Refresh presence</button></div>';
   }
 
   renderPublicAccountSnapshot(account, compact) {
@@ -374,9 +374,9 @@ class OrbitApp {
       const status = unwrap(await this.bridge.call('start_nexus_server')) || {};
       this.state.nexus = status;
       this.render();
-      this.toast('success', 'Serveur Nexus démarré', 'Écoute sur ' + (status.url || 'ws://127.0.0.1:5242/Nexus'));
+      this.toast('success', 'Nexus Server Started', 'Listening on ' + (status.url || 'ws://127.0.0.1:5242/Nexus'));
     } catch (error) {
-      this.toast('error', 'Erreur Nexus', error.message);
+      this.toast('error', 'Nexus Error', error.message);
     }
   }
 
@@ -385,21 +385,21 @@ class OrbitApp {
       const status = unwrap(await this.bridge.call('stop_nexus_server')) || {};
       this.state.nexus = status;
       this.render();
-      this.toast('info', 'Serveur Nexus arrêté');
+      this.toast('info', 'Nexus Server Stopped');
     } catch (error) {
-      this.toast('error', 'Erreur Nexus', error.message);
+      this.toast('error', 'Nexus Error', error.message);
     }
   }
 
   async sendNexusCommand(targetAccount, commandName, payload) {
     try {
       await this.bridge.call('send_nexus_command', targetAccount, commandName, payload);
-      this.toast('success', 'Commande Nexus envoyée', '\'' + commandName + '\' vers ' + targetAccount);
+      this.toast('success', 'Nexus Command Sent', '\'' + commandName + '\' to ' + targetAccount);
       const status = unwrap(await this.bridge.call('get_nexus_status')) || {};
       this.state.nexus = status;
       this.render();
     } catch (error) {
-      this.toast('error', 'Erreur d’envoi Nexus', error.message);
+      this.toast('error', 'Nexus Send Error', error.message);
     }
   }
 
@@ -407,9 +407,9 @@ class OrbitApp {
     try {
       const script = await this.bridge.call('get_nexus_lua_script');
       await this.copyText(script);
-      this.toast('success', 'Script Lua Nexus copié', 'Collez ce script dans votre exécuteur client Roblox.');
+      this.toast('success', 'Nexus Lua Script Copied', 'Paste this script into your Roblox client executor.');
     } catch (error) {
-      this.toast('error', 'Erreur Script Lua', error.message);
+      this.toast('error', 'Lua Script Error', error.message);
     }
   }
 
@@ -805,14 +805,14 @@ class OrbitApp {
     const clientRows = accounts.length ? accounts.map(function (client) {
       const name = escapeHtml(client.username);
       const isOnline = client.status === 'Online';
-      return '<div class="server-row"><div class="server-copy"><strong>' + name + ' <small class="mono">(ID: ' + escapeHtml(client.user_id || '—') + ')</small></strong><span>JobId: ' + escapeHtml(client.job_id || '—') + ' · Connecté: ' + relativeTime(client.connected_at) + '</span></div><div class="capacity"><span class="status ' + (isOnline ? 'ready' : 'offline') + '">' + escapeHtml(client.status) + '</span></div><button class="button button-sm" type="button" data-action="open-send-nexus" data-target="' + name + '">' + icon('command') + ' Commande</button></div>';
-    }).join('') : '<div class="empty-notices">' + icon('monitor') + '<p>' + (running ? 'Aucun client Roblox connecté sur ws://' + escapeHtml(nexus.host) + ':' + escapeHtml(nexus.port) + '/Nexus.' : 'Le serveur Nexus est actuellement arrêté.') + '</p></div>';
+      return '<div class="server-row"><div class="server-copy"><strong>' + name + ' <small class="mono">(ID: ' + escapeHtml(client.user_id || '—') + ')</small></strong><span>JobId: ' + escapeHtml(client.job_id || '—') + ' · Connected: ' + relativeTime(client.connected_at) + '</span></div><div class="capacity"><span class="status ' + (isOnline ? 'ready' : 'offline') + '">' + escapeHtml(client.status) + '</span></div><button class="button button-sm" type="button" data-action="open-send-nexus" data-target="' + name + '">' + icon('command') + ' Command</button></div>';
+    }).join('') : '<div class="empty-notices">' + icon('monitor') + '<p>' + (running ? 'No Roblox client connected to ws://' + escapeHtml(nexus.host) + ':' + escapeHtml(nexus.port) + '/Nexus.' : 'The Nexus server is currently stopped.') + '</p></div>';
 
-    return '<section class="section-header"><h3>Nexus / Account Control (WebSocket)</h3><p>Contrôle en temps réel et relais de commandes avec les clients Roblox</p><span class="section-line"></span></section>' +
-      '<section class="instance-summary"><article class="panel monitor-card"><h3>Serveur WebSocket Nexus</h3><p>Écoute les connexions WebSocket depuis les scripts clients Roblox (Nexus.lua).</p><div class="monitor-footer"><span>' + escapeHtml(nexus.url) + '</span><span class="status ' + (running ? 'ready' : 'offline') + '">' + (running ? 'En ligne' : 'Arrêté') + '</span></div><div class="launch-feature-actions" style="margin-top: 1rem;">' +
-      (running ? '<button class="button button-danger button-sm" type="button" data-action="stop-nexus-server">' + icon('x') + ' Arrêter Nexus</button>' : '<button class="button button-primary button-sm" type="button" data-action="start-nexus-server">' + icon('play') + ' Démarrer Nexus</button>') +
-      '<button class="button button-sm" type="button" data-action="copy-nexus-script">' + icon('copy') + ' Copier Nexus.lua</button></div></article>' +
-      '<article class="panel"><div class="panel-head"><h3>' + icon('users') + ' Clients connectés</h3><span>' + accounts.length + ' connecté(s)</span></div><div class="server-list">' + clientRows + '</div></article></section>';
+    return '<section class="section-header"><h3>Nexus / Account Control (WebSocket)</h3><p>Real-time control and command relay with Roblox clients</p><span class="section-line"></span></section>' +
+      '<section class="instance-summary"><article class="panel monitor-card"><h3>Nexus WebSocket Server</h3><p>Listens for WebSocket connections from Roblox client scripts (Nexus.lua).</p><div class="monitor-footer"><span>' + escapeHtml(nexus.url) + '</span><span class="status ' + (running ? 'ready' : 'offline') + '">' + (running ? 'Online' : 'Stopped') + '</span></div><div class="launch-feature-actions" style="margin-top: 1rem;">' +
+      (running ? '<button class="button button-danger button-sm" type="button" data-action="stop-nexus-server">' + icon('x') + ' Stop Nexus</button>' : '<button class="button button-primary button-sm" type="button" data-action="start-nexus-server">' + icon('play') + ' Start Nexus</button>') +
+      '<button class="button button-sm" type="button" data-action="copy-nexus-script">' + icon('copy') + ' Copy Nexus.lua</button></div></article>' +
+      '<article class="panel"><div class="panel-head"><h3>' + icon('users') + ' Connected Clients</h3><span>' + accounts.length + ' connected</span></div><div class="server-list">' + clientRows + '</div></article></section>';
   }
 
   renderNexusExecutor() {
@@ -825,15 +825,15 @@ class OrbitApp {
 
     /* --- Help Banner --- */
     const helpBanner =
-      '\u003cdiv class="panel" style="margin-bottom:14px;padding:12px 16px;background:var(--surface-2);border-left:4px solid var(--accent)"\u003e' +
-        '\u003cstrong style="font-size:0.85rem;display:block;margin-bottom:4px"\u003e💡 Comment relier votre client Roblox à Nexus Executor :\u003c/strong\u003e' +
-        '\u003cspan style="font-size:0.8rem;color:var(--text-soft);line-height:1.5"\u003e' +
-          '1. Cliquez sur \u003cstrong\u003eCopier Nexus.lua\u003c/strong\u003e ci-dessus.\u003cbr/\u003e' +
-          '2. Exécutez ce script dans Roblox (via votre exécuteur ou votre dossier d\'auto-exécution).\u003cbr/\u003e' +
-          '3. Votre compte apparaîtra dans \u003cstrong\u003eClients connectés\u003c/strong\u003e sur la droite (\u003ccode class="mono"\u003ews://127.0.0.1:5242/Nexus\u003c/code\u003e).\u003cbr/\u003e' +
-          '4. Exécutez ensuite vos scripts Lua ci-dessous, les résultats \u003ccode class="mono"\u003eprint()\u003c/code\u003e et logs apparaîtront en direct dans la console !' +
-        '\u003c/span\u003e' +
-      '\u003c/div\u003e';
+      '<div class="panel" style="margin-bottom:14px;padding:12px 16px;background:var(--surface-2);border-left:4px solid var(--accent)">' +
+        '<strong style="font-size:0.85rem;display:block;margin-bottom:4px">💡 How to connect your Roblox client to Nexus Executor:</strong>' +
+        '<span style="font-size:0.8rem;color:var(--text-soft);line-height:1.5">' +
+          '1. Click <strong>Copy Nexus.lua</strong> above.<br/>' +
+          '2. Execute this script in Roblox (via your executor or auto-execute folder).<br/>' +
+          '3. Your account will appear in <strong>Connected Clients</strong> on the right (<code class="mono">ws://127.0.0.1:5242/Nexus</code>).<br/>' +
+          '4. Execute your Lua scripts below; <code class="mono">print()</code> results and logs will appear live in the console!' +
+        '</span>' +
+      '</div>';
 
     /* --- Server status bar --- */
     const serverBar =
@@ -973,7 +973,7 @@ class OrbitApp {
     if (!this.state.instances.length) return this.emptyState('monitor', 'No Roblox instances found', 'Launch an account to start watching it here.', 'Go to accounts', 'navigate-accounts');
     return '<div class="data-table-wrap"><table class="data-table"><thead><tr><th>Account</th><th>Experience</th><th>State</th><th>Process</th><th>Memory</th><th>Started</th><th aria-label="Actions"></th></tr></thead><tbody>' + this.state.instances.map(function (instance) {
       const account = this.state.accounts.find(function (item) { return String(item.id) === String(instance.account_id); }) || { username: 'Unknown', avatar_color: 'neutral' };
-      return '<tr><td><div class="table-account">' + avatar(account, 'sm') + '<span><strong>' + escapeHtml(account.display_name || account.username) + '</strong><small>@' + escapeHtml(account.username) + '</small></span></div></td><td><span>' + escapeHtml(instance.game || 'Roblox') + '</span><br /><small class="mono">' + escapeHtml(instance.server || 'â€”') + '</small></td><td><span class="status ' + escapeHtml(instance.state || 'running') + '">' + statusText(instance.state || 'running') + '</span></td><td><span class="mono">PID ' + escapeHtml(instance.pid || 'â€”') + '</span></td><td><span class="mono">' + escapeHtml(instance.memory_mb || 'â€”') + ' MB</span></td><td><span class="mono">' + relativeTime(instance.started_at) + '</span></td><td><div class="table-actions">' + this.renderInstanceActions(instance) + '</div></td></tr>';
+      return '<tr><td><div class="table-account">' + avatar(account, 'sm') + '<span><strong>' + escapeHtml(account.display_name || account.username) + '</strong><small>@' + escapeHtml(account.username) + '</small></span></div></td><td><span>' + escapeHtml(instance.game || 'Roblox') + '</span><br /><small class="mono">' + escapeHtml(instance.server || '-') + '</small></td><td><span class="status ' + escapeHtml(instance.state || 'running') + '">' + statusText(instance.state || 'running') + '</span></td><td><span class="mono">PID ' + escapeHtml(instance.pid || '-') + '</span></td><td><span class="mono">' + escapeHtml(instance.memory_mb || '-') + ' MB</span></td><td><span class="mono">' + relativeTime(instance.started_at) + '</span></td><td><div class="table-actions">' + this.renderInstanceActions(instance) + '</div></td></tr>';
     }.bind(this)).join('') + '</tbody></table></div>';
   }
 
@@ -1089,12 +1089,27 @@ class OrbitApp {
     } else if (modal.kind === 'account') {
       const account = modal.account || {};
       title = account.id ? 'Edit Account' : 'Add Accounts / Sign In';
-      sub = account.id ? 'Update profile information and session options.' : 'Select your preferred method to add or connect Roblox accounts.';
+      sub = account.id ? 'Update profile information, Game ID, and per-instance launch options.' : 'Select your preferred method to add or connect Roblox accounts.';
       const groupOptions = '<option value="">No group (Ungrouped)</option>' + this.state.groups.map(function (group) { return '<option value="' + escapeHtml(group.id) + '"' + (String(account.group_id || '') === String(group.id) ? ' selected' : '') + '>' + escapeHtml(group.name) + '</option>'; }).join('');
       const userId = account.user_id === undefined || account.user_id === null ? '' : String(account.user_id);
+      const placeId = account.saved_place_id === undefined || account.saved_place_id === null ? '' : String(account.saved_place_id);
+      const launchOpts = (account.metadata && account.metadata.launch_options) || {};
+      const maxFps = Number(launchOpts.max_fps || 0);
+      const potatoChecked = Boolean(launchOpts.potato_graphics);
       
       if (account.id) {
-        body = '<form data-form="account" data-id="' + escapeHtml(account.id || '') + '"><div class="modal-body"><p class="form-error" hidden></p><div class="form-grid"><div class="field"><label for="account-username">Username</label><input id="account-username" name="username" required maxlength="60" value="' + escapeHtml(account.username || '') + '" placeholder="e.g. AriaNebula" /></div><div class="field"><label for="account-user-id">Roblox User ID (optional)</label><input id="account-user-id" name="user_id" inputmode="numeric" pattern="[1-9][0-9]*" maxlength="20" autocomplete="off" value="' + escapeHtml(userId) + '" placeholder="e.g. 123456789" /></div><div class="field"><label for="account-display">Display name</label><input id="account-display" name="display_name" maxlength="80" value="' + escapeHtml(account.display_name || '') + '" placeholder="Display name" /></div><div class="field"><label for="account-group">Group</label><select id="account-group" name="group_id">' + groupOptions + '</select></div><div class="field"><label for="account-color">Avatar color</label><select id="account-color" name="avatar_color"><option value="violet"' + (account.avatar_color === 'violet' ? ' selected' : '') + '>Violet</option><option value="mint"' + (account.avatar_color === 'mint' ? ' selected' : '') + '>Mint</option><option value="coral"' + (account.avatar_color === 'coral' ? ' selected' : '') + '>Coral</option><option value="blue"' + (account.avatar_color === 'blue' ? ' selected' : '') + '>Blue</option><option value="amber"' + (account.avatar_color === 'amber' ? ' selected' : '') + '>Amber</option></select></div><div class="field full"><label for="account-notes">Private note</label><textarea id="account-notes" name="notes" maxlength="280" placeholder="Notes about this account">' + escapeHtml(account.notes || '') + '</textarea></div><label class="form-check field full"><input type="checkbox" name="favorite"' + (account.favorite ? ' checked' : '') + ' /> Keep in favorites</label></div></div><footer class="modal-foot"><button class="button" type="button" data-action="close-modal">Cancel</button><button class="button button-primary" type="submit">' + icon('check') + ' Save changes</button></footer></form>';
+        body = '<form data-form="account" data-id="' + escapeHtml(account.id || '') + '"><div class="modal-body"><p class="form-error" hidden></p><div class="form-grid">' +
+          '<div class="field"><label for="account-username">Username</label><input id="account-username" name="username" required maxlength="60" value="' + escapeHtml(account.username || '') + '" placeholder="e.g. AriaNebula" /></div>' +
+          '<div class="field"><label for="account-user-id">Roblox User ID (optional)</label><input id="account-user-id" name="user_id" inputmode="numeric" pattern="[1-9][0-9]*" maxlength="20" autocomplete="off" value="' + escapeHtml(userId) + '" placeholder="e.g. 123456789" /></div>' +
+          '<div class="field"><label for="account-display">Display name</label><input id="account-display" name="display_name" maxlength="80" value="' + escapeHtml(account.display_name || '') + '" placeholder="Display name" /></div>' +
+          '<div class="field"><label for="account-group">Group</label><select id="account-group" name="group_id">' + groupOptions + '</select></div>' +
+          '<div class="field"><label for="account-place-id">Default Game ID (Place ID)</label><input id="account-place-id" name="saved_place_id" type="number" min="1" step="1" value="' + escapeHtml(placeId) + '" placeholder="e.g. 2753915549" /></div>' +
+          '<div class="field"><label for="account-fps">Instance FPS Cap</label><select id="account-fps" name="max_fps"><option value="0"' + (maxFps === 0 ? ' selected' : '') + '>Default (App Setting)</option><option value="30"' + (maxFps === 30 ? ' selected' : '') + '>30 FPS</option><option value="60"' + (maxFps === 60 ? ' selected' : '') + '>60 FPS</option><option value="120"' + (maxFps === 120 ? ' selected' : '') + '>120 FPS</option><option value="144"' + (maxFps === 144 ? ' selected' : '') + '>144 FPS</option><option value="240"' + (maxFps === 240 ? ' selected' : '') + '>240 FPS</option><option value="360"' + (maxFps === 360 ? ' selected' : '') + '>360 FPS</option></select></div>' +
+          '<div class="field"><label for="account-color">Avatar color</label><select id="account-color" name="avatar_color"><option value="violet"' + (account.avatar_color === 'violet' ? ' selected' : '') + '>Violet</option><option value="mint"' + (account.avatar_color === 'mint' ? ' selected' : '') + '>Mint</option><option value="coral"' + (account.avatar_color === 'coral' ? ' selected' : '') + '>Coral</option><option value="blue"' + (account.avatar_color === 'blue' ? ' selected' : '') + '>Blue</option><option value="amber"' + (account.avatar_color === 'amber' ? ' selected' : '') + '>Amber</option></select></div>' +
+          '<label class="form-check field"><input type="checkbox" name="potato_graphics"' + (potatoChecked ? ' checked' : '') + ' /> Enable Potato Mode (Minimum Graphics FastFlags)</label>' +
+          '<div class="field full"><label for="account-notes">Private note</label><textarea id="account-notes" name="notes" maxlength="280" placeholder="Notes about this account">' + escapeHtml(account.notes || '') + '</textarea></div>' +
+          '<label class="form-check field full"><input type="checkbox" name="favorite"' + (account.favorite ? ' checked' : '') + ' /> Keep in favorites</label></div></div>' +
+          '<footer class="modal-foot"><button class="button" type="button" data-action="close-modal">Cancel</button><button class="button button-primary" type="submit">' + icon('check') + ' Save changes</button></footer></form>';
       } else {
         body = '<div class="modal-body">' +
           '<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin-bottom:16px">' +
@@ -1210,38 +1225,38 @@ class OrbitApp {
       body = '<form data-form="import-metadata"><div class="modal-body"><p class="restore-warning">This import never transfers sessions, vault entries, cookies, tokens, or saved credentials. A safety backup is created before compatible public metadata is added.</p><p class="form-error" hidden></p><div class="field"><label for="metadata-path">Metadata JSON path</label><input id="metadata-path" name="path" autocomplete="off" required placeholder="C:\\Users\\you\\Documents\\astro-metadata-20260810.json" /><span class="mono">Choose a checksummed metadata export created by Astro Account Manager.</span></div><label class="form-check restore-confirm-check"><input type="checkbox" name="confirm" required /> I understand this adds public metadata and creates a pre-import backup.</label></div><footer class="modal-foot"><button class="button" type="button" data-action="close-modal">Cancel</button><button class="button button-primary" type="submit">' + icon('download') + ' Import metadata</button></footer></form>';
     } else if (modal.kind === 'send-nexus') {
       const target = modal.target || 'all';
-      title = 'Envoyer une commande Nexus';
-      sub = 'Transmet une commande JSON au client Roblox ' + escapeHtml(target);
-      body = '<form data-form="send-nexus"><div class="modal-body"><p class="form-error" hidden></p><div class="field"><label for="nexus-target">Cible</label><input id="nexus-target" name="target" required value="' + escapeHtml(target) + '" /></div><div class="field"><label for="nexus-command">Commande</label><select id="nexus-command" name="command"><option value="execute">execute (Script Lua)</option><option value="teleport">teleport (Place/JobId)</option><option value="mute">mute</option><option value="unmute">unmute</option></select></div><div class="field"><label for="nexus-payload">Payload (Code Lua ou paramètres)</label><textarea id="nexus-payload" name="payload" rows="4" placeholder="print(\'Hello Nexus!\')"></textarea></div></div><footer class="modal-foot"><button class="button" type="button" data-action="close-modal">Annuler</button><button class="button button-primary" type="submit">' + icon('rocket') + ' Envoyer</button></footer></form>';
+      title = 'Send Nexus Command';
+      sub = 'Transmit a JSON command to Roblox client ' + escapeHtml(target);
+      body = '<form data-form="send-nexus"><div class="modal-body"><p class="form-error" hidden></p><div class="field"><label for="nexus-target">Target</label><input id="nexus-target" name="target" required value="' + escapeHtml(target) + '" /></div><div class="field"><label for="nexus-command">Command</label><select id="nexus-command" name="command"><option value="execute">execute (Lua Script)</option><option value="teleport">teleport (Place/JobId)</option><option value="mute">mute</option><option value="unmute">unmute</option></select></div><div class="field"><label for="nexus-payload">Payload (Lua code or parameters)</label><textarea id="nexus-payload" name="payload" rows="4" placeholder="print(\'Hello Nexus!\')"></textarea></div></div><footer class="modal-foot"><button class="button" type="button" data-action="close-modal">Cancel</button><button class="button button-primary" type="submit">' + icon('rocket') + ' Send</button></footer></form>';
     } else if (modal.kind === 'bulk-import') {
-      title = 'Ajouter des comptes / Importation en masse';
-      sub = 'Choisissez votre méthode : connexion navigateur, collage direct de cookie, ou importation en masse.';
-      body = '<form data-form="bulk-import"><div class="modal-body"><p class="form-error" hidden></p><div class="quick-login-banner" style="background: var(--surface-card); border: 1px solid var(--border); border-radius: 8px; padding: 12px; margin-bottom: 16px; display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap;"><div><strong>Options d\'ajout rapide :</strong><p style="margin: 4px 0 0 0; opacity: 0.8; font-size: 0.85rem;">Utilisez le navigateur intégré ou collez directement un cookie brut.</p></div><div style="display: flex; gap: 8px;"><button class="button button-primary" type="button" data-action="start-manual-browser-login">' + icon('globe') + ' Navigateur Roblox</button><button class="button button-secondary" type="button" data-action="open-add-cookie">🍪 Coller un Cookie</button></div></div><div class="field"><label for="bulk-text">Ou collez plusieurs comptes / cookies (multi-format)</label><textarea id="bulk-text" name="raw_text" rows="8" required placeholder="User1:Pass123\nUser2,Pass456\nUser3:Pass789:_|WARNING...\n_|WARNING:-..."></textarea></div></div><footer class="modal-foot"><button class="button" type="button" data-action="close-modal">Annuler</button><button class="button button-primary" type="submit">' + icon('upload') + ' Importer les comptes</button></footer></form>';
+      title = 'Add Accounts / Bulk Import';
+      sub = 'Choose your method: browser login, direct cookie paste, or bulk account import.';
+      body = '<form data-form="bulk-import"><div class="modal-body"><p class="form-error" hidden></p><div class="quick-login-banner" style="background: var(--surface-card); border: 1px solid var(--border); border-radius: 8px; padding: 12px; margin-bottom: 16px; display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap;"><div><strong>Quick Add Options:</strong><p style="margin: 4px 0 0 0; opacity: 0.8; font-size: 0.85rem;">Use the built-in browser or paste a raw session cookie.</p></div><div style="display: flex; gap: 8px;"><button class="button button-primary" type="button" data-action="start-manual-browser-login">' + icon('globe') + ' Roblox Browser</button><button class="button button-secondary" type="button" data-action="open-add-cookie">🍪 Paste Cookie</button></div></div><div class="field"><label for="bulk-text">Or paste multiple accounts / cookies (multi-format)</label><textarea id="bulk-text" name="raw_text" rows="8" required placeholder="User1:Pass123\nUser2,Pass456\nUser3:Pass789:_|WARNING...\n_|WARNING:-..."></textarea></div></div><footer class="modal-foot"><button class="button" type="button" data-action="close-modal">Cancel</button><button class="button button-primary" type="submit">' + icon('upload') + ' Import Accounts</button></footer></form>';
     } else if (modal.kind === 'cookie-add') {
-      title = '🍪 Connexion par Cookie (.ROBLOSECURITY)';
-      sub = 'Collez votre cookie .ROBLOSECURITY ci-dessous pour ajouter et authentifier le compte immédiatement.';
-      body = '<form data-form="cookie-add"><div class="modal-body"><p class="form-error" hidden></p><div class="field"><label for="raw-cookie-input">Cookie .ROBLOSECURITY</label><textarea id="raw-cookie-input" name="cookie" rows="6" required placeholder="_|WARNING:-DO-NOT-SHARE-THIS..."></textarea><span class="mono">Le cookie sera validé avec les API Roblox et stocké dans le Vault DPAPI Windows.</span></div></div><footer class="modal-foot"><button class="button" type="button" data-action="close-modal">Annuler</button><button class="button button-primary" type="submit">' + icon('check') + ' Ajouter avec ce Cookie</button></footer></form>';
+      title = '🍪 Sign in via Cookie (.ROBLOSECURITY)';
+      sub = 'Paste your .ROBLOSECURITY cookie below to add and authenticate the account immediately.';
+      body = '<form data-form="cookie-add"><div class="modal-body"><p class="form-error" hidden></p><div class="field"><label for="raw-cookie-input">Cookie .ROBLOSECURITY</label><textarea id="raw-cookie-input" name="cookie" rows="6" required placeholder="_|WARNING:-DO-NOT-SHARE-THIS..."></textarea><span class="mono">The cookie will be validated with Roblox APIs and stored in the Windows DPAPI Vault.</span></div></div><footer class="modal-foot"><button class="button" type="button" data-action="close-modal">Cancel</button><button class="button button-primary" type="submit">' + icon('check') + ' Add with this Cookie</button></footer></form>';
     } else if (modal.kind === 'account-utilities') {
       const accounts = this.state.accounts;
       const options = accounts.length ? accounts.map(function (acc) {
         return '<option value="' + escapeHtml(acc.id) + '">' + escapeHtml(acc.display_name || acc.username) + ' (@' + escapeHtml(acc.username) + ')</option>';
-      }).join('') : '<option value="">Aucun compte disponible</option>';
-      title = '⚙️ Account Utilities (RAM 3.7.2)';
-      sub = 'Outils avancés de gestion de compte Roblox authentifié.';
+      }).join('') : '<option value="">No accounts available</option>';
+      title = '⚙️ Account Utilities';
+      sub = 'Advanced authenticated Roblox account management options.';
       body = '<form data-form="account-utilities"><div class="modal-body"><p class="form-error" hidden></p>' +
-        '<div class="field"><label for="util-account">Compte ciblé</label><select id="util-account" name="account_id" required>' + options + '</select></div>' +
-        '<div class="field"><label for="util-action">Action à exécuter</label><select id="util-action" name="action_kind">' +
-        '<option value="quick_login">Code Quick Log In (6 chiffres)</option>' +
-        '<option value="get_cookie">Extraire/Copier le cookie .ROBLOSECURITY</option>' +
-        '<option value="logout_all">Déconnecter toutes les autres sessions</option>' +
-        '<option value="block">Bloquer un utilisateur</option>' +
-        '<option value="unblock">Débloquer un utilisateur</option>' +
-        '<option value="unblock_all">Débloquer TOUS les utilisateurs</option>' +
-        '<option value="password">Changer le mot de passe</option>' +
-        '<option value="email">Changer l\'adresse email</option>' +
+        '<div class="field"><label for="util-account">Target account</label><select id="util-account" name="account_id" required>' + options + '</select></div>' +
+        '<div class="field"><label for="util-action">Action to run</label><select id="util-action" name="action_kind">' +
+        '<option value="quick_login">Quick Log In code (6 digits)</option>' +
+        '<option value="get_cookie">Extract/Copy .ROBLOSECURITY cookie</option>' +
+        '<option value="logout_all">Logout all other sessions</option>' +
+        '<option value="block">Block user</option>' +
+        '<option value="unblock">Unblock user</option>' +
+        '<option value="unblock_all">Unblock ALL users</option>' +
+        '<option value="password">Change password</option>' +
+        '<option value="email">Change email address</option>' +
         '</select></div>' +
-        '<div class="field"><label for="util-payload">Paramètre / Payload (Code 6 chiffres, ID Utilisateur, Mot de passe ou Email)</label><input id="util-payload" name="payload" placeholder="Entrez la valeur si nécessaire..." /></div>' +
-        '</div><footer class="modal-foot"><button class="button" type="button" data-action="close-modal">Annuler</button><button class="button button-primary" type="submit">' + icon('check') + ' Exécuter l\'action</button></footer></form>';
+        '<div class="field"><label for="util-payload">Parameter / Payload (6-digit code, User ID, Password or Email)</label><input id="util-payload" name="payload" placeholder="Enter value if required..." /></div>' +
+        '</div><footer class="modal-foot"><button class="button" type="button" data-action="close-modal">Cancel</button><button class="button button-primary" type="submit">' + icon('check') + ' Execute action</button></footer></form>';
     }
     return '<div class="modal-backdrop" data-action="close-modal-backdrop"><section class="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title"><header class="modal-head"><div><h2 id="modal-title">' + escapeHtml(title) + '</h2><p>' + escapeHtml(sub) + '</p></div><button class="icon-button" type="button" data-action="close-modal" aria-label="Close dialog">' + icon('x') + '</button></header>' + body + '</section></div>';
   }
@@ -1296,30 +1311,30 @@ class OrbitApp {
     if (action === 'start-manual-browser-login') {
       try {
         const res = await this.bridge.call('start_manual_browser_login');
-        this.toast('info', 'Navigateur de connexion Roblox ouvert', 'Connectez-vous sur Roblox dans la fenêtre dédiée. Votre cookie sera capturé automatiquement !');
+        this.toast('info', 'Roblox Login Browser Opened', 'Sign in on Roblox in the dedicated browser window. Your session cookie will be captured automatically!');
       } catch (err) {
-        this.toast('error', 'Erreur du navigateur', err.message || 'Impossible d\'ouvrir le navigateur.');
+        this.toast('error', 'Browser Error', err.message || 'Could not open login browser.');
       }
       return;
     }
     if (action === 'toggle-hide-usernames') { this.state.hideUsernames = !this.state.hideUsernames; this.render(); return; }
-    if (action === 'toggle-uwp') { this.state.uwpMode = !this.state.uwpMode; this.toast('info', 'UWP Mode', this.state.uwpMode ? 'Mode UWP Activé' : 'Mode Web standard'); this.render(); return; }
+    if (action === 'toggle-uwp') { this.state.uwpMode = !this.state.uwpMode; this.toast('info', 'UWP Mode', this.state.uwpMode ? 'UWP Mode Enabled' : 'Standard Web Mode Enabled'); this.render(); return; }
     if (action === 'shuffle-job-id') {
       const placeInput = $('#ram-place-id');
       const placeId = placeInput ? Number(placeInput.value) : null;
-      if (!placeId) { this.toast('error', 'Place ID requis', 'Veuillez entrer un Place ID valide.'); return; }
+      if (!placeId) { this.toast('error', 'Place ID Required', 'Please enter a valid Place ID.'); return; }
       try {
         const res = unwrap(await this.bridge.call('get_random_server', placeId));
         if (res && res.job_id) {
           this.state.ramJobId = res.job_id;
           const jobInput = $('#ram-job-id');
           if (jobInput) jobInput.value = res.job_id;
-          this.toast('success', 'Job ID tiré au sort', res.job_id);
+          this.toast('success', 'Random Job ID Selected', res.job_id);
         } else {
-          this.toast('info', 'Aucun serveur trouvé', 'Impossible de récupérer un Job ID pour cette place.');
+          this.toast('info', 'No Server Found', 'Could not fetch a Job ID for this place.');
         }
       } catch (err) {
-        this.toast('error', 'Erreur Job ID', err.message);
+        this.toast('error', 'Job ID Error', err.message);
       }
       return;
     }
@@ -1330,12 +1345,12 @@ class OrbitApp {
       const jobId = jobInput ? jobInput.value.trim() : '';
       const selectedIds = Array.from(this.state.selected);
       if (!selectedIds.length && this.state.accounts.length === 1) selectedIds.push(this.state.accounts[0].id);
-      if (!selectedIds.length) { this.toast('info', 'Sélectionnez des comptes', 'Cochez au moins un compte.'); return; }
+      if (!selectedIds.length) { this.toast('info', 'Select Accounts', 'Select at least one account.'); return; }
       for (const id of selectedIds) {
         await this.bridge.call('update_account', id, { saved_place_id: placeId, saved_job_id: jobId });
       }
       await this.resync(); this.render();
-      this.toast('success', 'Place ID enregistré', 'Enregistré pour ' + selectedIds.length + ' compte(s).');
+      this.toast('success', 'Place ID Saved', 'Saved for ' + selectedIds.length + ' account(s).');
       return;
     }
     if (action === 'ram-join-server') {
@@ -1345,32 +1360,32 @@ class OrbitApp {
       const jobId = jobInput ? jobInput.value.trim() : '';
       const selectedIds = Array.from(this.state.selected);
       if (!selectedIds.length && this.state.accounts.length) selectedIds.push(this.state.accounts[0].id);
-      if (!selectedIds.length) { this.toast('info', 'Aucun compte sélectionné', 'Sélectionnez un compte à lancer.'); return; }
+      if (!selectedIds.length) { this.toast('info', 'No Account Selected', 'Select an account to launch.'); return; }
       const target = {};
       if (placeId) target.place_id = placeId;
       if (jobId) target.job_id = jobId;
       for (const id of selectedIds) {
         await this.bridge.call('launch_account', id, target);
       }
-      this.toast('success', 'Lancement serveur', 'Lancement effectué pour ' + selectedIds.length + ' compte(s).');
+      this.toast('success', 'Server Launch Requested', 'Launch initiated for ' + selectedIds.length + ' account(s).');
       return;
     }
     if (action === 'ram-follow-user') {
       const userInput = $('#ram-follow-user');
       const targetUser = userInput ? userInput.value.trim() : '';
-      if (!targetUser) { this.toast('error', 'Username requis', 'Entrez le pseudo du joueur à suivre.'); return; }
+      if (!targetUser) { this.toast('error', 'Username Required', 'Enter the player username to follow.'); return; }
       const selectedIds = Array.from(this.state.selected);
       const accId = selectedIds[0] || (this.state.accounts[0] && this.state.accounts[0].id);
-      if (!accId) { this.toast('error', 'Compte requis', 'Sélectionnez au moins un compte local.'); return; }
+      if (!accId) { this.toast('error', 'Account Required', 'Select at least one local account.'); return; }
       try {
         const searched = unwrap(await this.bridge.call('search_players', targetUser, 1)) || [];
-        if (!searched.length) throw new Error('Joueur introuvable.');
+        if (!searched.length) throw new Error('Player not found.');
         const presence = unwrap(await this.bridge.call('get_player_presence', searched[0].user_id)) || {};
-        if (!presence.place_id) throw new Error('Ce joueur n\'est pas actuellement en jeu.');
+        if (!presence.place_id) throw new Error('This player is not currently in a game.');
         await this.bridge.call('launch_account', accId, { place_id: presence.place_id, job_id: presence.job_id });
-        this.toast('success', 'Suivi du joueur', 'Lancement vers le serveur de ' + searched[0].name + ' !');
+        this.toast('success', 'Player Follow', 'Launching into ' + searched[0].name + '\'s server!');
       } catch (err) {
-        this.toast('error', 'Erreur Follow', err.message);
+        this.toast('error', 'Follow Error', err.message);
       }
       return;
     }
@@ -1378,24 +1393,24 @@ class OrbitApp {
       const aliasInput = $('#ram-alias-input');
       const newAlias = aliasInput ? aliasInput.value.trim() : '';
       const selectedIds = Array.from(this.state.selected);
-      if (!selectedIds.length) { this.toast('info', 'Sélectionnez un compte', 'Cochez au moins un compte.'); return; }
+      if (!selectedIds.length) { this.toast('info', 'Select an Account', 'Check at least one account.'); return; }
       for (const id of selectedIds) {
         await this.bridge.call('update_account', id, { display_name: newAlias });
       }
       await this.resync(); this.render();
-      this.toast('success', 'Alias mis à jour', 'Nouveau nom d\'affichage appliqué.');
+      this.toast('success', 'Alias Updated', 'New display name applied.');
       return;
     }
     if (action === 'ram-set-description') {
       const descInput = $('#ram-desc-input');
       const newDesc = descInput ? descInput.value.trim() : '';
       const selectedIds = Array.from(this.state.selected);
-      if (!selectedIds.length) { this.toast('info', 'Sélectionnez un compte', 'Cochez au moins un compte.'); return; }
+      if (!selectedIds.length) { this.toast('info', 'Select an Account', 'Check at least one account.'); return; }
       for (const id of selectedIds) {
         await this.bridge.call('update_account', id, { description: newDesc, notes: newDesc });
       }
       await this.resync(); this.render();
-      this.toast('success', 'Description mise à jour', 'Description modifiée avec succès.');
+      this.toast('success', 'Description Updated', 'Description saved successfully.');
       return;
     }
     if (action === 'open-account-utilities') { this.openModal({ kind: 'account-utilities' }); return; }
@@ -1486,60 +1501,60 @@ class OrbitApp {
         const accountId = values.account_id;
         const actionKind = values.action_kind;
         const payload = (values.payload || '').trim();
-        if (!accountId) throw new Error('Veuillez sélectionner un compte.');
+        if (!accountId) throw new Error('Please select an account.');
 
         if (actionKind === 'quick_login') {
-          if (!payload) throw new Error('Veuillez entrer le code Quick Log In à 6 chiffres.');
+          if (!payload) throw new Error('Please enter the 6-digit Quick Log In code.');
           await this.bridge.call('quick_log_in_account', accountId, payload);
-          this.toast('success', 'Quick Log In', 'Code validé avec succès !');
+          this.toast('success', 'Quick Log In', 'Code validated successfully!');
         } else if (actionKind === 'password') {
           const parts = payload.split(':');
-          if (parts.length < 2) throw new Error('Format requis dans le payload : AncienMotDePasse:NouveauMotDePasse');
+          if (parts.length < 2) throw new Error('Payload format required: CurrentPassword:NewPassword');
           await this.bridge.call('change_account_password', accountId, parts[0], parts[1]);
-          this.toast('success', 'Mot de passe', 'Mot de passe modifié avec succès !');
+          this.toast('success', 'Password Changed', 'Password updated successfully!');
         } else if (actionKind === 'email') {
           const parts = payload.split(':');
-          if (parts.length < 2) throw new Error('Format requis dans le payload : MotDePasseActuel:NouvelEmail');
+          if (parts.length < 2) throw new Error('Payload format required: CurrentPassword:NewEmail');
           await this.bridge.call('change_account_email', accountId, parts[0], parts[1]);
-          this.toast('success', 'Email', 'Changement d\'email initié !');
+          this.toast('success', 'Email Change', 'Email change initiated!');
         } else if (actionKind === 'logout_all') {
           await this.bridge.call('logout_all_account_sessions', accountId);
-          this.toast('success', 'Sessions', 'Toutes les autres sessions ont été déconnectées !');
+          this.toast('success', 'Sessions Logged Out', 'All other sessions have been logged out!');
         } else if (actionKind === 'block') {
-          if (!payload) throw new Error('ID ou Pseudo de l\'utilisateur requis.');
+          if (!payload) throw new Error('Target User ID or Username is required.');
           await this.bridge.call('block_account_user', accountId, payload);
-          this.toast('success', 'Blocage', 'Utilisateur bloqué !');
+          this.toast('success', 'User Blocked', 'User blocked successfully!');
         } else if (actionKind === 'unblock') {
-          if (!payload) throw new Error('ID ou Pseudo de l\'utilisateur requis.');
+          if (!payload) throw new Error('Target User ID or Username is required.');
           await this.bridge.call('unblock_account_user', accountId, payload);
-          this.toast('success', 'Déblocage', 'Utilisateur débloqué !');
+          this.toast('success', 'User Unblocked', 'User unblocked successfully!');
         } else if (actionKind === 'unblock_all') {
           const res = await this.bridge.call('unblock_all_account_users', accountId);
-          this.toast('success', 'Déblocage global', (res.unblocked_count || 0) + ' utilisateur(s) débloqué(s) !');
+          this.toast('success', 'Bulk Unblock', (res.unblocked_count || 0) + ' user(s) unblocked!');
         } else if (actionKind === 'get_cookie') {
           const res = await this.bridge.call('get_account_cookie', accountId);
           await this.copyText(res.cookie || '');
-          this.toast('success', 'Cookie copié', 'Le cookie .ROBLOSECURITY a été copié dans le presse-papier.');
+          this.toast('success', 'Cookie Copied', '.ROBLOSECURITY cookie copied to clipboard!');
         }
         this.closeModal();
         this.render();
       } else if (form.dataset.form === 'cookie-add') {
         const rawCookie = (values.cookie || '').trim();
-        if (!rawCookie) throw new Error('Veuillez coller un cookie .ROBLOSECURITY.');
+        if (!rawCookie) throw new Error('Please paste a valid .ROBLOSECURITY cookie.');
         const res = await this.bridge.call('add_account_from_cookie', rawCookie);
         await this.resync();
         this.closeModal();
         this.render();
-        this.toast('success', 'Compte ajouté avec succès', 'Compte @' + (res.username || 'Roblox') + ' connecté !');
+        this.toast('success', 'Account Added', 'Account @' + (res.username || 'Roblox') + ' connected!');
       } else if (form.dataset.form === 'cookie-login') {
         const cookie = (values.cookie || '').trim();
         const groupId = values.group_id || null;
-        if (!cookie) throw new Error('Veuillez coller un cookie .ROBLOSECURITY valide.');
+        if (!cookie) throw new Error('Please paste a valid .ROBLOSECURITY cookie.');
         const res = unwrap(await this.bridge.call('add_account_from_cookie', cookie, groupId)) || {};
         await this.resync();
         this.closeModal();
         this.render();
-        this.toast('success', 'Compte ajouté', 'Compte @' + (res.username || 'Roblox') + ' connecté avec succès !');
+        this.toast('success', 'Account Added', 'Account @' + (res.username || 'Roblox') + ' connected successfully!');
       } else if (form.dataset.form === 'send-nexus') {
         const target = String(values.target || 'all').trim();
         const command = String(values.command || 'execute').trim();
@@ -1553,7 +1568,7 @@ class OrbitApp {
         await this.resync();
         this.closeModal();
         this.render();
-        this.toast('success', 'Importation en masse effectuée', res.imported + ' compte(s) importé(s) sur ' + res.total_parsed);
+        this.toast('success', 'Bulk Import Completed', res.imported + ' account(s) imported out of ' + res.total_parsed);
       } else if (form.dataset.form === 'windows-startup') {
         if (values.confirm !== 'on') throw new Error('Confirm the Windows startup change before continuing.');
         if (form.dataset.enabled !== 'true' && form.dataset.enabled !== 'false') throw new Error('The requested Windows startup state is invalid.');
@@ -1566,6 +1581,19 @@ class OrbitApp {
         const userId = String(values.user_id || '').trim();
         if (userId && !/^[1-9][0-9]*$/.test(userId)) throw new Error('Roblox User ID must be a positive whole number.');
         values.user_id = userId;
+        const placeIdRaw = String(values.saved_place_id || '').trim();
+        if (placeIdRaw && (!/^[1-9][0-9]*$/.test(placeIdRaw) || Number(placeIdRaw) <= 0)) throw new Error('Roblox Place ID must be a valid positive whole number.');
+        values.saved_place_id = placeIdRaw ? Number(placeIdRaw) : null;
+        
+        const existingAccount = this.findAccount(form.dataset.id);
+        const metadata = Object.assign({}, (existingAccount && existingAccount.metadata) || {});
+        const launchOpts = Object.assign({}, metadata.launch_options || {}, {
+          max_fps: Number(values.max_fps || 0),
+          potato_graphics: new FormData(form).get('potato_graphics') === 'on'
+        });
+        metadata.launch_options = launchOpts;
+        values.metadata = metadata;
+
         if (form.dataset.id) await this.bridge.call('update_account', form.dataset.id, values);
         else await this.bridge.call('create_account', values);
         await this.resync(); this.closeModal(); this.toast('success', form.dataset.id ? 'Account updated' : 'Account added', values.username + ' is ready in your workspace.'); this.render();

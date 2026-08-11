@@ -538,7 +538,7 @@ class LegacyDataMigrator:
         groups_by_name = {group.name.casefold(): group for group in self.repository.list_groups()}
         normalized_records = tuple(records)
 
-        # RAM 3.7.2 sorted group headers through a hidden leading numeric
+        # Legacy managers sorted group headers through a hidden leading numeric
         # prefix on their names.  Create all new groups before accounts so the
         # persistent v3 order reflects that historic presentation regardless
         # of the account-record order in AccountData.json.  Existing local

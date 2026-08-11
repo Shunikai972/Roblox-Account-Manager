@@ -114,9 +114,9 @@ def test_startup_manager_is_read_only_unavailable_off_windows(tmp_path: Path) ->
     assert status.supported is False
     assert status.accessible is False
     assert status.reason
-    with pytest.raises(StartupRegistrationError, match="uniquement sous Windows"):
+    with pytest.raises(StartupRegistrationError, match="available on Windows only"):
         manager.enable()
-    with pytest.raises(StartupRegistrationError, match="uniquement sous Windows"):
+    with pytest.raises(StartupRegistrationError, match="available on Windows only"):
         manager.disable()
     assert store.writes == []
     assert store.deletes == []
@@ -148,6 +148,6 @@ def test_registry_access_error_is_sanitized_for_inspection_and_actions(tmp_path:
     inspected = manager.inspect()
     assert inspected.accessible is False
     assert "private" not in (inspected.reason or "")
-    with pytest.raises(StartupRegistrationError, match="n'a pas pu être activé") as captured:
+    with pytest.raises(StartupRegistrationError, match="could not be enabled") as captured:
         manager.enable()
     assert "private" not in str(captured.value)

@@ -15,7 +15,7 @@ class RobloxServiceError(ExternalServiceError):
 
     def __init__(
         self,
-        message: str = "Le service Roblox est indisponible pour le moment.",
+        message: str = "Roblox service is currently unavailable.",
         *,
         retryable: bool = False,
         status_code: int | None = None,
@@ -31,7 +31,7 @@ class RobloxAuthenticationError(RobloxServiceError):
 
     def __init__(self) -> None:
         super().__init__(
-            "La session Roblox doit Ãªtre reconnectÃ©e.", retryable=False, status_code=401
+            "Roblox session must be reconnected.", retryable=False, status_code=401
         )
         self.code = "roblox_authentication_error"
 

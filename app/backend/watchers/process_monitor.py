@@ -86,22 +86,22 @@ class RestartPolicy:
 
     def __post_init__(self) -> None:
         if not isinstance(self.enabled, bool):
-            raise ValidationError("La règle de relance doit être booléenne.")
+            raise ValidationError("The relaunch rule must be boolean.")
         if (
             isinstance(self.delay_seconds, bool)
             or not isinstance(self.delay_seconds, (int, float))
             or not math.isfinite(float(self.delay_seconds))
             or not 1 <= float(self.delay_seconds) <= 3_600
         ):
-            raise ValidationError("Le délai de relance doit être compris entre 1 et 3 600 secondes.")
+            raise ValidationError("The relaunch delay must be between 1 and 3,600 seconds.")
         if (
             isinstance(self.max_attempts, bool)
             or not isinstance(self.max_attempts, int)
             or not 0 <= self.max_attempts <= 20
         ):
-            raise ValidationError("Le nombre maximal de relances doit être compris entre 0 et 20.")
+            raise ValidationError("The maximum number of relaunches must be between 0 and 20.")
         if not isinstance(self.restart_on_crash, bool) or not isinstance(self.restart_on_exit, bool):
-            raise ValidationError("Les déclencheurs de relance doivent être booléens.")
+            raise ValidationError("Relaunch triggers must be boolean.")
 
 
 @dataclass(frozen=True, slots=True)
@@ -267,32 +267,32 @@ class RobloxProcessMonitor:
         crash_window_seconds: float = 120.0,
         clock: Clock = time.time,
     ) -> None:
-        _validate_bounded_int(max_history, "La taille de l'historique des processus est invalide.")
-        _validate_bounded_int(max_tracked, "La limite de processus suivis est invalide.")
-        _validate_bounded_int(max_pending, "La limite des lancements en attente est invalide.")
+        _validate_bounded_int(max_history, "Process history size is invalid.")
+        _validate_bounded_int(max_tracked, "Tracked process limit is invalid.")
+        _validate_bounded_int(max_pending, "Pending launches limit is invalid.")
         if not isinstance(termination_enabled, bool):
-            raise ValidationError("L'option de fermeture doit être booléenne.")
+            raise ValidationError("Process termination option must be boolean.")
         _validate_duration(
             launch_match_timeout_seconds,
-            "Le délai d'association de lancement doit être compris entre 5 et 300 secondes.",
+            "Launch association timeout must be between 5 and 300 seconds.",
             minimum=5,
             maximum=300,
         )
         _validate_duration(
             crash_window_seconds,
-            "La fenêtre de détection de crash doit être comprise entre 5 et 3 600 secondes.",
+            "Crash detection window must be between 5 and 3,600 seconds.",
             minimum=5,
             maximum=3_600,
         )
         if isinstance(process_names, str):
-            raise ValidationError("Les noms de processus Roblox doivent être une collection.")
+            raise ValidationError("Roblox process names must be a collection.")
         normalized_names = {
             name.strip().casefold()
             for name in process_names
             if isinstance(name, str) and name.strip()
         }
         if not normalized_names:
-            raise ValidationError("Au moins un nom de processus Roblox est requis.")
+            raise ValidationError("At least one Roblox process name is required.")
 
         self._process_iter = process_iter
         self._process_factory = process_factory
@@ -336,18 +336,18 @@ class RobloxProcessMonitor:
         """Apply validated local runtime options without restarting the monitor."""
 
         if termination_enabled is not None and not isinstance(termination_enabled, bool):
-            raise ValidationError("L'option de fermeture doit être booléenne.")
+            raise ValidationError("Process termination option must be boolean.")
         if launch_match_timeout_seconds is not None:
             _validate_duration(
                 launch_match_timeout_seconds,
-                "Le délai d'association de lancement doit être compris entre 5 et 300 secondes.",
+                "Launch association timeout must be between 5 and 300 seconds.",
                 minimum=5,
                 maximum=300,
             )
         if crash_window_seconds is not None:
             _validate_duration(
                 crash_window_seconds,
-                "La fenêtre de détection de crash doit être comprise entre 5 et 3 600 secondes.",
+                "Crash detection window must be between 5 and 3,600 seconds.",
                 minimum=5,
                 maximum=3_600,
             )
@@ -376,16 +376,16 @@ class RobloxProcessMonitor:
         matching client process appears; it never creates a fake instance.
         """
 
-        account_id = _opaque_text(account_id, "L'identifiant du compte est invalide.")
-        account_username = _opaque_text(account_username, "Le username du compte est invalide.")
-        _validate_positive_int(place_id, "Le PlaceId est invalide.")
+        account_id = _opaque_text(account_id, "Account ID is invalid.")
+        account_username = _opaque_text(account_username, "Account username is invalid.")
+        _validate_positive_int(place_id, "Place ID is invalid.")
         if job_id is not None and (not isinstance(job_id, str) or len(job_id.strip()) > 128):
-            raise ValidationError("Le JobId est invalide.")
+            raise ValidationError("Job ID is invalid.")
         if isinstance(restart_attempt, bool) or not isinstance(restart_attempt, int) or not 0 <= restart_attempt <= 20:
-            raise ValidationError("Le numéro de tentative de relance est invalide.")
+            raise ValidationError("Relaunch attempt count is invalid.")
         policy = restart_policy or RestartPolicy()
         if not isinstance(policy, RestartPolicy):
-            raise ValidationError("La règle de relance est invalide.")
+            raise ValidationError("Relaunch rule is invalid.")
 
         now = self._clock()
         intent = LaunchIntent(
@@ -420,7 +420,7 @@ class RobloxProcessMonitor:
     def cancel_launch_intent(self, request_id: str) -> bool:
         """Cancel an unobserved launch intent after a caller-side failure."""
 
-        token = _opaque_text(request_id, "L'identifiant de lancement est invalide.")
+        token = _opaque_text(request_id, "Launch ID is invalid.")
         with self._lock:
             matches = [item for item in self._pending_launches if item.request_id == token]
             if not matches:
@@ -443,7 +443,7 @@ class RobloxProcessMonitor:
         deleted account can never be launched later by an opt-in rule.
         """
 
-        account_id = _opaque_text(account_id, "L'identifiant du compte est invalide.")
+        account_id = _opaque_text(account_id, "Account ID is invalid.")
         now = self._clock()
         with self._lock:
             old_launches = len(self._pending_launches)
@@ -684,9 +684,9 @@ class RobloxProcessMonitor:
         """Record the service's non-sensitive outcome after claiming a restart."""
 
         if not isinstance(request, RestartRequest):
-            raise ValidationError("La demande de relance est invalide.")
+            raise ValidationError("Relaunch request is invalid.")
         if not isinstance(launched, bool):
-            raise ValidationError("Le résultat de relance est invalide.")
+            raise ValidationError("Relaunch result is invalid.")
         with self._lock:
             self._history.append(
                 self._event(
@@ -716,32 +716,32 @@ class RobloxProcessMonitor:
         Astro Account Manager's local metadata and never touches the Roblox process.
         """
 
-        _validate_positive_int(pid, "Le PID est invalide.")
+        _validate_positive_int(pid, "PID is invalid.")
         if not isinstance(confirm, bool) or not confirm:
             raise ProcessMonitorError(
-                "L'association d'une instance exige une confirmation explicite.",
+                "Instance binding requires explicit confirmation.",
                 code="instance_binding_confirmation_required",
             )
-        account_id = _opaque_text(account_id, "L'identifiant du compte est invalide.")
-        account_username = _opaque_text(account_username, "Le username du compte est invalide.")
-        _validate_positive_int(place_id, "Le PlaceId est invalide.")
+        account_id = _opaque_text(account_id, "Account ID is invalid.")
+        account_username = _opaque_text(account_username, "Account username is invalid.")
+        _validate_positive_int(place_id, "Place ID is invalid.")
         if job_id is not None and (not isinstance(job_id, str) or len(job_id.strip()) > 128):
-            raise ValidationError("Le JobId est invalide.")
+            raise ValidationError("Job ID is invalid.")
         policy = restart_policy or RestartPolicy()
         if not isinstance(policy, RestartPolicy):
-            raise ValidationError("La règle de relance est invalide.")
+            raise ValidationError("Relaunch rule is invalid.")
 
         with self._lock:
             candidates = [item for item in self._tracked.values() if item.identity.pid == pid]
             if len(candidates) != 1:
                 raise ProcessMonitorError(
-                    "Cette instance Roblox n'est pas disponible pour association.",
+                    "This Roblox instance is not available for binding.",
                     code="instance_not_available",
                 )
             current = candidates[0]
             if current.account_id is not None:
                 raise ProcessMonitorError(
-                    "Cette instance est déjà associée à un compte.", code="instance_already_bound"
+                    "This instance is already bound to an account.", code="instance_already_bound"
                 )
             now = self._clock()
             intent = LaunchIntent(
@@ -785,48 +785,48 @@ class RobloxProcessMonitor:
         never escalates to a forced ``kill()`` after a timeout.
         """
 
-        _validate_positive_int(pid, "Le PID doit être un entier positif.")
+        _validate_positive_int(pid, "PID must be a positive integer.")
         if not isinstance(confirm, bool) or not confirm:
             raise ProcessMonitorError(
-                "La fermeture d'une instance Roblox exige une confirmation explicite.",
+                "Closing a Roblox instance requires explicit confirmation.",
                 code="termination_confirmation_required",
             )
         if not self.termination_enabled:
             raise ProcessMonitorError(
-                "La fermeture d'instances Roblox n'est pas activée.",
+                "Roblox instance closing is not enabled.",
                 code="termination_not_enabled",
             )
         _validate_duration(
             wait_timeout_seconds,
-            "Le délai de fermeture doit être compris entre 0 et 10 secondes.",
+            "Termination delay must be between 0 and 10 seconds.",
             minimum=0.001,
             maximum=10,
         )
 
         tracked = self._tracked_for_pid(pid)
         if tracked is None:
-            return TerminationResult(pid, TerminationStatus.NOT_TRACKED, "Cette instance Roblox n'est pas suivie.")
+            return TerminationResult(pid, TerminationStatus.NOT_TRACKED, "This Roblox instance is not tracked.")
         if tracked.identity.created_at is None:
             return TerminationResult(
                 pid,
                 TerminationStatus.IDENTITY_CHANGED,
-                "L'identité de cette instance ne peut pas être vérifiée.",
+                "Instance identity could not be verified.",
             )
 
         try:
             process = self._process_factory(pid)
         except (psutil.NoSuchProcess, ProcessLookupError):
-            return TerminationResult(pid, TerminationStatus.NOT_FOUND, "Cette instance est déjà fermée.")
+            return TerminationResult(pid, TerminationStatus.NOT_FOUND, "This instance is already closed.")
         except (psutil.AccessDenied, PermissionError):
-            return TerminationResult(pid, TerminationStatus.DENIED, "Windows a refusé la fermeture de cette instance.")
+            return TerminationResult(pid, TerminationStatus.DENIED, "Windows denied closing this instance.")
         except Exception:
-            return TerminationResult(pid, TerminationStatus.FAILED, "La fermeture de cette instance a échoué.")
+            return TerminationResult(pid, TerminationStatus.FAILED, "Closing this instance failed.")
 
         if not self._matches_tracked_identity(process, tracked):
             return TerminationResult(
                 pid,
                 TerminationStatus.IDENTITY_CHANGED,
-                "L'instance a changé depuis le dernier contrôle; aucune fermeture n'a été faite.",
+                "Instance changed since last scan; no termination was performed.",
             )
 
         with self._lock:
@@ -852,22 +852,22 @@ class RobloxProcessMonitor:
             return TerminationResult(
                 pid,
                 TerminationStatus.TIMED_OUT,
-                "L'instance ne s'est pas fermée à temps; aucune fermeture forcée n'a été faite.",
+                "Instance did not close in time; no force kill was performed.",
             )
         except (psutil.NoSuchProcess, ProcessLookupError):
             # It vanished between verification and termination, which is the
             # desired end state and does not need escalation.
             self._remove_tracked(tracked.identity, state=InstanceState.TERMINATED)
-            return TerminationResult(pid, TerminationStatus.TERMINATED, "L'instance Roblox est fermée.")
+            return TerminationResult(pid, TerminationStatus.TERMINATED, "Roblox instance closed.")
         except (psutil.AccessDenied, PermissionError):
             self._clear_termination_request(tracked.identity)
-            return TerminationResult(pid, TerminationStatus.DENIED, "Windows a refusé la fermeture de cette instance.")
+            return TerminationResult(pid, TerminationStatus.DENIED, "Windows denied closing this instance.")
         except Exception:
             self._clear_termination_request(tracked.identity)
-            return TerminationResult(pid, TerminationStatus.FAILED, "La fermeture de cette instance a échoué.")
+            return TerminationResult(pid, TerminationStatus.FAILED, "Closing this instance failed.")
 
         self._remove_tracked(tracked.identity, state=InstanceState.TERMINATED)
-        return TerminationResult(pid, TerminationStatus.TERMINATED, "L'instance Roblox est fermée.")
+        return TerminationResult(pid, TerminationStatus.TERMINATED, "Roblox instance closed.")
 
     def _observe_processes(self) -> tuple[dict[ProcessIdentity, _ObservedProcess], bool]:
         attributes = ["pid", "name", "create_time", "status", "memory_info"]
@@ -1234,7 +1234,7 @@ class MonitorPollingLoop:
         name: str = "astro-roblox-watcher",
     ) -> None:
         if not callable(scan) or not callable(interval_seconds):
-            raise ValidationError("La boucle de surveillance est invalide.")
+            raise ValidationError("Watcher loop parameters are invalid.")
         self._scan = scan
         self._interval_seconds = interval_seconds
         self._on_scan = on_scan
@@ -1269,7 +1269,7 @@ class MonitorPollingLoop:
 
         _validate_duration(
             timeout_seconds,
-            "Le délai d'arrêt du watcher doit être compris entre 0 et 10 secondes.",
+            "Watcher stop timeout must be between 0 and 10 seconds.",
             minimum=0.001,
             maximum=10,
         )

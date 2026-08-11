@@ -137,16 +137,16 @@ class WindowsUwpRobloxManager:
             )
         )
         if result.returncode != 0:
-            raise RobloxUwpError("Windows n'a pas pu interroger les applications Roblox UWP.")
+            raise RobloxUwpError("Windows could not query Roblox UWP apps.")
         if len(result.stdout.encode("utf-8", errors="ignore")) > _MAX_POWERSHELL_OUTPUT:
-            raise RobloxUwpError("La réponse Windows sur les applications UWP est trop volumineuse.")
+            raise RobloxUwpError("Windows response for UWP apps is too large.")
 
         try:
             payload = json.loads(result.stdout) if result.stdout.strip() else {}
         except json.JSONDecodeError as exc:
-            raise RobloxUwpError("Windows a renvoyé un inventaire UWP invalide.") from exc
+            raise RobloxUwpError("Windows returned an invalid UWP inventory.") from exc
         if not isinstance(payload, Mapping):
-            raise RobloxUwpError("Windows a renvoyé un inventaire UWP invalide.")
+            raise RobloxUwpError("Windows returned an invalid UWP inventory.")
 
         apps = self._registered_apps(payload.get("apps"))
         packages: list[UwpRobloxPackage] = []
@@ -166,15 +166,15 @@ class WindowsUwpRobloxManager:
         """
 
         if not isinstance(package_full_name, str) or not package_full_name.strip():
-            raise RobloxUwpError("Sélectionnez une application Roblox UWP valide.")
+            raise RobloxUwpError("Select a valid Roblox UWP app.")
         target = next(
             (item for item in self.list_packages() if item.package_full_name == package_full_name),
             None,
         )
         if target is None:
-            raise RobloxUwpError("Cette application Roblox UWP n'est plus enregistrée sur cet appareil.")
+            raise RobloxUwpError("This Roblox UWP app is no longer registered on this device.")
         if target.app_user_model_id is None:
-            raise RobloxUwpError("Cette application Roblox UWP n'a pas de point de lancement enregistré.")
+            raise RobloxUwpError("This Roblox UWP app has no registered launch point.")
 
         opener = self._opener or getattr(os, "startfile", None)
         if not callable(opener):
@@ -256,7 +256,7 @@ def _run_powershell(command: tuple[str, ...]) -> PowerShellResult:
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
     except (OSError, subprocess.SubprocessError) as exc:
-        raise RobloxUwpError("Windows ne peut pas exécuter l'inventaire des applications UWP.") from exc
+        raise RobloxUwpError("Windows cannot run the UWP application inventory.") from exc
     return PowerShellResult(
         returncode=completed.returncode,
         stdout=completed.stdout,

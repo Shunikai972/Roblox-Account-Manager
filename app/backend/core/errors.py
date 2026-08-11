@@ -40,7 +40,7 @@ class ConflictError(AppError):
 
 
 class SecurityError(AppError):
-    def __init__(self, message: str = "Cette opération n'est pas autorisée.") -> None:
+    def __init__(self, message: str = "This operation is not authorized.") -> None:
         super().__init__(message=message, code="security_error")
 
 

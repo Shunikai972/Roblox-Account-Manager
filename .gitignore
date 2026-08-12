@@ -12,6 +12,12 @@ data/
 coverage.xml
 htmlcov/
 
+# Executables, distributions & archives
+*.zip
+*.exe
+dist/
+release/
+
 # Exclude legacy RAM application folder
 Roblox.Account.Manager.3.7.2/
 

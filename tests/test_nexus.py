@@ -6,6 +6,7 @@ import socket
 from pathlib import Path
 
 import anyio
+import pytest
 import websockets
 
 from app.backend.api.bridge import DesktopBridge
@@ -55,10 +56,11 @@ def test_controlled_account_model():
 
 
 def test_nexus_lua_script_template():
-    script = get_nexus_lua_script(host="127.0.0.1", port=5242)
+    script = get_nexus_lua_script(host="127.0.0.1", port=5242, token="secret-token")
     assert 'SERVER_HOST = "127.0.0.1"' in script
     assert "SERVER_PORT = 5242" in script
     assert "Nexus Account Control Client Script" in script
+    assert 'SERVER_TOKEN = "secret-token"' in script
 
 
 def test_nexus_server_lifecycle_and_handshake():
@@ -121,6 +123,23 @@ def test_nexus_server_lifecycle_and_handshake():
     anyio.run(_async_test)
 
 
+def test_nexus_rejects_wrong_handshake_token_before_registering_account():
+    async def _async_test():
+        port = get_free_port()
+        server = NexusServer(host="127.0.0.1", port=port, authentication_token="expected-token")
+        server.start()
+        try:
+            url = f"ws://127.0.0.1:{port}/Nexus?name=TestPlayer&id=88888&token=wrong"
+            async with websockets.connect(url) as ws:
+                with pytest.raises(websockets.exceptions.ConnectionClosedError):
+                    await ws.recv()
+            assert server.get_connected_accounts() == []
+        finally:
+            server.stop()
+
+    anyio.run(_async_test)
+
+
 def test_nexus_application_service_and_bridge_integration(tmp_path: Path):
     paths = _paths(tmp_path)
     repo = SQLiteRepository(paths.database)
@@ -139,7 +158,8 @@ def test_nexus_application_service_and_bridge_integration(tmp_path: Path):
     # Get script
     script = bridge.get_nexus_lua_script(host="127.0.0.1", port=5242)
     assert "127.0.0.1" in script
-    assert "5242" in script
+    assert str(start_res["port"]) in script
+    assert 'SERVER_TOKEN = ""' not in script
 
     # Stop server
     stop_res = bridge.stop_nexus_server()

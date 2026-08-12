@@ -17,6 +17,7 @@ from __future__ import annotations
 from collections import deque
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 import os
 import re
@@ -44,6 +45,8 @@ _PLAYER_LOG_NAME = re.compile(
     r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,255}_Player_[A-Za-z0-9_.-]{1,256}_last\.log$",
     re.IGNORECASE,
 )
+_PLAYER_LOG_TIMESTAMP = re.compile(r"_(?P<stamp>\d{8}T\d{6}Z)_Player_", re.IGNORECASE)
+_MAX_PROCESS_LOG_START_DELTA_SECONDS = 45.0
 
 TailerFactory = Callable[[Path], RobloxLogTailer]
 
@@ -57,6 +60,7 @@ class RobloxPlayerLogCandidate:
     """
 
     path: Path
+    created_at: float
     modified_at: float
     size_bytes: int
 
@@ -150,19 +154,20 @@ class RobloxPlayerLogDiscovery:
                     candidates.append(
                         RobloxPlayerLogCandidate(
                             path=Path(entry.path),
+                            created_at=_player_log_created_at(entry.name, float(metadata.st_ctime)),
                             modified_at=float(metadata.st_mtime),
                             size_bytes=int(metadata.st_size),
                         )
                     )
-                    if len(candidates) >= self._max_candidates:
-                        complete = False
-                        break
                 else:
                     complete = False
         except (FileNotFoundError, NotADirectoryError, PermissionError, OSError):
             return RobloxPlayerLogDiscoverySnapshot(False, True, ())
 
         candidates.sort(key=lambda candidate: (candidate.modified_at, candidate.path.name.casefold()), reverse=True)
+        if len(candidates) > self._max_candidates:
+            complete = False
+            candidates = candidates[: self._max_candidates]
         return RobloxPlayerLogDiscoverySnapshot(True, complete, tuple(candidates))
 
 
@@ -251,8 +256,8 @@ class RobloxPlayerLogRuntime:
             message="Roblox log history limit is invalid.",
         )
         self._lock = RLock()
-        self._tailer: RobloxLogTailer | None = None
-        self._association: tuple[int, Path] | None = None
+        self._tailers: dict[tuple[int, Path], RobloxLogTailer] = {}
+        self._associations: dict[int, Path] = {}
         self._history: deque[RobloxInstanceLogEvent] = deque(maxlen=self._max_history)
         self._snapshot = RobloxLogRuntimeSnapshot(
             directory_available=False,
@@ -266,23 +271,29 @@ class RobloxPlayerLogRuntime:
     def poll(
         self, instances: Iterable[object], *, process_scan_complete: bool = True
     ) -> RobloxLogRuntimeSnapshot:
-        """Poll once without associating ambiguous processes or logs.
+        """Poll once and associate logs by bounded process/log start times.
 
-        A fresh scan with two current processes, two eligible logs, or an
-        incomplete bounded discovery clears any previous association.  That
-        conservative choice avoids assigning an observation to the wrong
-        client after a concurrent launch.
+        Modern Player log names include a UTC creation timestamp.  Matching
+        that timestamp to the verified process creation time supports several
+        simultaneous Roblox clients without reading command lines or process
+        handles.  A process is left unassociated unless a one-to-one match is
+        available inside a narrow 45-second launch window.
         """
 
         if not isinstance(process_scan_complete, bool):
             raise ValidationError("Roblox process scan state is invalid.")
         discovery = self._discovery.discover()
-        process_ids = _observed_process_ids(instances)
+        process_records = _observed_process_records(instances)
+        process_ids = tuple(record[0] for record in process_records)
         with self._lock:
-            state = _association_state(discovery, process_ids, process_scan_complete=process_scan_complete)
+            state, associations = _matched_associations(
+                discovery,
+                process_records,
+                process_scan_complete=process_scan_complete,
+            )
             if state != "associated":
-                self._tailer = None
-                self._association = None
+                self._tailers.clear()
+                self._associations.clear()
                 self._snapshot = RobloxLogRuntimeSnapshot(
                     directory_available=discovery.directory_available,
                     discovery_complete=discovery.complete,
@@ -293,23 +304,27 @@ class RobloxPlayerLogRuntime:
                 )
                 return self._snapshot
 
-            pid = process_ids[0]
-            candidate = discovery.candidates[0]
-            association = (pid, candidate.path)
-            if self._association != association or self._tailer is None:
-                self._tailer = self._tailer_factory(candidate.path)
-                self._association = association
-
-            events = self._tailer.poll()
-            for event in events.events:
-                self._history.append(RobloxInstanceLogEvent.from_log_event(event, pid=pid))
+            active_keys = {(pid, path) for pid, path in associations.items()}
+            self._tailers = {
+                key: tailer for key, tailer in self._tailers.items() if key in active_keys
+            }
+            self._associations = dict(associations)
+            for pid, path in sorted(associations.items()):
+                key = (pid, path)
+                tailer = self._tailers.get(key)
+                if tailer is None:
+                    tailer = self._tailer_factory(path)
+                    self._tailers[key] = tailer
+                events = tailer.poll()
+                for event in events.events:
+                    self._history.append(RobloxInstanceLogEvent.from_log_event(event, pid=pid))
             self._snapshot = RobloxLogRuntimeSnapshot(
                 directory_available=discovery.directory_available,
                 discovery_complete=discovery.complete,
                 candidate_count=len(discovery.candidates),
                 observed_instance_count=len(process_ids),
                 association_state="associated",
-                associated_pid=pid,
+                associated_pid=process_ids[0] if len(process_ids) == 1 else None,
             )
             return self._snapshot
 
@@ -340,34 +355,93 @@ def _bounded_int(value: object, *, minimum: int, maximum: int, message: str) -> 
     return value
 
 
-def _observed_process_ids(instances: Iterable[object]) -> tuple[int, ...]:
-    pids: set[int] = set()
+def _observed_process_records(instances: Iterable[object]) -> tuple[tuple[int, float | None], ...]:
+    records: dict[int, float | None] = {}
     for instance in instances:
         pid = getattr(instance, "pid", None)
         if isinstance(pid, int) and not isinstance(pid, bool) and pid > 0:
-            pids.add(pid)
-    return tuple(sorted(pids))
+            records[pid] = _process_started_at(getattr(instance, "started_at", None))
+    return tuple(sorted(records.items()))
 
 
-def _association_state(
+def _matched_associations(
     discovery: RobloxPlayerLogDiscoverySnapshot,
-    process_ids: tuple[int, ...],
+    process_records: tuple[tuple[int, float | None], ...],
     *,
     process_scan_complete: bool,
-) -> str:
+) -> tuple[str, dict[int, Path]]:
     if not discovery.directory_available:
-        return "directory_unavailable"
+        return "directory_unavailable", {}
     if not process_scan_complete:
-        return "process_scan_incomplete"
-    if not discovery.complete:
-        return "discovery_truncated"
-    if not process_ids:
-        return "no_instance"
+        return "process_scan_incomplete", {}
+    if not process_records:
+        return "no_instance", {}
     if not discovery.candidates:
-        return "no_log"
-    if len(process_ids) != 1 or len(discovery.candidates) != 1:
-        return "ambiguous"
-    return "associated"
+        return "no_log", {}
+    if len(process_records) == 1 and len(discovery.candidates) == 1:
+        pid, started_at = process_records[0]
+        candidate = discovery.candidates[0]
+        if discovery.complete or (
+            started_at is not None
+            and abs(candidate.created_at - started_at) <= _MAX_PROCESS_LOG_START_DELTA_SECONDS
+        ):
+            return "associated", {pid: candidate.path}
+        return "discovery_truncated", {}
+    if any(started_at is None for _pid, started_at in process_records):
+        return ("discovery_truncated" if not discovery.complete else "ambiguous"), {}
+
+    # Player logs are created a few seconds after their corresponding process.
+    # During a rapid multi-launch the nearest absolute timestamp can cross the
+    # two identities (process B may start exactly when process A creates its
+    # log).  Preserve launch order and choose the consecutive candidate window
+    # with the most consistent non-negative startup delay.
+    ordered_processes = sorted(process_records, key=lambda item: (item[1] or 0.0, item[0]))
+    ordered_candidates = sorted(discovery.candidates, key=lambda item: (item.created_at, item.path.name.casefold()))
+    count = len(ordered_processes)
+    choices: list[tuple[tuple[float, float, float], list[RobloxPlayerLogCandidate]]] = []
+    for offset in range(0, len(ordered_candidates) - count + 1):
+        window = ordered_candidates[offset : offset + count]
+        delays = [
+            candidate.created_at - float(process_started)
+            for (_pid, process_started), candidate in zip(ordered_processes, window, strict=True)
+        ]
+        if any(delay < -2.0 or delay > _MAX_PROCESS_LOG_START_DELTA_SECONDS for delay in delays):
+            continue
+        score = (max(delays) - min(delays), sum(abs(delay) for delay in delays), max(abs(delay) for delay in delays))
+        choices.append((score, window))
+    if not choices:
+        return ("discovery_truncated" if not discovery.complete else "ambiguous"), {}
+    choices.sort(key=lambda item: item[0])
+    best_window = choices[0][1]
+    associations = {
+        pid: candidate.path
+        for (pid, _started_at), candidate in zip(ordered_processes, best_window, strict=True)
+    }
+    return "associated", associations
+
+
+def _player_log_created_at(filename: str, fallback: float) -> float:
+    match = _PLAYER_LOG_TIMESTAMP.search(filename)
+    if match is None:
+        return fallback
+    try:
+        return datetime.strptime(match.group("stamp"), "%Y%m%dT%H%M%SZ").replace(tzinfo=UTC).timestamp()
+    except (OverflowError, ValueError):
+        return fallback
+
+
+def _process_started_at(value: object) -> float | None:
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return float(value) if value > 0 else None
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=UTC)
+        return parsed.timestamp()
+    except (OverflowError, ValueError):
+        return None
 
 
 __all__ = [

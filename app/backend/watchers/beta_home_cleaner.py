@@ -4,8 +4,11 @@ from __future__ import annotations
 
 import ctypes
 import logging
+import math
 import sys
-from typing import Any
+import time
+
+import psutil
 
 logger = logging.getLogger("astro.beta_home_cleaner")
 
@@ -21,10 +24,39 @@ class BetaHomeCleaner:
         "Roblox Home",
         "Roblox App",
     )
+    PROCESS_NAMES = frozenset({"robloxplayerbeta.exe", "robloxplayerbeta"})
 
     @classmethod
-    def close_beta_home_windows(cls) -> int:
-        """Scan open windows and send WM_CLOSE to matching Beta Home windows."""
+    def _is_roblox_process(
+        cls, pid: int, *, min_age_seconds: float = 0.0, now: float | None = None
+    ) -> bool:
+        try:
+            process = psutil.Process(pid)
+            if process.name().casefold() not in cls.PROCESS_NAMES:
+                return False
+            if min_age_seconds <= 0:
+                return True
+            current = time.time() if now is None else float(now)
+            return current - float(process.create_time()) >= min_age_seconds
+        except (psutil.Error, OSError, ValueError):
+            return False
+
+    @classmethod
+    def close_beta_home_windows(cls, *, min_age_seconds: float = 0.0) -> int:
+        """Scan open windows and send WM_CLOSE to matching Beta Home windows.
+
+        The periodic watcher uses a 30-second grace period, matching the
+        historical cleaner without racing a normal client startup.  The
+        explicit UI action keeps the zero-second default.
+        """
+
+        if (
+            isinstance(min_age_seconds, bool)
+            or not isinstance(min_age_seconds, (int, float))
+            or not math.isfinite(float(min_age_seconds))
+            or not 0 <= float(min_age_seconds) <= 300
+        ):
+            raise ValueError("Beta Home grace period is invalid.")
 
         if sys.platform != "win32":
             return 0
@@ -42,14 +74,19 @@ class BetaHomeCleaner:
                         user32.GetWindowTextW(hwnd, buff, length + 1)
                         title = buff.value
                         if any(target in title for target in cls.TARGET_TITLES):
-                            logger.info(f"Closing Beta Home window: '{title}' (HWND {hwnd})")
-                            user32.PostMessageW(hwnd, WM_CLOSE, 0, 0)
-                            closed_count += 1
+                            process_id = ctypes.c_ulong()
+                            user32.GetWindowThreadProcessId(hwnd, ctypes.byref(process_id))
+                            if cls._is_roblox_process(
+                                int(process_id.value), min_age_seconds=float(min_age_seconds)
+                            ):
+                                logger.info("Closing a verified Roblox Beta Home window")
+                                if user32.PostMessageW(hwnd, WM_CLOSE, 0, 0):
+                                    closed_count += 1
                 return True
 
             WNDENUMPROC = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_void_p, ctypes.c_void_p)
             user32.EnumWindows(WNDENUMPROC(enum_windows_cb), 0)
-        except Exception as exc:
-            logger.error(f"Error during Beta Home cleanup: {exc}")
+        except Exception:
+            logger.exception("Error during Beta Home cleanup")
 
         return closed_count

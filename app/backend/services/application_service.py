@@ -7,7 +7,9 @@ from copy import deepcopy
 from datetime import UTC, datetime
 import json
 import logging
+import os
 from pathlib import Path
+import secrets
 import sys
 import threading
 import time
@@ -43,8 +45,11 @@ from app.backend.roblox import (
     OAuthIdentity,
     OAuthLoginCompletion,
     OAuthLoginCoordinator,
+    RegionLookupSettings,
+    RequestsRegionTransport,
     RobloxAuthTools,
     RobloxClient,
+    ServerRegionResolver,
     WindowsMultiInstanceController,
     WindowsRobloxLauncher,
     WindowsUwpRobloxManager,
@@ -60,6 +65,7 @@ from app.backend.storage.backups import BackupError, VersionedBackupManager
 from app.backend.storage.bulk_import import BulkAccountImporter
 from app.backend.storage.metadata_transfer import MetadataTransfer, MetadataTransferError
 from app.backend.watchers.beta_home_cleaner import BetaHomeCleaner
+from app.backend.watchers.window_positioner import RobloxWindowPositioner
 from app.backend.watchers import (
     MonitorPollingLoop,
     RestartPolicy,
@@ -77,9 +83,14 @@ _SETTING_ALIASES = {
     "reduce_motion": "appearance.reduced_motion",
     "launch_behavior": "general.launch_behavior",
     "close_when_empty": "instances.close_when_empty",
+    "allow_multiple_launches": "instances.allow_multiple_launches",
     "watcher_enabled": "watcher.enabled",
     "watcher_termination_enabled": "watcher.termination_enabled",
     "watcher_auto_relaunch_enabled": "watcher.auto_relaunch_enabled",
+    "watcher_close_unconnected": "watcher.close_unconnected",
+    "watcher_close_if_memory_low": "watcher.close_if_memory_low",
+    "watcher_close_if_title_mismatch": "watcher.close_if_title_mismatch",
+    "remember_window_positions": "instances.remember_window_positions",
     "auto_backup": "general.auto_backup",
     "notifications": "notifications.desktop_notifications",
     "diagnostics": "developer.verbose_logs",
@@ -119,10 +130,15 @@ class ApplicationService:
         runtime_executable: Path | str | None = None,
         monitor: RobloxProcessMonitor | None = None,
         log_runtime: RobloxPlayerLogRuntime | Any | None = None,
+        window_positioner: Any | None = None,
         oauth_login: OAuthLoginCoordinator | None = None,
         client_settings: ClientSettingsPatcher | None = None,
+        region_resolver: ServerRegionResolver | None = None,
         logger: logging.Logger | logging.LoggerAdapter[logging.Logger] | None = None,
     ) -> None:
+        self._region_resolver = region_resolver or ServerRegionResolver(
+            fetch_json=RequestsRegionTransport()
+        )
         self.paths = paths or AppPaths.for_current_user()
         self.paths.ensure_exists()
         self.repository = repository or SQLiteRepository(self.paths.database)
@@ -154,6 +170,7 @@ class ApplicationService:
         # Typed log events are exposed for diagnostics/UI only; they are never
         # fed into close, bind, account-status, or relaunch decisions.
         self._log_runtime = log_runtime or RobloxPlayerLogRuntime()
+        self.window_positioner = window_positioner or RobloxWindowPositioner
         self.oauth_login = oauth_login or OAuthLoginCoordinator()
         self.backups = VersionedBackupManager(self.paths.backups, app_version=APP_VERSION)
         self.logger = logger or logging.getLogger("astro_account_manager.service")
@@ -163,7 +180,11 @@ class ApplicationService:
         self._watch_loop: MonitorPollingLoop | None = None
         self._watcher_requested = False
         self._oauth_results: dict[str, dict[str, Any]] = {}
+        self._browser_login_results: dict[str, dict[str, Any]] = {}
+        self._browser_login_lock = threading.RLock()
+        self._pending_window_restores: dict[int, tuple[str, float]] = {}
         self._nexus_server: Any = None
+        self._nexus_token: str | None = None
         self.multi_instance = WindowsMultiInstanceController()
         self.client_settings = client_settings or ClientSettingsPatcher()
         self.batch_launcher = BatchLauncher(launch_single_fn=self._batch_launch_single_adapter)
@@ -172,6 +193,7 @@ class ApplicationService:
         self.player_search = PlayerSearchService(self.roblox)
         self.random_server = RandomServerSelector(self.roblox)
         self._ensure_default_settings()
+        self._configure_multi_instance_from_settings()
         self._configure_monitor_from_settings()
 
     def close(self) -> None:
@@ -179,6 +201,7 @@ class ApplicationService:
 
         self.stop_nexus_server()
         self.stop_watcher()
+        self.multi_instance.disable_multi_instance()
         close_client = getattr(self.roblox, "close", None)
         if callable(close_client):
             close_client()
@@ -198,6 +221,7 @@ class ApplicationService:
             "games": [self._game_payload(item) for item in self.repository.list_games(limit=30)],
             "instances": [self._instance_payload(item) for item in scan.instances],
             "settings": self.get_settings(),
+            "multi_instance": self.get_multi_instance_status(),
             "nexus": self.get_nexus_status(),
             "activity": self.get_activity(),
             "notifications": self.get_notifications(),
@@ -210,6 +234,12 @@ class ApplicationService:
 
     def create_account(self, payload: Mapping[str, Any]) -> dict[str, Any]:
         data = self._require_mapping(payload, "Account data")
+        supplied_session = data.get("session")
+        if isinstance(supplied_session, str) and supplied_session.strip():
+            return self.add_account_from_cookie(
+                supplied_session,
+                group_id=self._optional_id(data.get("group_id")),
+            )
         username = self._required_text(data.get("username"), "Username")
         if self.repository.get_account_by_username(username) is not None:
             raise ConflictError("This username already exists in your workspace.")
@@ -259,6 +289,8 @@ class ApplicationService:
     def update_account(self, account_id: str, payload: Mapping[str, Any]) -> dict[str, Any]:
         existing = self._get_account(account_id)
         data = self._require_mapping(payload, "Account data")
+        if "session" in data:
+            raise ValidationError("Use the authenticated cookie import flow to replace a Roblox session.")
         group_id = self._optional_id(data.get("group_id", existing.group_id))
         if group_id:
             self._get_group(group_id)
@@ -302,10 +334,6 @@ class ApplicationService:
         mutable["group_id"] = group_id
         mutable["id"] = existing.id
         mutable["has_session"] = existing.has_session
-        if "session" in data:
-            self._store_session(existing, data["session"])
-            mutable["has_session"] = True
-
         try:
             saved = self.repository.save_account(mutable)
         except RepositoryConflictError as exc:
@@ -642,9 +670,40 @@ class ApplicationService:
             page = self.roblox.list_public_servers(normalized)
         except RobloxServiceError as exc:
             raise ExternalServiceError(str(exc), retryable=getattr(exc, "retryable", False)) from exc
-        return [self._server_payload(server) for server in page.servers]
+        rows = [self._server_payload(server) for server in page.servers]
+        return self._region_resolver_for_settings().annotate_servers(rows)
 
-    def launch_account(self, account_id: str, target: Mapping[str, Any] | None = None) -> dict[str, Any]:
+    def _region_resolver_for_settings(self) -> ServerRegionResolver:
+        try:
+            network = self.get_settings()["categories"].get("network", {})
+        except Exception:
+            network = {}
+        self._region_resolver.update_settings(RegionLookupSettings.from_mapping(network))
+        return self._region_resolver
+
+    def resolve_server_region(self, address: str) -> dict[str, Any]:
+        resolver = self._region_resolver_for_settings()
+        if not resolver.enabled:
+            return {
+                "region": None,
+                "enabled": False,
+                "reason": "Region lookup is disabled in Settings > Network.",
+            }
+        region = resolver.resolve(address)
+        return {
+            "region": region,
+            "enabled": True,
+            "reason": None if region else "No region resolved for this server.",
+        }
+
+    def launch_account(
+        self,
+        account_id: str,
+        target: Mapping[str, Any] | None = None,
+        *,
+        _restart_policy: RestartPolicy | None = None,
+        _restart_attempt: int = 0,
+    ) -> dict[str, Any]:
         account = self._get_account(account_id)
         target_data = dict(target or {})
         place_id = target_data.get("place_id") or target_data.get("placeId") or account.saved_place_id
@@ -655,43 +714,126 @@ class ApplicationService:
             job_id=self._optional_text(target_data.get("job_id") or target_data.get("jobId")),
         )
 
+        categories = self.get_settings()["categories"]
+        instance_settings = categories.get("instances", {})
+        if bool(instance_settings.get("prevent_duplicate_accounts", True)):
+            duplicate_check = getattr(self.monitor, "has_active_or_pending_account", None)
+            if callable(duplicate_check):
+                duplicate = bool(duplicate_check(account.id))
+            else:
+                duplicate = any(
+                    getattr(instance, "account_id", None) == account.id
+                    for instance in self.monitor.current_instances()
+                )
+            if duplicate:
+                raise ConflictError("This account already has an active or pending Roblox launch.")
+
+        watcher_request_id: str | None = None
         with self._launch_lock:
             multi_instance_enabled = bool(
-                self.get_settings()["categories"].get("instances", {}).get("allow_multiple_launches", False)
+                instance_settings.get("allow_multiple_launches", False)
                 or self.multi_instance.is_enabled
             )
-            if multi_instance_enabled:
-                self.multi_instance.enable_multi_instance()
+            if multi_instance_enabled and not self.multi_instance.enable_multi_instance():
+                raise ConflictError(
+                    "Multi Roblox is enabled but Astro could not acquire its mutex. "
+                    "Close every Roblox client, restart Astro, then launch the accounts from Astro."
+                )
 
             # Apply per-account or per-launch FPS Cap & Potato Graphics settings
             launch_opts = account.metadata.get("launch_options", {}) if isinstance(account.metadata, dict) else {}
             fps_target = target_data.get("fps") or target_data.get("fps_cap") or launch_opts.get("max_fps") or self.client_settings.get_fps_cap()
-            potato_mode = target_data.get("potato") if "potato" in target_data else (target_data.get("potato_graphics") if "potato_graphics" in target_data else launch_opts.get("potato_graphics", self.get_settings()["categories"].get("performance", {}).get("potato_graphics", False)))
+            potato_mode = target_data.get("potato") if "potato" in target_data else (target_data.get("potato_graphics") if "potato_graphics" in target_data else launch_opts.get("potato_graphics", categories.get("performance", {}).get("potato_graphics", False)))
             try:
                 self.client_settings.patch_launch_settings(fps=int(fps_target) if fps_target else 0, potato_graphics=bool(potato_mode))
             except Exception as patch_exc:
                 self.logger.warning(f"Could not apply launch ClientSettings: {patch_exc}")
 
             try:
-                result = self.launcher.launch(launch_target)
+                # A stored account session must select that account in the
+                # Roblox client. The generic roblox:// URI only opens the
+                # machine's current browser/client identity, so use RAM's
+                # authentication-ticket hand-off whenever a vault session is
+                # available.
+                launch_authenticated = getattr(self.launcher, "launch_authenticated_uri", None)
+                if account.has_session and callable(launch_authenticated):
+                    cookie = self._get_account_cookie_raw(account.id)
+                    ticket = self.auth_tools.generate_auth_ticket(cookie)
+                    link_code = self._optional_text(
+                        target_data.get("private_server_link_code") or target_data.get("link_code")
+                    )
+                    if link_code:
+                        uri = PrivateServerHelper.format_private_server_uri(
+                            auth_ticket=ticket,
+                            place_id=launch_target.place_id,
+                            link_code=link_code,
+                        )
+                    else:
+                        uri = self.auth_tools.generate_rbx_player_uri(
+                            ticket,
+                            launch_target.place_id,
+                            launch_target.job_id,
+                        )
+                    # The watcher intent must exist before Windows receives the
+                    # protocol hand-off.  Registering it afterwards creates a
+                    # race where a fast Roblox process is permanently treated
+                    # as an unrelated orphan.
+                    watcher_request_id = self._register_launch_intent(
+                        account,
+                        launch_target,
+                        restart_policy=_restart_policy,
+                        restart_attempt=_restart_attempt,
+                    )
+                    result = launch_authenticated(uri)
+                else:
+                    watcher_request_id = self._register_launch_intent(
+                        account,
+                        launch_target,
+                        restart_policy=_restart_policy,
+                        restart_attempt=_restart_attempt,
+                    )
+                    result = self.launcher.launch(launch_target)
+            except RobloxServiceError as exc:
+                self._cancel_launch_intent(watcher_request_id)
+                raise ExternalServiceError(str(exc), retryable=getattr(exc, "retryable", False)) from exc
             except RobloxLaunchError as exc:
+                self._cancel_launch_intent(watcher_request_id)
                 raise ExternalServiceError(str(exc), retryable=False) from exc
 
-            # Bounded flag initialization hold window (e.g. 1.2s max) to prevent FastFlags collision
-            # during rapid consecutive or parallel multi-account launches
-            if result.launched:
-                time.sleep(1.2)
+            if not result.launched:
+                self._cancel_launch_intent(watcher_request_id)
+                self._activity(
+                    "launch",
+                    f"Launch rejected for {account.username}",
+                    account_id=account.id,
+                    metadata={"place_id": launch_target.place_id},
+                )
+                return {
+                    "accepted": False,
+                    "account_id": account.id,
+                    "target": {"place_id": launch_target.place_id, "job_id": launch_target.job_id},
+                    "watcher_request_id": None,
+                }
 
-        watcher_request_id = self._register_launch_intent(account, launch_target)
+            account.status = "launching"
+            account.last_used_at = _utc_now()
+            # ``saved_place_id`` is the account's configured default, not a
+            # last-launched field.  A one-off game/server launch must never
+            # overwrite that per-account preference.
+            try:
+                self.repository.save_account(account)
+            except RepositoryError:
+                self._notice("warning", "Launch Sent", "Roblox was opened, but metadata could not be updated.")
 
-        account.status = "launching"
-        account.last_used_at = _utc_now()
-        account.saved_place_id = launch_target.place_id
-        account.saved_job_id = launch_target.job_id
-        try:
-            self.repository.save_account(account)
-        except RepositoryError:
-            self._notice("warning", "Launch Sent", "Roblox was opened, but metadata could not be updated.")
+            # Serialise only until the watcher has observed this account.  In
+            # the common case this replaces the old unconditional 1.2 second
+            # sleep with a couple of short polls, while preventing two rapid
+            # launches from becoming an ambiguous pair of orphan processes.
+            if watcher_request_id:
+                self._await_launch_observation(account.id, timeout_seconds=1.2)
+            else:
+                time.sleep(0.2)
+
         if result.launched:
             try:
                 self._record_recent_game(launch_target.place_id)
@@ -750,6 +892,7 @@ class ApplicationService:
         pending_method = getattr(self.monitor, "pending_restarts", None)
         pending = pending_method() if callable(pending_method) else ()
         return {
+            "accounts": [self._account_payload(item) for item in self.repository.list_accounts()],
             "instances": self.list_instances(),
             "events": [item.to_dict() if hasattr(item, "to_dict") else {"kind": getattr(item, "kind", "instance"), "pid": getattr(item, "pid", 0), "occurred_at": getattr(item, "occurred_at", None)} for item in history],
             "log_watcher": self._log_watcher_payload(),
@@ -935,11 +1078,16 @@ class ApplicationService:
             "watcher_enabled": nested["watcher"]["enabled"],
             "watcher_termination_enabled": nested["watcher"].get("termination_enabled", False),
             "watcher_auto_relaunch_enabled": nested["watcher"].get("auto_relaunch_enabled", False),
+            "watcher_close_unconnected": nested["watcher"].get("close_unconnected", False),
+            "watcher_close_if_memory_low": nested["watcher"].get("close_if_memory_low", False),
+            "watcher_close_if_title_mismatch": nested["watcher"].get("close_if_title_mismatch", False),
+            "remember_window_positions": nested["instances"].get("remember_window_positions", False),
             "auto_backup": nested["general"]["auto_backup"],
             "notifications": nested["notifications"]["desktop_notifications"],
             "diagnostics": nested["developer"]["verbose_logs"],
             "launch_behavior": nested["general"].get("launch_behavior", "confirm"),
             "close_when_empty": nested["instances"].get("close_when_empty", False),
+            "allow_multiple_launches": nested["instances"].get("allow_multiple_launches", False),
             "categories": nested,
         }
         return flat
@@ -972,6 +1120,8 @@ class ApplicationService:
                 raise StorageError("Recent games limit could not be applied.") from exc
         self._configure_monitor_from_settings()
         self._sync_watcher_loop()
+        if "instances.allow_multiple_launches" in _flatten_settings(nested_updates):
+            self._configure_multi_instance_from_settings()
         self._activity("settings", "Settings updated")
         return self.get_settings()
 
@@ -1576,7 +1726,14 @@ class ApplicationService:
             loop.stop()
 
     def _watcher_tick(self) -> Any:
-        return self._scan_instances(allow_restarts=True)
+        scan = self._scan_instances(allow_restarts=True)
+        # RAM's Beta Home cleaner ran automatically after a short grace
+        # period.  Only a verified Roblox process with one of the exact Home
+        # titles can receive WM_CLOSE; normal game windows are untouched.
+        closed = BetaHomeCleaner.close_beta_home_windows(min_age_seconds=30.0)
+        if closed:
+            self._activity("watcher", f"{closed} Beta Home window(s) closed automatically")
+        return scan
 
     def _watcher_interval(self) -> float:
         try:
@@ -1613,13 +1770,231 @@ class ApplicationService:
     def _scan_instances(self, *, allow_restarts: bool) -> Any:
         scan = self.monitor.scan()
         self._record_process_events(getattr(scan, "events", ()))
+        self._reconcile_account_runtime_statuses(scan)
         self._poll_instance_logs(
             getattr(scan, "instances", ()),
             process_scan_complete=bool(getattr(scan, "complete", True)),
         )
+        self._apply_instance_window_runtime(scan)
         if allow_restarts:
             self._dispatch_due_restarts()
         return scan
+
+    def _await_launch_observation(self, account_id: str, *, timeout_seconds: float) -> bool:
+        """Wait briefly for one launched process without a fixed launch delay."""
+
+        deadline = time.monotonic() + max(0.0, float(timeout_seconds))
+        while True:
+            scan = self._scan_instances(allow_restarts=False)
+            if any(getattr(instance, "account_id", None) == account_id for instance in scan.instances):
+                return True
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return False
+            time.sleep(min(0.1, remaining))
+
+    def _reconcile_account_runtime_statuses(self, scan: Any) -> None:
+        """Repair persisted runtime labels after a complete process snapshot.
+
+        Runtime labels live in SQLite so the UI can render them cheaply, but a
+        process may disappear while Astro is closed.  A new monitor has no old
+        PID from which to emit an ``exited`` event, so complete scans must also
+        reconcile stale ``launching``/``in_game`` values against the monitor's
+        current associated instances and unexpired launch intentions.
+        """
+
+        if not bool(getattr(scan, "complete", True)):
+            return
+        live_account_ids = {
+            account_id
+            for instance in (getattr(scan, "instances", ()) or ())
+            if isinstance((account_id := getattr(instance, "account_id", None)), str)
+            and account_id
+        }
+        duplicate_check = getattr(self.monitor, "has_active_or_pending_account", None)
+        try:
+            accounts = self.repository.list_accounts()
+        except RepositoryError:
+            self.logger.warning("Could not reconcile account status from the local watcher.")
+            return
+        for account in accounts:
+            if account.status not in {"launching", "in_game"}:
+                continue
+            if account.id in live_account_ids:
+                desired = "in_game"
+            else:
+                pending = False
+                if callable(duplicate_check):
+                    try:
+                        pending = bool(duplicate_check(account.id))
+                    except (TypeError, ValueError, ValidationError):
+                        pending = False
+                desired = "launching" if pending else "ready"
+            if account.status != desired:
+                self._set_account_runtime_status(account.id, desired)
+
+    def _apply_instance_window_runtime(self, scan: Any) -> None:
+        """Apply opt-in RAM-compatible window capture/restore and health rules."""
+
+        try:
+            categories = self.get_settings()["categories"]
+            instance_settings = categories.get("instances", {})
+            watcher = categories.get("watcher", {})
+        except (KeyError, TypeError, RepositoryError):
+            return
+        instances = tuple(getattr(scan, "instances", ()) or ())
+        started = tuple(getattr(scan, "started", ()) or ())
+        if bool(instance_settings.get("remember_window_positions", False)):
+            self._queue_window_restores(started)
+            self._attempt_window_restores()
+            self._capture_bound_window_positions(instances)
+        else:
+            self._pending_window_restores.clear()
+        self._apply_automatic_close_rules(instances, watcher)
+
+    def _queue_window_restores(self, started: tuple[Any, ...]) -> None:
+        now = time.time()
+        for instance in started:
+            account_id = getattr(instance, "account_id", None)
+            pid = getattr(instance, "pid", None)
+            if not isinstance(account_id, str) or not isinstance(pid, int) or pid <= 0:
+                continue
+            try:
+                account = self._get_account(account_id)
+            except AppError:
+                continue
+            if self._window_layout(account.metadata) is not None:
+                self._pending_window_restores[pid] = (account_id, now + 45.0)
+
+    def _attempt_window_restores(self) -> None:
+        now = time.time()
+        for pid, (account_id, deadline) in tuple(self._pending_window_restores.items()):
+            if now > deadline:
+                self._pending_window_restores.pop(pid, None)
+                continue
+            try:
+                account = self._get_account(account_id)
+            except AppError:
+                self._pending_window_restores.pop(pid, None)
+                continue
+            layout = self._window_layout(account.metadata)
+            if layout is None:
+                self._pending_window_restores.pop(pid, None)
+                continue
+            if self.window_positioner.position_window(pid, **layout):
+                self._pending_window_restores.pop(pid, None)
+                self._activity(
+                    "window",
+                    f"Restored saved Roblox window for {account.username}",
+                    account_id=account.id,
+                    metadata={"pid": pid},
+                )
+
+    def _capture_bound_window_positions(self, instances: tuple[Any, ...]) -> None:
+        for instance in instances:
+            account_id = getattr(instance, "account_id", None)
+            pid = getattr(instance, "pid", None)
+            if (
+                not isinstance(account_id, str)
+                or not isinstance(pid, int)
+                or pid <= 0
+                or pid in self._pending_window_restores
+                or self._instance_age_seconds(instance) < 30.0
+            ):
+                continue
+            snapshot = self.window_positioner.inspect_window(pid)
+            if not isinstance(snapshot, Mapping) or bool(snapshot.get("focused", False)):
+                continue
+            layout = self._window_layout(snapshot)
+            if layout is None:
+                continue
+            try:
+                account = self._get_account(account_id)
+                if self._window_layout(account.metadata) == layout:
+                    continue
+                metadata = dict(account.metadata)
+                metadata["window_layout"] = layout
+                account.metadata = metadata
+                self.repository.save_account(account)
+            except (AppError, RepositoryError):
+                self.logger.warning("A Roblox window layout could not be persisted.")
+
+    def _apply_automatic_close_rules(self, instances: tuple[Any, ...], watcher: Mapping[str, Any]) -> None:
+        if not bool(watcher.get("termination_enabled", False)):
+            return
+        memory_rule = bool(watcher.get("close_if_memory_low", False))
+        title_rule = bool(watcher.get("close_if_title_mismatch", False))
+        unconnected_rule = bool(watcher.get("close_unconnected", False))
+        if not (memory_rule or title_rule or unconnected_rule):
+            return
+        terminator = getattr(self.monitor, "terminate_known_process", None)
+        if not callable(terminator):
+            return
+        grace = float(watcher.get("health_grace_seconds", 30))
+        unconnected_timeout = float(watcher.get("unconnected_timeout_seconds", 60))
+        threshold_bytes = int(watcher.get("memory_low_mb", 200)) * 1024 * 1024
+        expected_title = str(watcher.get("expected_window_title", "Roblox"))
+        for instance in instances:
+            if getattr(instance, "status", "") not in {"running", "orphaned"}:
+                continue
+            age = self._instance_age_seconds(instance)
+            pid = getattr(instance, "pid", None)
+            if not isinstance(pid, int) or pid <= 0:
+                continue
+            snapshot = self.window_positioner.inspect_window(pid)
+            # RAM ignored the focused Roblox window. Astro also requires a
+            # verified visible window, avoiding similarly named helpers.
+            if not isinstance(snapshot, Mapping) or bool(snapshot.get("focused", False)):
+                continue
+            reason: str | None = None
+            memory_bytes = getattr(instance, "memory_bytes", None)
+            if memory_rule and age >= grace and isinstance(memory_bytes, int) and memory_bytes < threshold_bytes:
+                reason = "memory_below_threshold"
+            elif title_rule and age >= grace and snapshot.get("title") != expected_title:
+                reason = "window_title_mismatch"
+            elif unconnected_rule and age >= unconnected_timeout and not getattr(instance, "account_id", None):
+                reason = "unconnected_timeout"
+            if reason is None:
+                continue
+            try:
+                result = terminator(pid, confirm=True, wait_timeout_seconds=0.5)
+            except (TypeError, ValueError, ValidationError, RobloxServiceError):
+                self.logger.warning("An automatic Roblox close rule could not be applied.")
+                continue
+            status = getattr(getattr(result, "status", None), "value", None)
+            self._activity(
+                "watcher",
+                f"Automatic Roblox close rule: {status or 'failed'}",
+                account_id=getattr(instance, "account_id", None),
+                metadata={"pid": pid, "reason": reason},
+            )
+
+    @staticmethod
+    def _instance_age_seconds(instance: Any) -> float:
+        started_at = getattr(instance, "started_at", None)
+        if not isinstance(started_at, str):
+            return 0.0
+        try:
+            started = datetime.fromisoformat(started_at.replace("Z", "+00:00"))
+            if started.tzinfo is None:
+                started = started.replace(tzinfo=UTC)
+            return max(0.0, (datetime.now(UTC) - started.astimezone(UTC)).total_seconds())
+        except (TypeError, ValueError):
+            return 0.0
+
+    @staticmethod
+    def _window_layout(value: Any) -> dict[str, int] | None:
+        source = value.get("window_layout") if isinstance(value, Mapping) and "window_layout" in value else value
+        if not isinstance(source, Mapping):
+            return None
+        values = {key: source.get(key) for key in ("x", "y", "width", "height")}
+        if any(isinstance(item, bool) or not isinstance(item, int) for item in values.values()):
+            return None
+        if not -32_768 <= values["x"] <= 32_767 or not -32_768 <= values["y"] <= 32_767:
+            return None
+        if not 160 <= values["width"] <= 16_384 or not 120 <= values["height"] <= 16_384:
+            return None
+        return values
 
     def _poll_instance_logs(self, instances: Any, *, process_scan_complete: bool) -> None:
         """Update the read-only Player-log observer independently of control.
@@ -1740,6 +2115,17 @@ class ApplicationService:
             self.logger.warning("A Roblox launch could not be registered with the local watcher.")
             return None
 
+    def _cancel_launch_intent(self, request_id: str | None) -> None:
+        if not request_id:
+            return
+        cancel = getattr(self.monitor, "cancel_launch_intent", None)
+        if not callable(cancel):
+            return
+        try:
+            cancel(request_id)
+        except (TypeError, ValueError, ValidationError):
+            self.logger.warning("A failed Roblox launch could not be removed from the local watcher.")
+
     def _dispatch_due_restarts(self) -> None:
         claim = getattr(self.monitor, "claim_due_restarts", None)
         record_result = getattr(self.monitor, "record_restart_result", None)
@@ -1756,22 +2142,19 @@ class ApplicationService:
             launched = False
             try:
                 account = self._get_account(request.account_id)
-                target = LaunchTarget(place_id=request.place_id, job_id=request.job_id)
-                result = self.launcher.launch(target)
-                launched = bool(result.launched)
+                result = self.launch_account(
+                    account.id,
+                    {"place_id": request.place_id, "job_id": request.job_id},
+                    _restart_policy=request.restart_policy,
+                    _restart_attempt=request.restart_attempt,
+                )
+                launched = bool(result.get("accepted"))
                 if launched:
-                    self._register_launch_intent(
-                        account,
-                        target,
-                        restart_policy=request.restart_policy,
-                        restart_attempt=request.restart_attempt,
-                    )
-                    self._set_account_runtime_status(account.id, "launching")
                     self._activity(
                         "relaunch",
                         f"Local relaunch requested for {account.username}",
                         account_id=account.id,
-                        metadata={"place_id": target.place_id, "attempt": request.restart_attempt},
+                        metadata={"place_id": request.place_id, "attempt": request.restart_attempt},
                     )
             except (AppError, RobloxLaunchError):
                 self._notice(
@@ -2009,12 +2392,17 @@ class ApplicationService:
             raise ValidationError("Instance termination option is invalid.")
         if not isinstance(watcher.get("auto_relaunch_enabled"), bool):
             raise ValidationError("Global relaunch option is invalid.")
+        for key in ("close_unconnected", "close_if_memory_low", "close_if_title_mismatch"):
+            if not isinstance(watcher.get(key), bool):
+                raise ValidationError(f"Watcher option {key} is invalid.")
         if not isinstance(watcher.get("relaunch_on_crash"), bool) or not isinstance(watcher.get("relaunch_on_exit"), bool):
             raise ValidationError("Global relaunch triggers are invalid.")
         for key, minimum, maximum, label in (
             ("launch_match_timeout_seconds", 5, 300, "Launch match timeout"),
             ("crash_window_seconds", 5, 3_600, "Crash window"),
             ("relaunch_delay_seconds", 1, 3_600, "Relaunch delay"),
+            ("unconnected_timeout_seconds", 5, 3_600, "Unconnected timeout"),
+            ("health_grace_seconds", 5, 600, "Watcher health grace"),
         ):
             numeric = watcher.get(key)
             if isinstance(numeric, bool) or not isinstance(numeric, (int, float)) or not minimum <= float(numeric) <= maximum:
@@ -2022,6 +2410,17 @@ class ApplicationService:
         attempts = watcher.get("relaunch_max_attempts")
         if isinstance(attempts, bool) or not isinstance(attempts, int) or not 0 <= attempts <= 20:
             raise ValidationError("Maximum relaunch attempt count is invalid.")
+        memory_low = watcher.get("memory_low_mb")
+        if isinstance(memory_low, bool) or not isinstance(memory_low, int) or not 50 <= memory_low <= 4_096:
+            raise ValidationError("Low-memory threshold must be between 50 and 4096 MB.")
+        expected_title = watcher.get("expected_window_title")
+        if not isinstance(expected_title, str) or not 1 <= len(expected_title.strip()) <= 128:
+            raise ValidationError("Expected Roblox window title is invalid.")
+        instances = values.get("instances", {})
+        if not isinstance(instances, Mapping) or not isinstance(instances.get("remember_window_positions"), bool):
+            raise ValidationError("Window position preference is invalid.")
+        if not isinstance(instances.get("allow_multiple_launches"), bool):
+            raise ValidationError("Multi-instance preference is invalid.")
         oauth = values.get("oauth", {})
         if not isinstance(oauth, Mapping) or not isinstance(oauth.get("enabled"), bool):
             raise ValidationError("OAuth connection state is invalid.")
@@ -2042,6 +2441,26 @@ class ApplicationService:
             raise ValidationError(exc.message) from exc
         if bool(oauth.get("enabled")) and not client_id.strip():
             raise ValidationError("A Roblox OAuth client ID is required when login is enabled.")
+        network = values.get("network", {})
+        if not isinstance(network, Mapping) or not isinstance(
+            network.get("region_lookup_enabled"), bool
+        ):
+            raise ValidationError("Server region lookup state is invalid.")
+        provider = network.get("region_lookup_provider")
+        region_format = network.get("region_lookup_format")
+        if not isinstance(provider, str) or len(provider) > 300:
+            raise ValidationError("Server region provider is invalid.")
+        if not isinstance(region_format, str) or not 1 <= len(region_format.strip()) <= 120:
+            raise ValidationError("Server region format is invalid.")
+        for key, minimum, maximum, label in (
+            ("region_lookup_timeout_seconds", 0.5, 30, "Region lookup timeout"),
+            ("region_cache_ttl_seconds", 30, 86_400, "Region cache lifetime"),
+        ):
+            numeric = network.get(key)
+            if isinstance(numeric, bool) or not isinstance(numeric, (int, float)):
+                raise ValidationError(f"{label} is invalid.")
+            if not minimum <= float(numeric) <= maximum:
+                raise ValidationError(f"{label} is invalid.")
         api = values.get("api", {})
         if not isinstance(api.get("enabled"), bool):
             raise ValidationError("Local API state is invalid.")
@@ -2050,6 +2469,16 @@ class ApplicationService:
         port = api.get("port")
         if isinstance(port, bool) or not isinstance(port, int) or not 1 <= port <= 65535:
             raise ValidationError("Local API port is invalid.")
+        for permission in (
+            "allow_get_cookie",
+            "allow_launch_account",
+            "allow_account_editing",
+            "allow_import_cookie",
+            "allow_get_accounts",
+            "legacy_password_auth_enabled",
+        ):
+            if not isinstance(api.get(permission), bool):
+                raise ValidationError(f"Local API permission {permission} is invalid.")
 
     @staticmethod
     def _account_payload(account: Account) -> dict[str, Any]:
@@ -2186,19 +2615,24 @@ class ApplicationService:
 
     # Nexus Account Control --------------------------------------------------
     def _handle_nexus_client_log(self, username: str, message: str) -> None:
-        self.logger.info(f"[Nexus Client Log] {username}: {message}")
-        self._activity("nexus", f"Client Roblox ({username}) print: {message}", metadata={"username": username, "message": message})
+        safe_message = _redact_log_line(str(message)[:2000])
+        self.logger.info("[Nexus Client Log] %s", safe_message)
+        self._activity("nexus", "Roblox client log", metadata={"message": safe_message})
 
     def start_nexus_server(self, host: str | None = None, port: int | None = None) -> dict[str, Any]:
         nexus_settings = self.get_settings()["categories"].get("nexus", {})
         target_host = host or nexus_settings.get("host", "127.0.0.1")
         target_port = int(port or nexus_settings.get("port", 5242))
+        if target_host not in ("127.0.0.1", "localhost") and not bool(nexus_settings.get("allow_external", False)):
+            raise ValidationError("External Nexus listeners require the explicit allow_external setting.")
 
         if self._nexus_server is None:
             from app.backend.nexus.server import NexusServer
+            self._nexus_token = secrets.token_urlsafe(32)
             self._nexus_server = NexusServer(
                 host=target_host,
                 port=target_port,
+                authentication_token=self._nexus_token,
                 on_auto_relaunch_trigger=self._handle_nexus_auto_relaunch,
             )
             self._nexus_server.on_log_callback = self._handle_nexus_client_log
@@ -2210,6 +2644,7 @@ class ApplicationService:
         if self._nexus_server is not None:
             self._nexus_server.stop()
             self._nexus_server = None
+            self._nexus_token = None
             self._activity("nexus", "Nexus Server stopped")
         return self.get_nexus_status()
 
@@ -2242,7 +2677,15 @@ class ApplicationService:
 
     def get_nexus_lua_script(self, host: str = "127.0.0.1", port: int = 5242) -> str:
         from app.backend.nexus.lua_script import get_nexus_lua_script
-        return get_nexus_lua_script(host=host, port=port)
+        if self._nexus_server is None or not self._nexus_server.is_running:
+            self.start_nexus_server(host=host, port=port)
+        if self._nexus_server is None:
+            raise ValidationError("Nexus Server could not be started.")
+        return get_nexus_lua_script(
+            host=self._nexus_server.host,
+            port=self._nexus_server.port,
+            token=self._nexus_token or "",
+        )
 
     def _handle_nexus_auto_relaunch(self, username: str) -> None:
         """Called by Nexus server when an auto-relaunch account disconnects."""
@@ -2259,22 +2702,52 @@ class ApplicationService:
 
     # Multi-Instance ---------------------------------------------------------
     def get_multi_instance_status(self) -> dict[str, Any]:
-        return self.multi_instance.get_status()
+        status = dict(self.multi_instance.get_status())
+        configured = bool(
+            self.get_settings()["categories"].get("instances", {}).get("allow_multiple_launches", False)
+        )
+        status.update(
+            {
+                "configured": configured,
+                "restart_required": bool(configured and status.get("supported") and not status.get("enabled")),
+            }
+        )
+        return status
 
     def set_multi_instance(self, enabled: bool) -> dict[str, Any]:
+        if not isinstance(enabled, bool):
+            raise ValidationError("Multi-instance state is invalid.")
+        self.repository.set_setting("instances.allow_multiple_launches", enabled)
         if enabled:
             success = self.multi_instance.enable_multi_instance()
             if success:
                 self._activity("multi_instance", "Roblox Multi-instance enabled (singleton handles held)")
+            else:
+                self._activity(
+                    "multi_instance",
+                    "Roblox Multi-instance saved; restart Astro before Roblox to activate it",
+                )
         else:
             self.multi_instance.disable_multi_instance()
             self._activity("multi_instance", "Roblox Multi-instance disabled")
         return self.get_multi_instance_status()
 
+    def _configure_multi_instance_from_settings(self) -> None:
+        """Apply the persisted one-click preference to the process mutex."""
+
+        configured = bool(
+            self.get_settings()["categories"].get("instances", {}).get("allow_multiple_launches", False)
+        )
+        if configured:
+            self.multi_instance.enable_multi_instance()
+        else:
+            self.multi_instance.disable_multi_instance()
+
     # FPS Cap & ClientSettings ------------------------------------------------
     def get_fps_cap(self) -> dict[str, Any]:
         fps = self.client_settings.get_fps_cap()
-        return {"fps": fps, "file": str(self.client_settings.settings_file)}
+        status = self.client_settings.status()
+        return {"fps": fps, "file": str(self.client_settings.settings_file), **status}
 
     def set_fps_cap(self, fps: int) -> dict[str, Any]:
         success = self.client_settings.set_fps_cap(fps)
@@ -2319,14 +2792,20 @@ class ApplicationService:
 
     def generate_auth_ticket(self, account_id: str) -> dict[str, Any]:
         cookie = self._get_account_cookie_raw(account_id)
-        ticket = self.auth_tools.generate_auth_ticket(cookie)
+        ticket = self._account_utility_call(self.auth_tools.generate_auth_ticket, cookie)
         self._activity("auth_tools", "Auth ticket generated", account_id=account_id)
         return {"account_id": account_id, "ticket": ticket}
 
+    def get_account_csrf_token(self, account_id: str) -> dict[str, Any]:
+        cookie = self._get_account_cookie_raw(account_id)
+        token = self._account_utility_call(self.auth_tools.get_csrf_token, cookie)
+        self._activity("auth_tools", "X-CSRF token generated", account_id=account_id)
+        return {"account_id": account_id, "csrf_token": token}
+
     def generate_rbx_player_link(self, account_id: str, place_id: int, job_id: str | None = None) -> dict[str, Any]:
         cookie = self._get_account_cookie_raw(account_id)
-        ticket = self.auth_tools.generate_auth_ticket(cookie)
-        link = self.auth_tools.generate_rbx_player_uri(ticket, place_id, job_id)
+        ticket = self._account_utility_call(self.auth_tools.generate_auth_ticket, cookie)
+        link = self._account_utility_call(self.auth_tools.generate_rbx_player_uri, ticket, place_id, job_id)
         self._activity("auth_tools", "rbx-player link generated", account_id=account_id, metadata={"place_id": place_id})
         return {"account_id": account_id, "ticket": ticket, "link": link}
 
@@ -2336,23 +2815,91 @@ class ApplicationService:
         self._activity("auth_tools", "Session/cookie extracted for copy", account_id=account_id)
         return {"account_id": account_id, "username": account.username, "cookie": cookie}
 
+    def refresh_account_session(self, account_id: str) -> dict[str, Any]:
+        """Validate the stored session and refresh its authenticated identity."""
+
+        from app.backend.roblox import SessionRobloxClient
+
+        account = self._get_account(account_id)
+        cookie = self._get_account_cookie_raw(account.id)
+        try:
+            with SessionRobloxClient(cookie) as client:
+                identity = client.authenticated_user()
+        except RobloxServiceError as exc:
+            raise ExternalServiceError("The stored Roblox session is invalid or unavailable.") from exc
+        if account.user_id and int(account.user_id) != int(identity.user_id):
+            raise SecurityError("The stored session belongs to a different Roblox account.")
+        account.user_id = identity.user_id
+        account.username = identity.username
+        account.display_name = identity.display_name or account.display_name or identity.username
+        account.has_session = True
+        account.status = "ready"
+        metadata = dict(account.metadata)
+        metadata["session_last_validated_at"] = _utc_now()
+        account.metadata = metadata
+        try:
+            saved = self.repository.save_account(account)
+        except RepositoryError as exc:
+            raise StorageError("The refreshed session identity could not be saved.") from exc
+        self._activity("account", "Stored Roblox session validated", account_id=saved.id)
+        return self._account_payload(saved)
+
+    def export_account_sessions(self, account_ids: list[str], *, confirm: bool = False) -> dict[str, Any]:
+        """Explicitly export selected raw sessions in RAM-compatible text form."""
+
+        if confirm is not True:
+            raise SecurityError("Raw session export requires explicit confirmation.")
+        if not isinstance(account_ids, list) or not 1 <= len(account_ids) <= 500:
+            raise ValidationError("Select between 1 and 500 accounts for session export.")
+        normalized_ids = [self._required_text(value, "Account ID") for value in account_ids]
+        if len(set(normalized_ids)) != len(normalized_ids):
+            raise ValidationError("Session export contains duplicate accounts.")
+        lines: list[str] = []
+        for account_id in normalized_ids:
+            account = self._get_account(account_id)
+            lines.append(f"{account.username}:{self._get_account_cookie_raw(account.id)}")
+        self.paths.exports.mkdir(parents=True, exist_ok=True)
+        filename = f"astro-sessions-{datetime.now(UTC).strftime('%Y%m%d-%H%M%S')}-{secrets.token_hex(3)}.txt"
+        destination = (self.paths.exports / filename).resolve()
+        try:
+            destination.relative_to(self.paths.exports.resolve())
+        except ValueError as exc:
+            raise SecurityError("Session export destination is invalid.") from exc
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+        if hasattr(os, "O_BINARY"):
+            flags |= os.O_BINARY
+        try:
+            descriptor = os.open(destination, flags, 0o600)
+            with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as handle:
+                handle.write("\n".join(lines) + "\n")
+            try:
+                os.chmod(destination, 0o600)
+            except OSError:
+                pass
+        except OSError as exc:
+            raise StorageError("Raw session export could not be written.") from exc
+        self._activity("auth_tools", f"Raw sessions explicitly exported ({len(lines)} account(s))")
+        return {"path": str(destination), "filename": filename, "count": len(lines), "plaintext": True}
+
     def add_account_from_cookie(self, cookie: str, group_id: str | None = None) -> dict[str, Any]:
         """Validates a raw .ROBLOSECURITY cookie, resolves Roblox user profile, and persists to vault & SQLite."""
         if not cookie or not isinstance(cookie, str):
             raise ValidationError(".ROBLOSECURITY cookie is required.")
         clean_cookie = cookie.strip()
+        normalized_group_id = self._optional_id(group_id)
+        if normalized_group_id:
+            self._get_group(normalized_group_id)
 
         from app.backend.roblox.client import SessionRobloxClient
         session_client = SessionRobloxClient(clean_cookie)
         try:
             user = session_client.authenticated_user()
         except Exception as exc:
-            raise ValidationError(f"Roblox session validation failed: {exc}")
+            raise ValidationError("Roblox rejected this session or could not be reached.") from exc
         finally:
             session_client.close()
 
         existing = self.repository.get_account_by_username(user.username)
-        account_id = existing.id if existing else None
 
         avatar_url = None
         try:
@@ -2361,110 +2908,226 @@ class ApplicationService:
         except Exception:
             pass
 
-        account_kwargs: dict[str, Any] = {
-            "user_id": user.user_id,
-            "username": user.username,
-            "display_name": user.display_name or user.username,
-            "avatar_url": avatar_url,
-            "group_id": group_id,
-            "last_used_at": datetime.now(UTC).isoformat(),
-            "has_session": True,
-        }
-        if account_id:
-            account_kwargs["id"] = account_id
+        account = existing or Account(username=user.username)
+        account.user_id = user.user_id
+        account.username = user.username
+        account.display_name = user.display_name or account.display_name or user.username
+        account.avatar_url = avatar_url or account.avatar_url
+        if normalized_group_id is not None:
+            account.group_id = normalized_group_id
+        account.last_used_at = datetime.now(UTC).isoformat()
 
-        account = Account(**account_kwargs)
+        try:
+            protected_blob = self.vault.protect(clean_cookie.encode("utf-8"))
+        except Exception as exc:
+            raise SecurityError("The Roblox session could not be protected by Windows.") from exc
 
-        saved = self.repository.save_account(account)
-        protected_blob = self.vault.protect(clean_cookie.encode("utf-8"))
-        self.repository.save_protected_secret(saved.id, "session", protected_blob)
+        created_new = existing is None
+        try:
+            saved = self.repository.save_account(account)
+            self.repository.save_protected_secret(saved.id, "session", protected_blob)
+            saved.has_session = True
+            saved = self.repository.save_account(saved)
+        except RepositoryError as exc:
+            if created_new:
+                try:
+                    self.repository.delete_account(account.id)
+                except RepositoryError:
+                    pass
+            raise StorageError("The authenticated account could not be saved.") from exc
         self._activity("account", f"Account {saved.username} logged in with cookie", account_id=saved.id)
-        return saved.to_dict()
+        return self._account_payload(saved)
 
     def start_manual_browser_login(self, group_id: str | None = None) -> dict[str, Any]:
         """Opens a browser window for manual Roblox login and intercepts the cookie."""
         from app.backend.roblox.browser_login import BrowserLoginService, EdgeCDPLoginService
 
+        with self._browser_login_lock:
+            if any(result.get("status") == "waiting" for result in self._browser_login_results.values()):
+                raise ConflictError("A Roblox browser sign-in is already in progress.")
+            operation_id = secrets.token_urlsafe(18)
+            self._browser_login_results[operation_id] = {
+                "operation_id": operation_id,
+                "status": "waiting",
+                "message": "Waiting for Roblox sign-in in the dedicated browser.",
+            }
+
         def _on_captured(cookie_str: str) -> None:
             try:
-                self.add_account_from_cookie(cookie_str, group_id=group_id)
-            except Exception as exc:
-                self.logger.error(f"Error saving account from captured cookie: {exc}")
+                account = self.add_account_from_cookie(cookie_str, group_id=group_id)
+            except Exception:
+                self.logger.exception("Captured Roblox session could not be saved")
+                with self._browser_login_lock:
+                    self._browser_login_results[operation_id] = {
+                        "operation_id": operation_id,
+                        "status": "failed",
+                        "message": "The captured Roblox session could not be validated or saved.",
+                    }
+            else:
+                with self._browser_login_lock:
+                    self._browser_login_results[operation_id] = {
+                        "operation_id": operation_id,
+                        "status": "completed",
+                        "message": "Roblox account added.",
+                        "account": self._account_payload(self._get_account(account["id"])),
+                    }
 
-        # Try Edge CDP Service first (guaranteed 100% HttpOnly cookie extraction via DevTools Protocol)
+        def _on_finished(captured: bool) -> None:
+            if captured:
+                return
+            with self._browser_login_lock:
+                current = self._browser_login_results.get(operation_id)
+                if current is not None and current.get("status") == "waiting":
+                    current["status"] = "failed"
+                    current["message"] = "The Roblox sign-in browser was closed or timed out."
+
+        # Try the dedicated Edge CDP service first. It can inspect HttpOnly
+        # cookies through the local DevTools session, but completion is still
+        # reported only after Roblox validates the captured session.
         try:
             edge_service = EdgeCDPLoginService()
-            if edge_service.start_login(_on_captured):
-                return {"started": True, "engine": "edge_cdp"}
-        except Exception as cdp_exc:
-            self.logger.debug(f"Edge CDP login unavailable, falling back to PyWebView: {cdp_exc}")
+            if edge_service.start_login(_on_captured, _on_finished):
+                return {**self._browser_login_results[operation_id], "started": True, "engine": "edge_cdp"}
+        except Exception:
+            self.logger.debug("Edge CDP login unavailable; falling back to pywebview", exc_info=True)
 
         # Fallback to PyWebView BrowserLoginService
         if not hasattr(self, "_browser_login_service") or self._browser_login_service is None:
             self._browser_login_service = BrowserLoginService()
 
-        started = self._browser_login_service.start_manual_login(_on_captured)
-        return {"started": started, "engine": "pywebview"}
+        started = self._browser_login_service.start_manual_login(_on_captured, _on_finished)
+        if not started:
+            with self._browser_login_lock:
+                self._browser_login_results[operation_id]["status"] = "failed"
+                self._browser_login_results[operation_id]["message"] = "No supported browser engine could be started."
+            raise ExternalServiceError("No supported Roblox sign-in browser could be started.")
+        return {**self._browser_login_results[operation_id], "started": True, "engine": "pywebview"}
+
+    def poll_manual_browser_login(self, operation_id: str) -> dict[str, Any]:
+        normalized = self._required_text(operation_id, "Browser sign-in operation ID")
+        with self._browser_login_lock:
+            result = self._browser_login_results.get(normalized)
+            if result is None:
+                raise NotFoundError("Browser sign-in operation was not found.")
+            return deepcopy(result)
 
     # Bulk Import ------------------------------------------------------------
     def import_bulk_accounts(self, raw_text: str, group_id: str | None = None) -> dict[str, Any]:
         parsed = BulkAccountImporter.parse_text(raw_text)
+        if not parsed:
+            raise ValidationError("No supported account records were found in the import text.")
+        if len(parsed) > 500:
+            raise ValidationError("A bulk import is limited to 500 account records.")
+        normalized_group_id = self._optional_id(group_id)
+        if normalized_group_id is not None:
+            self._get_group(normalized_group_id)
         imported_count = 0
+        failed_count = 0
         imported_accounts = []
+        warnings: list[str] = []
 
-        for item in parsed:
+        for index, item in enumerate(parsed, start=1):
             cookie = item.get("cookie")
             username = item.get("username")
+            password = item.get("password")
             if cookie and "_|WARNING" in cookie:
                 try:
-                    acc = self.add_account_from_cookie(cookie, group_id=group_id)
+                    acc = self.add_account_from_cookie(cookie, group_id=normalized_group_id)
                     imported_count += 1
                     imported_accounts.append(acc)
+                    if password:
+                        protected_password = self.vault.protect(str(password).encode("utf-8"))
+                        self.repository.save_protected_secret(acc["id"], "saved_password", protected_password)
                     continue
-                except Exception as exc:
-                    self.logger.debug(f"Direct cookie add failed, falling back to profile stub: {exc}")
+                except Exception:
+                    warnings.append(f"Record {index}: the session cookie was rejected; only non-session metadata was imported.")
 
             fallback_name = username or f"Account_{len(self.repository.list_accounts()) + 1}"
             try:
                 acc_payload = {
                     "username": fallback_name,
-                    "group_id": group_id,
+                    "group_id": normalized_group_id,
                 }
                 created = self.create_account(acc_payload)
-                if cookie:
-                    protected_blob = self.vault.protect(cookie.encode("utf-8"))
-                    self.repository.save_protected_secret(created["id"], "session", protected_blob)
+                if password:
+                    protected_password = self.vault.protect(str(password).encode("utf-8"))
+                    self.repository.save_protected_secret(created["id"], "saved_password", protected_password)
                 imported_count += 1
                 imported_accounts.append(created)
-            except Exception as exc:
-                self.logger.warning(f"Failed to bulk import account {fallback_name}: {exc}")
+            except Exception:
+                failed_count += 1
+                warnings.append(f"Record {index}: account metadata could not be imported.")
+                self.logger.warning("Bulk account metadata import failed for record %s", index, exc_info=True)
 
         self._activity("bulk_import", f"{imported_count} account(s) bulk imported")
-        return {"imported": imported_count, "total_parsed": len(parsed), "accounts": imported_accounts}
+        return {
+            "imported": imported_count,
+            "failed": failed_count,
+            "total_parsed": len(parsed),
+            "accounts": imported_accounts,
+            "warnings": warnings,
+        }
 
     # Window Positioner ------------------------------------------------------
     def position_instance_window(self, pid: int, x: int, y: int, width: int = 800, height: int = 600) -> dict[str, Any]:
-        from app.backend.watchers.window_positioner import RobloxWindowPositioner
-        success = RobloxWindowPositioner.position_window(pid, x, y, width, height)
-        self._activity("window", f"Positioned window PID {pid} at ({x}, {y})")
+        success = self.window_positioner.position_window(pid, x, y, width, height)
+        if success:
+            self._activity("window", f"Positioned window PID {pid} at ({x}, {y})")
         return {"pid": pid, "success": success, "x": x, "y": y, "width": width, "height": height}
+
+    def capture_instance_window(self, pid: int, *, confirm: bool = False) -> dict[str, Any]:
+        if not confirm:
+            raise ValidationError("Saving a Roblox window position requires confirmation.")
+        instance = next((item for item in self.monitor.current_instances() if item.pid == pid), None)
+        if instance is None or not instance.account_id:
+            raise ValidationError("Bind this instance to an account before saving its window position.")
+        snapshot = self.window_positioner.inspect_window(pid)
+        layout = self._window_layout(snapshot)
+        if layout is None:
+            raise ValidationError("A visible Roblox window could not be inspected.")
+        account = self._get_account(instance.account_id)
+        metadata = dict(account.metadata)
+        metadata["window_layout"] = layout
+        account.metadata = metadata
+        try:
+            self.repository.save_account(account)
+        except RepositoryError as exc:
+            raise StorageError("Roblox window position could not be saved.") from exc
+        self._activity("window", "Roblox window position saved", account_id=account.id, metadata={"pid": pid})
+        return {"pid": pid, "account_id": account.id, **layout}
+
+    def restore_instance_window(self, pid: int, *, confirm: bool = False) -> dict[str, Any]:
+        if not confirm:
+            raise ValidationError("Restoring a Roblox window position requires confirmation.")
+        instance = next((item for item in self.monitor.current_instances() if item.pid == pid), None)
+        if instance is None or not instance.account_id:
+            raise ValidationError("Bind this instance to an account before restoring its window position.")
+        account = self._get_account(instance.account_id)
+        layout = self._window_layout(account.metadata)
+        if layout is None:
+            raise NotFoundError("This account has no saved Roblox window position.")
+        success = bool(self.window_positioner.position_window(pid, **layout))
+        if not success:
+            raise ValidationError("The saved Roblox window position could not be restored.")
+        self._activity("window", "Roblox window position restored", account_id=account.id, metadata={"pid": pid})
+        return {"pid": pid, "account_id": account.id, "success": True, **layout}
 
     # Extended Account Utilities & Features ----------------------------------
     def change_account_password(self, account_id: str, current_pass: str, new_pass: str) -> dict[str, Any]:
         cookie = self._get_account_cookie_raw(account_id)
-        success = self.account_utils.change_password(cookie, current_pass, new_pass)
+        success = self._account_utility_call(self.account_utils.change_password, cookie, current_pass, new_pass)
         self._activity("account_utils", "Password changed", account_id=account_id)
         return {"account_id": account_id, "success": success}
 
     def change_account_email(self, account_id: str, password: str, new_email: str) -> dict[str, Any]:
         cookie = self._get_account_cookie_raw(account_id)
-        success = self.account_utils.change_email(cookie, password, new_email)
-        self._activity("account_utils", f"Email changed to {new_email}", account_id=account_id)
+        success = self._account_utility_call(self.account_utils.change_email, cookie, password, new_email)
+        self._activity("account_utils", "Email change requested", account_id=account_id)
         return {"account_id": account_id, "success": success}
 
     def logout_all_account_sessions(self, account_id: str) -> dict[str, Any]:
         cookie = self._get_account_cookie_raw(account_id)
-        success = self.account_utils.logout_all_sessions(cookie)
+        success = self._account_utility_call(self.account_utils.logout_all_sessions, cookie)
         self._activity("account_utils", "Logged out all other sessions", account_id=account_id)
         return {"account_id": account_id, "success": success}
 
@@ -2473,63 +3136,130 @@ class ApplicationService:
         account = self._get_account(account_id)
         if not account.user_id:
             raise ValidationError("UserId required to update display name.")
-        success = self.account_utils.set_display_name(cookie, account.user_id, new_display_name)
-        account.display_name = new_display_name
+        display_name = self._required_text(new_display_name, "Display name")
+        if len(display_name) > 20:
+            raise ValidationError("Display name is limited to 20 characters.")
+        success = self._account_utility_call(self.account_utils.set_display_name, cookie, account.user_id, display_name)
+        account.display_name = display_name
         self.repository.save_account(account)
-        self._activity("account_utils", f"Display name updated: {new_display_name}", account_id=account_id)
-        return {"account_id": account_id, "display_name": new_display_name, "success": success}
+        self._activity("account_utils", "Display name updated", account_id=account_id)
+        return {"account_id": account_id, "display_name": display_name, "success": success}
 
-    def send_account_friend_request(self, account_id: str, target_user_id: int) -> dict[str, Any]:
+    def send_account_friend_request(self, account_id: str, target_user_id: int | str) -> dict[str, Any]:
         cookie = self._get_account_cookie_raw(account_id)
-        success = self.account_utils.send_friend_request(cookie, target_user_id)
-        self._activity("account_utils", f"Friend request sent to {target_user_id}", account_id=account_id)
-        return {"account_id": account_id, "target_user_id": target_user_id, "success": success}
+        resolved = self._resolve_target_user_id(target_user_id)
+        success = self._account_utility_call(self.account_utils.send_friend_request, cookie, resolved)
+        self._activity("account_utils", f"Friend request sent to {resolved}", account_id=account_id)
+        return {"account_id": account_id, "target_user_id": resolved, "success": success}
 
-    def block_account_user(self, account_id: str, target_user_id: int) -> dict[str, Any]:
+    def block_account_user(self, account_id: str, target_user_id: int | str) -> dict[str, Any]:
         cookie = self._get_account_cookie_raw(account_id)
-        success = self.account_utils.block_user(cookie, target_user_id)
-        self._activity("account_utils", f"Blocked user {target_user_id}", account_id=account_id)
-        return {"account_id": account_id, "target_user_id": target_user_id, "success": success}
+        resolved = self._resolve_target_user_id(target_user_id)
+        success = self._account_utility_call(self.account_utils.block_user, cookie, resolved)
+        self._activity("account_utils", f"Blocked user {resolved}", account_id=account_id)
+        return {"account_id": account_id, "target_user_id": resolved, "success": success}
 
-    def unblock_account_user(self, account_id: str, target_user_id: int) -> dict[str, Any]:
+    def unblock_account_user(self, account_id: str, target_user_id: int | str) -> dict[str, Any]:
         cookie = self._get_account_cookie_raw(account_id)
-        success = self.account_utils.unblock_user(cookie, target_user_id)
-        self._activity("account_utils", f"Unblocked user {target_user_id}", account_id=account_id)
-        return {"account_id": account_id, "target_user_id": target_user_id, "success": success}
+        resolved = self._resolve_target_user_id(target_user_id)
+        success = self._account_utility_call(self.account_utils.unblock_user, cookie, resolved)
+        self._activity("account_utils", f"Unblocked user {resolved}", account_id=account_id)
+        return {"account_id": account_id, "target_user_id": resolved, "success": success}
 
     def quick_log_in_account(self, account_id: str, code: str) -> dict[str, Any]:
         cookie = self._get_account_cookie_raw(account_id)
-        success = self.account_utils.quick_log_in(cookie, code)
+        normalized = self._required_text(code, "Quick Log In code")
+        if len(normalized) != 6 or not normalized.isdigit():
+            raise ValidationError("Quick Log In code must contain exactly six digits.")
+        success = self._account_utility_call(self.account_utils.quick_log_in, cookie, normalized)
         self._activity("account_utils", "Quick Log In code submitted", account_id=account_id)
-        return {"account_id": account_id, "code": code, "success": success}
+        return {"account_id": account_id, "success": success}
+
+    def set_account_follow_privacy(self, account_id: str, privacy: str) -> dict[str, Any]:
+        cookie = self._get_account_cookie_raw(account_id)
+        normalized = self._required_text(privacy, "Follow privacy").lower().replace(" ", "")
+        success = self._account_utility_call(self.account_utils.set_follow_privacy, cookie, normalized)
+        self._activity("account_utils", "Follow privacy updated", account_id=account_id)
+        return {"account_id": account_id, "privacy": normalized, "success": success}
+
+    def unlock_account_pin(self, account_id: str, pin: str) -> dict[str, Any]:
+        cookie = self._get_account_cookie_raw(account_id)
+        normalized = self._required_text(pin, "Account PIN")
+        if len(normalized) != 4 or not normalized.isdigit():
+            raise ValidationError("Account PIN must contain exactly four digits.")
+        success = self._account_utility_call(self.account_utils.unlock_parental_pin, cookie, normalized)
+        self._activity("account_utils", "Account PIN unlock requested", account_id=account_id)
+        return {"account_id": account_id, "success": success}
 
     def get_account_blocked_list(self, account_id: str) -> list[dict[str, Any]]:
         cookie = self._get_account_cookie_raw(account_id)
-        return self.account_utils.get_blocked_users(cookie)
+        return self._account_utility_call(self.account_utils.get_blocked_users, cookie)
 
     def unblock_all_account_users(self, account_id: str) -> dict[str, Any]:
         cookie = self._get_account_cookie_raw(account_id)
-        count = self.account_utils.unblock_everyone(cookie)
+        count = self._account_utility_call(self.account_utils.unblock_everyone, cookie)
         self._activity("account_utils", f"Unblocked all users ({count})", account_id=account_id)
         return {"account_id": account_id, "unblocked_count": count}
 
     def set_account_avatar(self, account_id: str, asset_ids: list[int]) -> dict[str, Any]:
         cookie = self._get_account_cookie_raw(account_id)
-        success = self.account_utils.set_avatar(cookie, asset_ids)
+        if not isinstance(asset_ids, list) or not 1 <= len(asset_ids) <= 100:
+            raise ValidationError("Provide between 1 and 100 avatar asset IDs.")
+        normalized = [self._positive_int(item, "Avatar asset ID") for item in asset_ids]
+        success = self._account_utility_call(self.account_utils.set_avatar, cookie, normalized)
         self._activity("account_utils", "Avatar outfit updated", account_id=account_id)
-        return {"account_id": account_id, "asset_ids": asset_ids, "success": success}
+        return {"account_id": account_id, "asset_ids": normalized, "success": success}
+
+    def _resolve_target_user_id(self, value: int | str) -> int:
+        if not isinstance(value, bool):
+            try:
+                return self._positive_int(value, "Target User ID")
+            except ValidationError:
+                pass
+        username = self._required_text(value, "Target username")
+        if len(username) > 20 or not all(character.isalnum() or character == "_" for character in username):
+            raise ValidationError("Target must be a positive User ID or valid Roblox username.")
+        try:
+            candidates = self.player_search.search_players(username, 10)
+        except RobloxServiceError as exc:
+            raise ExternalServiceError("Roblox username resolution is unavailable.") from exc
+        exact = next(
+            (
+                item for item in candidates
+                if isinstance(item, Mapping) and str(item.get("name", "")).casefold() == username.casefold()
+            ),
+            None,
+        )
+        if exact is None:
+            raise NotFoundError("The target Roblox username was not found.")
+        return self._positive_int(exact.get("user_id"), "Resolved User ID")
+
+    @staticmethod
+    def _account_utility_call(action: Any, *args: Any, **kwargs: Any) -> Any:
+        try:
+            return action(*args, **kwargs)
+        except RobloxServiceError as exc:
+            raise ExternalServiceError(str(exc), retryable=False) from exc
 
     def parse_vip_link(self, link: str) -> dict[str, Any] | None:
         return PrivateServerHelper.parse_vip_link(link)
 
     def search_players(self, keyword: str, limit: int = 10) -> list[dict[str, Any]]:
-        return self.player_search.search_players(keyword, limit)
+        return self._account_utility_call(self.player_search.search_players, keyword, limit)
 
     def get_player_presence(self, user_id: int) -> dict[str, Any]:
-        return self.player_search.get_player_presence(user_id)
+        return self._account_utility_call(self.player_search.get_player_presence, user_id)
+
+    def find_player_server(self, place_id: int, user_id: int, max_pages: int = 10) -> dict[str, Any] | None:
+        return self._account_utility_call(
+            self.player_search.find_player_server,
+            place_id,
+            user_id,
+            max_pages=max_pages,
+        )
 
     def get_random_server(self, place_id: int) -> dict[str, Any] | None:
-        return self.random_server.get_random_server(place_id)
+        return self._account_utility_call(self.random_server.get_random_server, place_id)
 
     def close_beta_home_windows(self) -> dict[str, Any]:
         closed = BetaHomeCleaner.close_beta_home_windows()

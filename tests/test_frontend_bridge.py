@@ -12,6 +12,7 @@ import pytest
 
 BRIDGE_SOURCE = Path(__file__).resolve().parents[1] / "app" / "frontend" / "src" / "bridge.js"
 BACKEND_BRIDGE_SOURCE = Path(__file__).resolve().parents[1] / "app" / "backend" / "api" / "bridge.py"
+FRONTEND_APP_SOURCE = Path(__file__).resolve().parents[1] / "app" / "frontend" / "src" / "app.js"
 
 
 def test_frontend_contract_covers_desktop_bridge_methods() -> None:
@@ -30,6 +31,69 @@ def test_frontend_contract_covers_desktop_bridge_methods() -> None:
     frontend_methods = set(re.findall(r"'([^']+)'", contract.group(1)))
 
     assert backend_methods <= frontend_methods
+
+
+def test_region_and_legacy_api_settings_are_reachable_from_the_frontend() -> None:
+    source = FRONTEND_APP_SOURCE.read_text(encoding="utf-8")
+    bridge = BRIDGE_SOURCE.read_text(encoding="utf-8")
+    for marker in (
+        "data-form=\"region-settings\"",
+        "region_lookup_enabled",
+        "region_lookup_provider",
+        "region_lookup_timeout_seconds",
+        "allow_get_accounts",
+        "legacy_password_auth_enabled",
+    ):
+        assert marker in source
+    assert "'resolve_server_region'" in bridge
+
+
+def test_instance_refresh_resynchronizes_runtime_account_statuses() -> None:
+    """The dashboard must not keep an exited account marked as in-game."""
+
+    source = FRONTEND_APP_SOURCE.read_text(encoding="utf-8")
+    method = re.search(
+        r"async refreshInstances\(\) \{(?P<body>.*?)\n  \}\n",
+        source,
+        re.DOTALL,
+    )
+    assert method is not None
+    body = method.group("body")
+    assert "this.bridge.call('refresh_instances')" in body
+    assert "this.bridge.call('get_instance_monitor')" in body
+    assert "this.bridge.call('list_accounts')" not in body
+    assert "this.applyInstanceMonitor(monitor)" in body
+
+
+def test_account_launch_prefers_its_default_and_reports_rejected_handoffs() -> None:
+    source = FRONTEND_APP_SOURCE.read_text(encoding="utf-8")
+    method = re.search(r"async launch\(id, target\) \{(?P<body>.*?)\n  \}\n", source, re.DOTALL)
+    assert method is not None
+    body = method.group("body")
+    assert body.index("account.saved_place_id") < body.index("this.state.gameId")
+    assert "result.accepted === false" in body
+    assert "await this.refreshLaunchState()" in body
+    assert "await this.resync()" not in body
+
+
+def test_bulk_launch_uses_each_selected_accounts_saved_place() -> None:
+    source = FRONTEND_APP_SOURCE.read_text(encoding="utf-8")
+    method = re.search(r"async bulkLaunch\(\) \{(?P<body>.*?)\n  \}\n", source, re.DOTALL)
+    assert method is not None
+    body = method.group("body")
+    assert "account.saved_place_id" in body
+    assert "start_batch_launch', ids, null" in body
+    assert "Choose an experience first" not in body
+
+
+def test_runtime_poll_is_compact_and_never_replaces_an_open_form() -> None:
+    source = FRONTEND_APP_SOURCE.read_text(encoding="utf-8")
+    method = re.search(r"async refreshRuntimeSilently\(\) \{(?P<body>.*?)\n  \}\n", source, re.DOTALL)
+    assert method is not None
+    body = method.group("body")
+    assert "this.state.modal" in body
+    assert "this.bridge.call('get_instance_monitor')" in body
+    assert "this.bridge.call('bootstrap')" not in body
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="Node.js is required for frontend bridge checks.")
@@ -111,6 +175,42 @@ for (const name of names) {{
   }}
   if (!rejected) throw new Error('Preview OAuth method did not reject honestly: ' + name);
 }}
+"""
+    result = subprocess.run(
+        ["node", "--input-type=module", "--eval", script],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+    assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="Node.js is required for frontend bridge checks.")
+def test_preview_bridge_never_invents_desktop_success_or_secrets() -> None:
+    script = f"""
+import {{ readFile }} from 'node:fs/promises';
+globalThis.localStorage = {{ getItem: () => null, setItem: () => {{}} }};
+globalThis.window = new EventTarget();
+window.setInterval = () => 0; window.clearInterval = () => {{}};
+window.setTimeout = (callback) => {{ callback(); return 0; }}; window.clearTimeout = () => {{}};
+const source = await readFile({json.dumps(str(BRIDGE_SOURCE))}, 'utf8');
+const {{ Bridge }} = await import('data:text/javascript;charset=utf-8,' + encodeURIComponent(source));
+const bridge = await Bridge.connect();
+for (const [name, args] of [
+  ['generate_auth_ticket', ['acct']], ['get_account_cookie', ['acct']],
+  ['start_manual_browser_login', []], ['start_batch_launch', [[], {{}}, 1]],
+  ['send_nexus_command', ['all', 'ping', null]], ['set_multi_instance', [true]],
+  ['change_account_password', ['acct', 'old', 'new']]
+]) {{
+  let rejected = false;
+  try {{ await bridge.call(name, ...args); }} catch (error) {{ rejected = /never simulates/.test(String(error.message || error)); }}
+  if (!rejected) throw new Error('Preview operation did not reject honestly: ' + name);
+}}
+const nexus = await bridge.call('get_nexus_status');
+if (nexus.running || nexus.accounts.length || nexus.available !== false) throw new Error('Preview invented Nexus state');
+const multi = await bridge.call('get_multi_instance_status');
+if (multi.supported || multi.enabled) throw new Error('Preview invented multi-instance support');
 """
     result = subprocess.run(
         ["node", "--input-type=module", "--eval", script],

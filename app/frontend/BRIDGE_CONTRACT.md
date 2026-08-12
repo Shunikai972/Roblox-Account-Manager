@@ -48,6 +48,7 @@ collections, although a complete desktop response should provide every field.
 | `refresh_account_public_profile` | `id: string` | `{ account: Account, profile: RobloxProfile }`; persists only public profile metadata. |
 | `get_public_presence` | `user_ids: (number | string)[]` | `RobloxPresence[]` for 1–50 explicitly requested UserIds, using a short backend cache. |
 | `refresh_account_presence` | `ids: string[]` | `{ account_id, user_id, presence }[]`; persists a public snapshot without changing watcher/process state. |
+| `find_player_server` | `place_id: number`, `user_id: number`, `max_pages?: number` | A matched public server without opaque player tokens, or `null`; bounded RAM-compatible thumbnail scan. |
 | `start_oauth_login` | — | Starts the official Roblox OAuth PKCE browser flow; returns a public `OAuthLoginStatus`. |
 | `poll_oauth_login` | `operation_id: string` | Public `OAuthLoginStatus`; a completed result additionally contains the linked public `Account`. |
 | `cancel_oauth_login` | `operation_id: string` | Cancels a pending local OAuth callback listener. |
@@ -66,15 +67,20 @@ collections, although a complete desktop response should provide every field.
 | `set_game_favorite` | `place_id: string | number`, `favorite: boolean` | Updated local `Game`; does not modify recency. |
 | `remove_game` | `place_id: string | number` | `{ deleted: number }`; removes the local game record and favourite marker. |
 | `list_servers` | `place_id: string` | `Server[]`. |
+| `resolve_server_region` | `address: string` | `{ region: string | null, enabled: boolean, reason: string | null }`; opt-in and never echoes the address. |
 | `launch_account` | `id: string`, `target: LaunchTarget \| null` | `{ accepted: boolean, account_id: string }`. |
 | `list_uwp_packages` | — | `{ available, reason?, packages: UwpPackage[] }`; installed-package metadata only. |
 | `launch_uwp_package` | `package_full_name: string` | `{ package_full_name, app_user_model_id, launched }` after Windows accepts a launch for an already registered Roblox UWP app. |
 | `list_instances` | — | `Instance[]`. |
 | `refresh_instances` | — | `Instance[]`. |
 | `get_instance_monitor` | — | `{ instances, events, log_watcher, log_events, pending_restarts, last_scan_complete, termination_enabled }`. `log_events` is a bounded, typed and redacted local Player-log history; it contains no path, filename or raw log line and never requests process control. |
+| `get_multi_instance_status` | — | `{ supported, enabled, configured, restart_required, handle_count }`. |
+| `set_multi_instance` | `enabled: boolean` | Persists the preference and applies the mutex immediately; `restart_required` is true when Roblox was already open. |
 | `close_instance` | `pid: number`, `confirm: boolean` | Graceful local close result; requires `confirm: true` and a backend opt-in. |
 | `bind_instance` | `pid: number`, `account_id: string`, `target: LaunchTarget`, `confirm: boolean` | Explicitly binds an orphaned observed process; requires `confirm: true`. |
 | `configure_account_watcher` | `id: string`, `rule: AccountWatcherRule` | Persists an opt-in bounded relaunch rule for one account. |
+| `capture_instance_window` | `pid: number`, `confirm: boolean` | Saves verified visible Roblox geometry for the bound account; confirmation required. |
+| `restore_instance_window` | `pid: number`, `confirm: boolean` | Restores saved geometry to a verified Roblox window; confirmation required. |
 | `get_settings` | — | `Settings`. |
 | `update_settings` | `values: Partial<Settings>` | Updated `Settings`. |
 | `get_windows_startup_status` | — | Current-user Windows Run capability and Astro registration state, without a command or filesystem path. |
@@ -265,7 +271,7 @@ confirmed close. Terminal events use `exited`, `crashed`, or `terminated`.
 {
   "id": "backup_123",
   "label": "manual",
-  "source_name": "asteria.sqlite3",
+  "source_name": "astro.sqlite3",
   "created_at": "2026-08-10T12:00:00+00:00",
   "size": 32768,
   "verified": true
@@ -353,4 +359,39 @@ is updated as a partial nested object:
 `client_id` and `redirect_uri` are registration metadata, not credentials. The
 desktop bridge validates them before allowing OAuth to start. A client secret,
 OAuth code verifier, access token, refresh token, cookie, and game-client
-session must never appear in this object or in any bridge response.
+session must never appear in this settings object or in an OAuth bridge response.
+
+### Authenticated account tools
+
+The desktop contract exposes the explicitly user-triggered methods
+`add_account_from_cookie`, `start_manual_browser_login`,
+`poll_manual_browser_login`, `refresh_account_session`, `generate_auth_ticket`,
+`get_account_csrf_token`, `generate_rbx_player_link`, `get_account_cookie`,
+`export_account_sessions`, `change_account_password`, `change_account_email`,
+`logout_all_account_sessions`, `set_account_display_name`,
+`send_account_friend_request`, `block_account_user`, `unblock_account_user`,
+`quick_log_in_account`, `set_account_follow_privacy`, `unlock_account_pin` and
+`set_account_avatar`.
+
+Cookie, ticket and link responses are sensitive by design and must only be
+rendered or copied after the corresponding user action.
+`export_account_sessions` requires `confirm=true` and returns the path of a
+plaintext file under Astro’s export directory. None of these values may be
+placed in application state, Preview data, diagnostics, logs or portable
+metadata. PreviewBridge rejects every method in this section.
+
+### Local API settings
+
+`categories.api` contains `enabled`, `host`, `port`, `allow_get_cookie`,
+`allow_launch_account`, `allow_account_editing`, `allow_import_cookie`,
+`allow_get_accounts` and `legacy_password_auth_enabled`.
+The UI always sends `host=127.0.0.1`; enabling the listener also requires the
+runtime-only `ASTRO_LOCAL_API_TOKEN` and an application restart.
+Historical password compatibility additionally requires the runtime-only
+`ASTRO_LOCAL_API_PASSWORD`; neither credential is returned by the bridge.
+
+`categories.network` contains `region_lookup_enabled`,
+`region_lookup_provider`, `region_lookup_format`,
+`region_lookup_timeout_seconds` and `region_cache_ttl_seconds`. Region lookup
+is disabled by default and only sends validated public server IP addresses to
+the configured provider.

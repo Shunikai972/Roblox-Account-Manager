@@ -25,6 +25,8 @@ def test_window_positioner_handles():
     # Non-existent PID returns False gracefully without throwing
     success = RobloxWindowPositioner.position_window(pid=999999, x=100, y=100, width=800, height=600)
     assert success is False
+    assert RobloxWindowPositioner.position_window(pid=1, x=0, y=0, width=0, height=0) is False
+    assert RobloxWindowPositioner.position_window(pid=True, x=0, y=0) is False
 
 
 def test_position_window_service_and_bridge(tmp_path: Path):

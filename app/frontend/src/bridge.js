@@ -8,7 +8,8 @@ const CONTRACT_METHODS = [
   'delete_accounts', 'get_public_profile', 'refresh_account_public_profile', 'get_public_presence', 'refresh_account_presence',
   'start_oauth_login', 'poll_oauth_login', 'cancel_oauth_login',
   'refresh_oauth_account', 'disconnect_oauth_account', 'list_groups', 'create_group', 'update_group', 'delete_group', 'move_accounts', 'reorder_accounts', 'list_games',
-  'list_recent_games', 'list_favorite_games', 'get_game', 'set_game_favorite', 'remove_game', 'list_servers', 'launch_account', 'list_uwp_packages', 'launch_uwp_package', 'list_instances',
+  'list_recent_games', 'list_favorite_games', 'get_game', 'set_game_favorite', 'remove_game', 'list_servers',
+  'resolve_server_region', 'launch_account', 'list_uwp_packages', 'launch_uwp_package', 'list_instances',
   'refresh_instances', 'get_instance_monitor', 'close_instance', 'bind_instance', 'configure_account_watcher', 'get_settings', 'update_settings',
   'get_windows_startup_status', 'set_windows_startup', 'get_activity',
   'get_notifications', 'dismiss_notification', 'backup_data', 'list_backups',
@@ -16,12 +17,13 @@ const CONTRACT_METHODS = [
   'start_nexus_server', 'stop_nexus_server', 'get_nexus_status', 'send_nexus_command', 'get_nexus_lua_script',
   'get_multi_instance_status', 'set_multi_instance',
   'get_fps_cap', 'set_fps_cap', 'remove_fps_cap', 'start_batch_launch', 'cancel_batch_launch', 'get_batch_launch_status',
-  'generate_auth_ticket', 'generate_rbx_player_link', 'get_account_cookie', 'import_bulk_accounts', 'position_instance_window',
+  'generate_auth_ticket', 'get_account_csrf_token', 'generate_rbx_player_link', 'get_account_cookie', 'refresh_account_session', 'export_account_sessions', 'import_bulk_accounts', 'position_instance_window', 'capture_instance_window', 'restore_instance_window',
   'change_account_password', 'change_account_email', 'logout_all_account_sessions', 'set_account_display_name',
   'send_account_friend_request', 'block_account_user', 'unblock_account_user', 'quick_log_in_account',
-  'parse_vip_link', 'search_players', 'get_player_presence', 'get_random_server', 'close_beta_home_windows', 'check_for_updates',
+  'set_account_follow_privacy', 'unlock_account_pin',
+  'parse_vip_link', 'search_players', 'get_player_presence', 'find_player_server', 'get_random_server', 'close_beta_home_windows', 'check_for_updates',
   'get_account_blocked_list', 'unblock_all_account_users', 'set_account_avatar',
-  'add_account_from_cookie', 'start_manual_browser_login'
+  'add_account_from_cookie', 'start_manual_browser_login', 'poll_manual_browser_login'
 ];
 
 const DAY = 86400000;
@@ -250,6 +252,10 @@ class PreviewBridge {
     throw new Error('Roblox OAuth requires the desktop bridge and a registered local OAuth configuration. Preview mode never simulates sign-in.');
   }
 
+  desktopOperationUnavailable(operation) {
+    throw new Error((operation || 'This operation') + ' requires the Astro Account Manager desktop bridge. Preview mode never simulates Windows, Roblox, session, or remote account actions.');
+  }
+
   async start_oauth_login() { return this.oauthUnavailable(); }
   async poll_oauth_login() { return this.oauthUnavailable(); }
   async cancel_oauth_login() { return this.oauthUnavailable(); }
@@ -362,6 +368,10 @@ class PreviewBridge {
       });
     }
     return output;
+  }
+
+  async resolve_server_region() {
+    return this.desktopOperationUnavailable('Resolving a live server region');
   }
 
   async launch_account(id, target) {
@@ -570,180 +580,210 @@ class PreviewBridge {
       status: 'healthy', mode: 'preview', checked_at: Date.now(),
       services: [
         { name: 'Storage vault', status: 'healthy', detail: 'Local preview persistence' },
-        { name: 'Instance watcher', status: 'healthy', detail: 'Simulated process monitor' },
+        { name: 'Instance watcher', status: 'unavailable', detail: 'Desktop bridge required' },
         { name: 'Roblox gateway', status: 'degraded', detail: 'Preview mode has no network bridge' }
       ],
       logs: [
         { level: 'INFO', at: Date.now() - 1000 * 60 * 2, message: 'Preview bridge ready.' },
         { level: 'INFO', at: Date.now() - 1000 * 60 * 4, message: 'No native pywebview API detected.' },
-        { level: 'WARN', at: Date.now() - 1000 * 60 * 8, message: 'Network operations are simulated in preview.' }
+        { level: 'WARN', at: Date.now() - 1000 * 60 * 8, message: 'Remote and Windows operations are disabled in Preview.' }
       ]
     };
   }
 
   async start_nexus_server(host, port) {
-    this.nexus_running = true;
-    return this.get_nexus_status();
+    return this.desktopOperationUnavailable('Starting Nexus');
   }
 
   async stop_nexus_server() {
-    this.nexus_running = false;
-    return this.get_nexus_status();
+    return this.desktopOperationUnavailable('Stopping Nexus');
   }
 
   async get_nexus_status() {
     return {
-      running: Boolean(this.nexus_running),
+      running: false,
+      available: false,
       host: '127.0.0.1',
       port: 5242,
       url: 'ws://127.0.0.1:5242/Nexus',
-      accounts: this.nexus_running ? [
-        { username: 'AriaNebula', user_id: 123456, job_id: 'job_preview_1', status: 'Online', connected_at: new Date().toISOString(), last_ping_at: new Date().toISOString(), auto_relaunch: true, log_count: 2, recent_logs: ['[12:00:00] Connected', '[12:00:15] Ping ok'] }
-      ] : []
+      accounts: [],
+      reason: 'Desktop bridge required'
     };
   }
 
   async send_nexus_command(target_account, command_name, payload) {
-    this.event('nexus', `Nexus command sent: ${command_name}`, target_account);
-    return true;
+    return this.desktopOperationUnavailable('Sending a Nexus command');
   }
 
   async get_nexus_lua_script(host, port) {
-    return `-- Nexus Account Control Lua Script Template\nprint("Nexus client target: ws://${host || '127.0.0.1'}:${port || 5242}/Nexus")`;
+    return this.desktopOperationUnavailable('Generating the Nexus client script');
   }
 
   async get_multi_instance_status() {
-    return { supported: true, enabled: Boolean(this.multi_instance_enabled), handle_count: this.multi_instance_enabled ? 4 : 0 };
+    return { supported: false, enabled: false, handle_count: 0, reason: 'Desktop bridge required' };
   }
 
   async set_multi_instance(enabled) {
-    this.multi_instance_enabled = Boolean(enabled);
-    return this.get_multi_instance_status();
+    return this.desktopOperationUnavailable('Changing multi-instance support');
   }
 
   async get_fps_cap() {
-    return { fps: this.fps_cap || null, file: "C:\\Users\\Preview\\AppData\\Local\\Roblox\\ClientSettings\\ClientAppSettings.json" };
+    return { supported: false, fps: null, file: null, reason: 'Desktop bridge required' };
   }
 
   async set_fps_cap(fps) {
-    this.fps_cap = Number(fps);
-    return { success: true, fps: this.fps_cap };
+    return this.desktopOperationUnavailable('Changing Roblox ClientSettings');
   }
 
   async remove_fps_cap() {
-    this.fps_cap = null;
-    return { success: true };
+    return this.desktopOperationUnavailable('Removing the Roblox FPS cap');
   }
 
   async start_batch_launch(account_ids, target, delay_seconds) {
-    this.batch_status = { in_progress: true, total: (account_ids || []).length, launched: (account_ids || []).length, failed: 0, current_account: null };
-    return this.batch_status;
+    return this.desktopOperationUnavailable('Launching Roblox accounts');
   }
 
   async cancel_batch_launch() {
-    this.batch_status = { in_progress: false, total: 0, launched: 0, failed: 0, current_account: null };
-    return this.batch_status;
+    return this.desktopOperationUnavailable('Cancelling a desktop launch queue');
   }
 
   async get_batch_launch_status() {
-    return this.batch_status || { in_progress: false, total: 0, launched: 0, failed: 0, current_account: null };
+    return { available: false, in_progress: false, total: 0, launched: 0, failed: 0, current_account: null };
   }
 
   async generate_auth_ticket(account_id) {
-    return { account_id: account_id, ticket: "MOCK_AUTH_TICKET_" + account_id + "_123456789" };
+    return this.desktopOperationUnavailable('Generating an authentication ticket');
+  }
+
+  async get_account_csrf_token(account_id) {
+    return this.desktopOperationUnavailable('Generating an X-CSRF token');
   }
 
   async generate_rbx_player_link(account_id, place_id, job_id) {
-    const ticket = "MOCK_AUTH_TICKET_" + account_id + "_123456789";
-    return { account_id: account_id, ticket: ticket, link: `roblox-player:1+launchmode:play+gameinfo:${ticket}+launchtime:1700000000000+placelauncherurl:https%3A%2F%2Fassetgame.roblox.com%2Fgame%2FPlaceLauncher.ashx%3Frequest%3DRequestGame%26placeId%3D${place_id}` };
+    return this.desktopOperationUnavailable('Generating a roblox-player link');
   }
 
   async get_account_cookie(account_id) {
-    return { account_id: account_id, username: "MockUser", cookie: "_|WARNING:-DO-NOT-SHARE-THIS.--Sharing-this-will-allow-someone-to-log-in-as-you-and-steal-your-ROBUX-and-items.|_MOCK_COOKIE_" + account_id };
+    return this.desktopOperationUnavailable('Reading an account session');
+  }
+
+  async refresh_account_session(account_id) {
+    return this.desktopOperationUnavailable('Validating a Roblox account session');
+  }
+
+  async export_account_sessions(account_ids, confirm) {
+    return this.desktopOperationUnavailable('Exporting raw account sessions');
   }
 
   async import_bulk_accounts(raw_text, group_id) {
-    return { imported: 1, total_parsed: 1, accounts: [{ id: "mock_acc_99", username: "ImportedUser", group_id: group_id }] };
+    return this.desktopOperationUnavailable('Importing authenticated accounts');
   }
 
   async position_instance_window(pid, x, y, width, height) {
-    return { pid: pid, success: true, x: x, y: y, width: width || 800, height: height || 600 };
+    return this.desktopOperationUnavailable('Positioning a Roblox window');
+  }
+
+  async capture_instance_window() {
+    return this.desktopOperationUnavailable('Saving a Roblox window position');
+  }
+
+  async restore_instance_window() {
+    return this.desktopOperationUnavailable('Restoring a Roblox window position');
   }
 
   async change_account_password(account_id, current_pass, new_pass) {
-    return { account_id: account_id, success: true };
+    return this.desktopOperationUnavailable('Changing a Roblox password');
   }
 
   async change_account_email(account_id, password, new_email) {
-    return { account_id: account_id, success: true };
+    return this.desktopOperationUnavailable('Changing a Roblox email address');
   }
 
   async logout_all_account_sessions(account_id) {
-    return { account_id: account_id, success: true };
+    return this.desktopOperationUnavailable('Logging out Roblox sessions');
   }
 
   async set_account_display_name(account_id, new_display_name) {
-    return { account_id: account_id, display_name: new_display_name, success: true };
+    return this.desktopOperationUnavailable('Changing a Roblox display name');
   }
 
   async send_account_friend_request(account_id, target_user_id) {
-    return { account_id: account_id, target_user_id: target_user_id, success: true };
+    return this.desktopOperationUnavailable('Sending a Roblox friend request');
   }
 
   async block_account_user(account_id, target_user_id) {
-    return { account_id: account_id, target_user_id: target_user_id, success: true };
+    return this.desktopOperationUnavailable('Blocking a Roblox user');
   }
 
   async unblock_account_user(account_id, target_user_id) {
-    return { account_id: account_id, target_user_id: target_user_id, success: true };
+    return this.desktopOperationUnavailable('Unblocking a Roblox user');
   }
 
   async quick_log_in_account(account_id, code) {
-    return { account_id: account_id, code: code, success: true };
+    return this.desktopOperationUnavailable('Submitting a Roblox Quick Log In code');
+  }
+
+  async set_account_follow_privacy(account_id, privacy) {
+    return this.desktopOperationUnavailable('Changing Roblox follow privacy');
+  }
+
+  async unlock_account_pin(account_id, pin) {
+    return this.desktopOperationUnavailable('Unlocking a Roblox account PIN');
   }
 
   async parse_vip_link(link) {
-    return { place_id: 2753915549, link_code: "mock_vip_code_123" };
+    const parsed = new URL(String(link || ''));
+    const match = parsed.pathname.match(/\/games\/(\d+)/i);
+    const code = parsed.searchParams.get('privateServerLinkCode') || parsed.searchParams.get('code');
+    return match && code ? { place_id: Number(match[1]), link_code: code } : null;
   }
 
   async search_players(keyword, limit) {
-    return [{ user_id: 123456, name: keyword + "_Player", display_name: keyword + " Display", has_verified_badge: false }];
+    return this.desktopOperationUnavailable('Searching Roblox users');
   }
 
   async get_player_presence(user_id) {
-    return { user_id: user_id, status: "InGame", place_id: 2753915549, job_id: "mock_job_99" };
+    return this.desktopOperationUnavailable('Reading Roblox presence');
+  }
+
+  async find_player_server() {
+    return this.desktopOperationUnavailable('Scanning Roblox public servers for a player');
   }
 
   async get_random_server(place_id) {
-    return { job_id: "mock_random_job_777", place_id: place_id, playing: 10, capacity: 12, ping: 45 };
+    return this.desktopOperationUnavailable('Selecting a Roblox server');
   }
 
   async close_beta_home_windows() {
-    return { closed_count: 0 };
+    return this.desktopOperationUnavailable('Closing Roblox windows');
   }
 
   async check_for_updates() {
-    return { current_version: "4.0.0", latest_version: "4.0.0", update_available: false };
+    return this.desktopOperationUnavailable('Checking for application updates');
   }
 
   async get_account_blocked_list(account_id) {
-    return [{ id: 9999, name: "BlockedUser", displayName: "Blocked User" }];
+    return this.desktopOperationUnavailable('Reading a Roblox blocked-user list');
   }
 
   async unblock_all_account_users(account_id) {
-    return { account_id: account_id, unblocked_count: 1 };
+    return this.desktopOperationUnavailable('Unblocking Roblox users');
   }
 
   async set_account_avatar(account_id, asset_ids) {
-    return { account_id: account_id, asset_ids: asset_ids, success: true };
+    return this.desktopOperationUnavailable('Changing a Roblox avatar');
   }
 
   async add_account_from_cookie(cookie, group_id) {
-    return { id: "mock_cookie_acc", username: "CookieUser", display_name: "Cookie User", is_active: true };
+    return this.desktopOperationUnavailable('Adding an authenticated Roblox account');
   }
 
   async start_manual_browser_login(group_id) {
-    return { started: true };
+    return this.desktopOperationUnavailable('Opening the Roblox sign-in browser');
+  }
+
+  async poll_manual_browser_login(operation_id) {
+    return this.desktopOperationUnavailable('Checking Roblox browser sign-in');
   }
 }
 

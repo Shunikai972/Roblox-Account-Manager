@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-label="Astro Account Manager">
+  <defs>
+    <linearGradient id="a" x1="38" y1="28" x2="218" y2="230" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#b7a7ff"/>
+      <stop offset="1" stop-color="#6e58df"/>
+    </linearGradient>
+  </defs>
+  <rect width="256" height="256" rx="58" fill="#101427"/>
+  <path d="M128 31c42.5 0 77 34.5 77 77s-34.5 77-77 77-77-34.5-77-77 34.5-77 77-77Z" fill="none" stroke="url(#a)" stroke-width="18" opacity=".92"/>
+  <path d="M76 178 121 66h16l43 112h-25l-8-23H107l-8 23H76Zm38-44h27l-13-39-14 39Z" fill="#f5f2ff"/>
+  <circle cx="190" cy="177" r="14" fill="#49d0a4"/>
+</svg>

@@ -2,135 +2,96 @@
 
 ## Bridge pywebview
 
-L’application desktop appelle `window.pywebview.api`, jamais SQLite, Windows ou Roblox directement. Le bridge expose des cas d’usage synchrones et redacted :
+Le frontend appelle exclusivement `window.pywebview.api` via `app/frontend/src/bridge.js`. `DesktopBridge` convertit les erreurs de domaine en messages sûrs et ne renvoie jamais de traceback.
 
-| Méthode | Rôle |
-| --- | --- |
-| `bootstrap()` | État initial sans secret pour le dashboard. |
-| `list_accounts(query)`, `create_account(payload)`, `update_account(id, payload)`, `delete_accounts(ids)` | Gestion des métadonnées de comptes. |
-| `get_public_profile(userId)`, `refresh_account_public_profile(id)` | Lecture et actualisation du profil public Roblox (identité, avatar, URL canonique) via les endpoints publics ; aucun cookie, secret ou grant OAuth ne traverse le bridge. |
-| `get_public_presence(userIds)`, `refresh_account_presence(ids)` | Présence publique par lot de 50 utilisateurs maximum, cache mémoire borné ; la persistance du snapshot ne modifie jamais l’état de processus local. |
-| `start_oauth_login()`, `poll_oauth_login(operationId)`, `cancel_oauth_login(operationId)` | Connexion officielle Roblox OAuth + PKCE dans le navigateur système ; seuls des états publics et le profil associé sont retournés. |
-| `refresh_oauth_account(id)`, `disconnect_oauth_account(id)` | Rotation locale d'un grant OAuth DPAPI ou suppression locale de ce grant, sans session de client Roblox. |
-| `list_groups()`, `create_group(payload)`, `update_group(id, payload)`, `delete_group(id)`, `move_accounts(ids, groupId)` | Groupes et réorganisation persistante. |
-| `list_games()`, `list_recent_games()`, `list_favorite_games()`, `get_game(placeId)`, `list_servers(placeId)` | Catalogue, historique récent borné, favoris et serveurs publics Roblox. |
-| `set_game_favorite(placeId, favorite)`, `remove_game(placeId)` | Marquage/démarquage d’un favori et retrait explicite d’un jeu enregistré localement. Ces opérations ne traitent aucune session. |
-| `launch_account(id, target)` | Hand-off Windows vers `roblox://`, avec `place_id` validé ; aucun ticket n’est retourné. |
-| `list_uwp_packages()`, `launch_uwp_package(packageFullName)` | Découverte des applications Roblox UWP déjà enregistrées pour l’utilisateur Windows et lancement via `shell:AppsFolder`. La réponse ne contient ni chemin d’installation, ni manifeste, ni session ; une cible est redécouverte avant lancement. |
-| `list_instances()`, `refresh_instances()`, `get_instance_monitor()` | Snapshot local, historique de processus borné et état d'intégrité du dernier scan (`last_scan_complete`). `get_instance_monitor()` expose aussi l’observation locale de logs Player via `log_watcher` et `log_events`, sans chemin, nom de fichier ni ligne brute. |
-| `close_instance(pid, confirm)` | Fermeture gracieuse d'un PID suivi, seulement si `watcher.termination_enabled=true` **et** `confirm=true`; aucun `kill()` forcé. |
-| `bind_instance(pid, accountId, target, confirm)` | Association manuelle confirmée d'une instance orpheline à un compte/PlaceId local ; ne modifie jamais le processus. |
-| `configure_account_watcher(accountId, rule)` | Règle par compte : `auto_relaunch`, délai, plafond de tentatives et déclencheurs crash/exit. Les valeurs sont validées/persistées et ne contiennent aucun secret. |
-| `get_settings()`, `update_settings(values)` | Préférences validées et persistées. |
-| `get_windows_startup_status()`, `set_windows_startup(enabled, confirm)` | État réel et modification explicitement confirmée de la seule valeur HKCU Run d’Astro. Le réglage persistant `general.start_with_windows` est mis à jour uniquement après confirmation de Windows ; en développement Python la capacité est annoncée indisponible et `python.exe` n’est jamais enregistré. |
-| `get_activity()`, `get_notifications()`, `dismiss_notification(id)` | Historique local et centre de notifications. |
-| `backup_data()`, `list_backups()`, `restore_backup(id, confirm)`, `export_metadata()`, `import_metadata(path, confirm)`, `migrate_legacy(path)`, `get_diagnostics()` | Maintenance, restauration et import explicitement confirmés, transfert de métadonnées publiques, migration et diagnostics redacted. |
+### Comptes et données publiques
 
-Les exceptions de domaine deviennent des promesses rejetées avec un message sûr pour l’utilisateur. Les détails techniques restent dans les logs locaux.
+- `bootstrap`, `list_accounts`, `create_account`, `update_account`, `delete_accounts`, `reorder_accounts`
+- `list_groups`, `create_group`, `update_group`, `delete_group`, `move_accounts`, `reorder_groups`
+- `get_public_profile`, `refresh_account_public_profile`, `get_public_presence`, `refresh_account_presence`
+- `list_games`, `list_recent_games`, `list_favorite_games`, `get_game`, `list_servers`, `resolve_server_region`, `set_game_favorite`, `remove_game`
 
-### Watcher d'instances et relance locale
+### Authentification et sessions
 
-Le watcher suit les exécutables Roblox connus par la paire `PID + heure de
-création`, pour se protéger contre le recyclage de PID. Une énumération
-`psutil` incomplète ne ferme jamais artificiellement toutes les instances : les
-enregistrements absents deviennent temporairement `unknown` jusqu'à un scan
-complet. Les états courants sont `running`, `orphaned`, `terminating` et
-`unknown`; les événements terminaux différencient `exited`, `crashed` et
-`terminated`.
+- `add_account_from_cookie(cookie, groupId)` valide l’identité Roblox avant toute sauvegarde DPAPI.
+- `start_manual_browser_login(groupId)` et `poll_manual_browser_login(operationId)` pilotent le navigateur dédié sans faux succès.
+- `start_oauth_login`, `poll_oauth_login`, `cancel_oauth_login`, `refresh_oauth_account`, `disconnect_oauth_account` gèrent uniquement le grant Open Cloud ; OAuth ne crée pas de session du client Roblox.
+- `refresh_account_session(id)` revalide une session stockée et refuse une identité différente.
+- `get_account_cookie(id)` renvoie la session brute après une action UI explicite.
+- `export_account_sessions(ids, confirm)` exige `confirm=true` et écrit un fichier plaintext sous le dossier d’exports.
+- `generate_auth_ticket`, `get_account_csrf_token`, `generate_rbx_player_link` renvoient les valeurs demandées uniquement à l’appelant explicite.
 
-Après un lancement local accepté, le bridge enregistre une intention éphémère
-sans cookie ni ticket. Une instance est associée automatiquement seulement si
-une seule intention est plausible. Deux lancements simultanés ou un processus
-déjà ouvert restent donc `orphaned` jusqu'à `bind_instance(..., confirm=true)`.
+Ces réponses sensibles ne sont jamais incluses dans `bootstrap`, les diagnostics, les notifications, les logs, les backups automatiques ou l’export de métadonnées publiques. PreviewBridge rejette toutes ces opérations.
 
-La relance nécessite deux activations : `watcher.auto_relaunch_enabled=true`
-et `auto_relaunch=true` dans la règle du compte. Elle est bornée (1–3 600 s de
-délai, 0–20 tentatives), ne concerne qu'une instance associée avec certitude et
-rejoue uniquement le hand-off Windows validé vers `roblox://`. Elle n'injecte
-pas de session et ne peut pas sélectionner ou forcer un profil Roblox client.
+### Lancement, instances et Nexus
 
-### Observation locale des logs Player
+- `launch_account`, `start_batch_launch`, `cancel_batch_launch`, `get_batch_launch_status`
+- `parse_vip_link`, `search_players`, `get_player_presence`, `find_player_server`, `get_random_server`
+- `get_multi_instance_status`, `set_multi_instance`, `get_fps_cap`, `set_fps_cap`, `remove_fps_cap`
+- `list_uwp_packages`, `launch_uwp_package`
+- `list_instances`, `refresh_instances`, `get_instance_monitor`, `bind_instance`, `close_instance`, `configure_account_watcher`, `position_instance_window`, `capture_instance_window`, `restore_instance_window`, `close_beta_home_windows`
 
-À chaque scan de processus complet, le backend examine de façon bornée le seul
-répertoire `%LOCALAPPDATA%\Roblox\logs` du profil Windows courant : au plus 256
-entrées, 32 candidats `*_Player_*_last.log` et 64 Mio par fichier. Il ne crée
-une association que lorsqu’il observe exactement un processus Roblox et un seul
-candidat; un scan incomplet, plusieurs processus ou plusieurs logs reste sans
-association. Aucun chemin, nom de fichier, contenu brut ou secret n’est envoyé
-au bridge.
+`find_player_server(place_id, user_id, max_pages=10)` reproduit le scan RAM par `playerTokens` et miniatures, avec pagination et lots bornés ; les tokens opaques ne quittent jamais le backend. Les règles automatiques mémoire/titre/timeout exigent `watcher.termination_enabled` et leur option indépendante, ignorent la fenêtre au premier plan et ne ciblent qu’un processus/fenêtre Roblox vérifiés. La capture/restauration de géométrie est opt-in via `instances.remember_window_positions` ; les actions manuelles exigent une confirmation.
+- `start_nexus_server`, `stop_nexus_server`, `get_nexus_status`, `send_nexus_command`, `get_nexus_lua_script`
 
-`get_instance_monitor()` ajoute donc deux champs redacted :
+La fermeture d’une instance requiert l’activation globale et une confirmation distincte. La relance requiert un opt-in global et un opt-in par compte. Nexus exige son jeton éphémère dans le handshake.
 
-```json
-{
-  "log_watcher": {
-    "directory_available": true,
-    "discovery_complete": true,
-    "candidate_count": 1,
-    "observed_instance_count": 1,
-    "association_state": "associated",
-    "associated_pid": 4242
-  },
-  "log_events": [
-    {
-      "kind": "disconnected",
-      "occurred_at": "2026-08-10T12:00:00+00:00",
-      "pid": 4242,
-      "place_id": null,
-      "job_id": null,
-      "disconnect_code": 279
-    }
-  ]
-}
-```
+### Utilitaires authentifiés
 
-Les valeurs possibles de `association_state` sont `associated`, `ambiguous`,
-`no_instance`, `no_log`, `directory_unavailable`, `process_scan_incomplete` et
-`discovery_truncated`. Les événements sont un historique en mémoire borné de
-types `game_joined`, `disconnected`, `data_model_*`, `returned_to_app` et des
-événements de disponibilité/rotation du parseur. Ils sont observationnels :
-ils ne déclenchent ni fermeture, ni association de compte, ni relance.
+`change_account_password`, `change_account_email`, `logout_all_account_sessions`, `set_account_display_name`, `send_account_friend_request`, `block_account_user`, `unblock_account_user`, `get_account_blocked_list`, `unblock_all_account_users`, `quick_log_in_account`, `set_account_follow_privacy`, `unlock_account_pin` et `set_account_avatar` sont raccordés à Accounts → Utilities.
 
-### OAuth Roblox (opt-in)
+### Maintenance
 
-Le flux OAuth est indépendant de l'API HTTP loopback. Il exige un `client_id`
-et un callback `http://127.0.0.1:port/chemin` enregistrés auprès de Roblox,
-ainsi que `oauth.enabled=true` dans les réglages. Le bridge n'expose ni URL
-d'autorisation, ni state, ni verifier PKCE, ni code, ni access/refresh token.
-`poll_oauth_login` renvoie seulement `{ operation_id, status, expires_at,
-message? }` et ajoute `account` public au statut `completed`. Consultez
-[OAuth](OAUTH.md) pour les limites d'API et la configuration.
+`get_settings`, `update_settings`, `get_windows_startup_status`, `set_windows_startup`, `get_activity`, `get_notifications`, `dismiss_notification`, `backup_data`, `list_backups`, `restore_backup`, `export_metadata`, `import_metadata`, `migrate_legacy`, `get_diagnostics` et `check_for_updates`.
 
-## API HTTP loopback optionnelle
+## API HTTP loopback
 
-`app.backend.api.LoopbackApiServer` fournit une surface HTTP versionnée pour une automatisation locale explicite. Elle est désactivée par défaut, liée exclusivement à `127.0.0.1`, et exige un Bearer token pour **toutes** les routes.
+`LoopbackApiServer` est désactivé par défaut, écoute uniquement sur `127.0.0.1` et exige un bearer d’au moins 32 caractères pour chaque route. Le bearer vient de `ASTRO_LOCAL_API_TOKEN`, reste en mémoire et n’est jamais journalisé.
 
-Pour l’activer au prochain démarrage, définissez `api.enabled` à `true` dans les préférences et fournissez un jeton aléatoire d’au moins 32 caractères dans `ASTRO_LOCAL_API_TOKEN`. `main.py` démarre alors le serveur avec le port `api.port` (7963 par défaut) ; le jeton n’est jamais persisté ni journalisé. `ASTERIA_LOCAL_API_TOKEN` reste accepté comme compatibilité de migration pour des scripts locaux existants.
+L’activation, le port et les permissions se règlent dans Settings → Advanced. Un redémarrage est requis.
 
-```powershell
-$env:ASTRO_LOCAL_API_TOKEN = [guid]::NewGuid().ToString() + [guid]::NewGuid().ToString()
-python main.py
-```
+| Permission | Routes concernées |
+|---|---|
+| `allow_get_cookie` | `GetCookie`, `GetCSRFToken`, `GetAccountsJson?IncludeCookies=true` |
+| `allow_launch_account` | `LaunchAccount`, `FollowUser` |
+| `allow_account_editing` | `SetField`, `RemoveField`, `SetAlias`, `SetDescription`, `AppendDescription`, `SetAvatar` et mutations REST comptes/groupes |
+| `allow_import_cookie` | `ImportCookie` |
+| `allow_get_accounts` | `GetAccounts`, `GetAccountsJson` (`AllowGetAccounts` historique) |
 
-Exemple :
+Toutes les permissions sont `false` par défaut dans l’application. Même un bearer correct reçoit `403` si la capacité est désactivée.
 
-```powershell
-Invoke-RestMethod http://127.0.0.1:7963/api/v1/accounts `
-  -Headers @{ Authorization = "Bearer $env:ASTRO_LOCAL_API_TOKEN" }
-```
+### Authentification bearer et compatibilité RAM
 
-Routes implémentées :
+Le bearer moderne reste obligatoire par défaut. La compatibilité avec
+`EveryRequestRequiresPassword` est facultative et doit être activée dans
+Settings → Advanced.
 
-| Méthode | Route | Rôle |
-| --- | --- | --- |
-| `GET` | `/api/v1/health` | État de service sans chemin ni log sensible. |
-| `GET` | `/api/v1/accounts?q=…`, `/groups`, `/games`, `/instances`, `/settings`, `/activity` | Lecture locale redacted. |
-| `POST` | `/accounts`, `/groups`, `/backups` | Création ou backup vérifié. |
-| `PATCH` / `DELETE` | `/accounts/{id}`, `/groups/{id}` | Mutation validée. |
-| `POST` | `/accounts/{id}/launch` | Lancement local avec cible `{ "place_id": 123 }`. |
+| | Bearer Astro | Mot de passe RAM |
+|---|---|---|
+| Réglage | toujours actif lorsque l’API démarre | `api.legacy_password_auth_enabled` |
+| Secret runtime | `ASTRO_LOCAL_API_TOKEN` | `ASTRO_LOCAL_API_PASSWORD` |
+| Transport | `Authorization: Bearer <token>` | `X-RAM-Password` ou `?Password=` |
+| Minimum | 32 caractères | 12 caractères |
 
-Les succès sont enveloppés sous `{ "data": … }`; les échecs sous `{ "error": { "code", "message", "details?" } }`. Les statuts importants sont `400` (validation), `401` (absence de jeton), `403` (secret interdit), `404`, `409`, `422`, `502` et `503`.
+Les deux schémas restent limités à `127.0.0.1`, utilisent une comparaison à
+temps constant et respectent exactement les mêmes permissions. Aucun secret
+n’est persisté ou journalisé. Le header `X-RAM-Password` est préférable au
+paramètre historique, car une valeur placée dans une URL peut rester dans
+l’historique du client appelant.
 
-L’API HTTP refuse récursivement les champs ressemblant à des mots de passe, cookies, sessions, tokens ou secrets. Les sessions ne peuvent être ajoutées que depuis le bridge desktop explicitement autorisé, puis sont protégées par DPAPI ; elles ne sont jamais retournées par l’un ou l’autre API. CORS n’est pas activé, les réponses sont `no-store`, et l’API ne doit jamais être exposée via un proxy ou une interface réseau.
+### Routes RAM compatibles
 
-La spécification OpenAPI est disponible dans [openapi.yaml](api/openapi.yaml).
+`LaunchAccount`, `FollowUser`, `SetServer`, `SetRecommendedServer`, `BlockUser`, `UnblockUser`, `UnblockEveryone`, `GetBlockedList`, `GetField`, `SetField`, `RemoveField`, `SetAlias`, `GetAlias`, `SetDescription`, `GetDescription`, `AppendDescription`, `SetAvatar`, `GetCookie`, `GetAccounts`, `GetAccountsJson`, `GetCSRFToken`, `ImportCookie`.
+
+Les paramètres historiques `Account`, `PlaceId`, `JobId`, `User`/`Username`, `Group`, `IncludeCookies`, `Field`, `Value`, `Alias`, `Description`, `AssetId` et `Cookie` sont pris en charge selon la route. Les routes d’édition texte acceptent également un corps POST borné.
+
+### Routes REST Astro
+
+- `GET /api/v1/health`, `/accounts`, `/groups`, `/games`, `/instances`, `/settings`, `/activity`
+- `POST /api/v1/accounts`, `/groups`, `/backups`
+- `PATCH` / `DELETE /api/v1/accounts/{id}`, `/groups/{id}`
+- `POST /api/v1/accounts/{id}/launch`
+
+Les succès utilisent `{ "data": ... }`, les erreurs `{ "error": { "code", "message" } }`. Les corps sont bornés à 64 Kio, les réponses utilisent `Cache-Control: no-store`, CORS n’est pas activé et les exceptions internes ne sont pas réfléchies.
+
+La spécification [OpenAPI](api/openapi.yaml) documente la surface REST Astro ; les routes RAM de compatibilité restent décrites ici.

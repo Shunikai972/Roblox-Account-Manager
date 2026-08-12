@@ -15,6 +15,7 @@ import threading
 import time
 from typing import Any, Final
 from urllib.parse import urlsplit
+from uuid import uuid4
 
 import requests
 
@@ -39,6 +40,7 @@ Clock = Callable[[], float]
 
 _GAMES_BASE: Final = "https://games.roblox.com"
 _UNIVERSES_BASE: Final = "https://apis.roblox.com"
+_SEARCH_BASE: Final = "https://apis.roblox.com/search-api"
 _USERS_BASE: Final = "https://users.roblox.com"
 _THUMBNAILS_BASE: Final = "https://thumbnails.roblox.com"
 _PRESENCE_BASE: Final = "https://presence.roblox.com"
@@ -53,6 +55,8 @@ _PRESENCE_CACHE_SIZE: Final = 512
 _USERNAME_RESOLUTION_CACHE_TTL_SECONDS: Final = 300.0
 _USERNAME_RESOLUTION_CACHE_SIZE: Final = 256
 _USERNAME_RESOLUTION_MIN_INTERVAL_SECONDS: Final = 0.25
+_SEARCH_CACHE_TTL_SECONDS: Final = 60.0
+_SEARCH_CACHE_SIZE: Final = 64
 _ROBLOX_USERNAME_PATTERN: Final = re.compile(r"^[A-Za-z0-9_]{3,20}$")
 
 
@@ -135,6 +139,7 @@ class RobloxClient:
         presence_cache_ttl_seconds: float = _PRESENCE_CACHE_TTL_SECONDS,
         username_resolution_cache_ttl_seconds: float = _USERNAME_RESOLUTION_CACHE_TTL_SECONDS,
         username_resolution_min_interval_seconds: float = _USERNAME_RESOLUTION_MIN_INTERVAL_SECONDS,
+        search_cache_ttl_seconds: float = _SEARCH_CACHE_TTL_SECONDS,
     ) -> None:
         if not isinstance(timeout_seconds, (int, float)) or timeout_seconds <= 0:
             raise ValidationError("Network timeout must be positive.")
@@ -160,6 +165,8 @@ class RobloxClient:
             or username_resolution_min_interval_seconds < 0
         ):
             raise ValidationError("Username resolution min interval is invalid.")
+        if not isinstance(search_cache_ttl_seconds, (int, float)) or search_cache_ttl_seconds <= 0:
+            raise ValidationError("Search cache TTL must be positive.")
         if not callable(clock):
             raise ValidationError("Roblox client clock function is invalid.")
 
@@ -188,6 +195,15 @@ class RobloxClient:
             minimum_interval_seconds=float(username_resolution_min_interval_seconds),
             clock=clock,
         )
+        self._search_cache = _TimedCache(
+            maximum_entries=_SEARCH_CACHE_SIZE,
+            ttl_seconds=float(search_cache_ttl_seconds),
+            clock=clock,
+        )
+        # Roblox's replacement for the retired games/list endpoint requires a
+        # stable session id.  It is analytics-only, random per local client and
+        # contains no account/session information.
+        self._search_session_id = str(uuid4())
 
         # A stable Accept header makes error handling more predictable without
         # impersonating a browser or adding account-identifying headers.
@@ -254,24 +270,27 @@ class RobloxClient:
     def search_games(self, query: str, *, limit: int = 20) -> tuple[Game, ...]:
         """Search public experiences by a human-entered title or keyword.
 
-        Roblox's legacy discovery endpoint has changed shape over time, so the
-        response parser accepts both its ``games`` shape and the newer ``data``
-        wrapper.  A response with no recognizable games is simply an empty
-        search result rather than a UI-breaking parser error.
+        Roblox retired ``games.roblox.com/v1/games/list``.  Its current search
+        surface groups experiences under ``searchResults[].contents``.  The
+        parser also retains the legacy shapes for deterministic compatibility
+        tests and defensive handling of a transitional response.
         """
 
         normalized_query = _search_query(query)
         validated_limit = _page_size(limit)
+        cache_key = (normalized_query.casefold(), validated_limit)
+        cached = self._search_cache.get(cache_key)
+        if cached is not None:
+            return cached
         payload = self._request_json(
-            f"{_GAMES_BASE}/v1/games/list",
+            f"{_SEARCH_BASE}/omni-search",
             params={
-                "model.keyword": normalized_query,
-                "model.startRows": 0,
-                "model.maxRows": validated_limit,
-                "model.sortOrder": 1,
+                "searchQuery": normalized_query,
+                "sessionId": self._search_session_id,
+                "pageType": "all",
             },
         )
-        raw_games = _find_collection(payload, "games", "data", "results")
+        raw_games = _find_search_games(payload)
         games: list[Game] = []
         for raw_game in raw_games:
             if not isinstance(raw_game, Mapping):
@@ -285,7 +304,9 @@ class RobloxClient:
                 # response unusable.  The server details endpoint still validates
                 # all fields strictly when a game is opened.
                 continue
-        return tuple(games[:validated_limit])
+        result = tuple(games[:validated_limit])
+        self._search_cache.put(cache_key, result)
+        return result
 
     def list_public_servers(
         self,
@@ -430,7 +451,9 @@ class RobloxClient:
 
         return self._send_json("GET", url, params=params)
 
-    def _post_json(self, url: str, *, json_body: Mapping[str, Any]) -> JsonMapping:
+    def _post_json(
+        self, url: str, *, json_body: Mapping[str, Any] | list[Mapping[str, Any]]
+    ) -> JsonMapping:
         """Issue a JSON POST request without reflecting HTTP implementation data."""
 
         return self._send_json("POST", url, json_body=json_body)
@@ -441,7 +464,7 @@ class RobloxClient:
         url: str,
         *,
         params: Mapping[str, str | int] | None = None,
-        json_body: Mapping[str, Any] | None = None,
+        json_body: Mapping[str, Any] | list[Mapping[str, Any]] | None = None,
     ) -> JsonMapping:
         """Issue a bounded public request and normalize its JSON response."""
 
@@ -454,7 +477,12 @@ class RobloxClient:
                 if method == "GET":
                     response = self._http.get(url, params=params, timeout=self._timeout_seconds)
                 elif method == "POST":
-                    response = self._http.post(url, json=dict(json_body or {}), timeout=self._timeout_seconds)
+                    body: Any
+                    if isinstance(json_body, list):
+                        body = [dict(item) for item in json_body]
+                    else:
+                        body = dict(json_body or {})
+                    response = self._http.post(url, json=body, timeout=self._timeout_seconds)
                 else:  # Internal-only guard: public methods use GET or POST only.
                     raise RuntimeError("Unsupported Roblox HTTP method")
             except requests.RequestException:
@@ -629,6 +657,28 @@ def _find_collection(payload: JsonMapping, *keys: str) -> list[Any]:
     return []
 
 
+def _find_search_games(payload: JsonMapping) -> list[Any]:
+    """Flatten Roblox omni-search experience groups without keeping tokens."""
+
+    grouped = payload.get("searchResults")
+    if isinstance(grouped, list):
+        games: list[Any] = []
+        for group in grouped:
+            if not isinstance(group, Mapping):
+                continue
+            contents = group.get("contents")
+            if not isinstance(contents, list):
+                continue
+            for item in contents:
+                if not isinstance(item, Mapping):
+                    continue
+                content_type = str(item.get("contentType") or group.get("contentGroupType") or "")
+                if content_type.casefold() == "game":
+                    games.append(item)
+        return games
+    return _find_collection(payload, "games", "data", "results")
+
+
 def _to_game(
     payload: Mapping[str, Any],
     *,
@@ -662,7 +712,7 @@ def _to_game(
         creator_name=_optional_text(creator_mapping.get("name") or payload.get("creatorName")),
         creator_id=_as_positive_int(creator_mapping.get("id") or payload.get("creatorId")),
         icon_url=_optional_text(payload.get("iconImageUrl") or payload.get("imageUrl")),
-        playing=_as_nonnegative_int(payload.get("playing")),
+        playing=_as_nonnegative_int(payload.get("playing") if payload.get("playing") is not None else payload.get("playerCount")),
         max_players=_as_nonnegative_int(payload.get("maxPlayers")),
         metadata={key: value for key, value in metadata.items() if value is not None},
     )
@@ -682,6 +732,11 @@ def _to_server(payload: Mapping[str, Any], *, place_id: int) -> Server | None:
         ping=_as_finite_float(payload.get("ping")),
         fps=_as_finite_float(payload.get("fps")),
         region=_optional_text(payload.get("region")),
+        address=_optional_text(
+            payload.get("machineAddress")
+            or payload.get("address")
+            or payload.get("ip")
+        ),
         server_type="public",
         # Player tokens are not needed by the UI and can be unstable identifiers.
         player_tokens=[],

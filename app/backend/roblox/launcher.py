@@ -16,7 +16,8 @@ from .types import LaunchResult, LaunchTarget
 
 ProtocolOpener = Callable[[str], object]
 ProtocolChecker = Callable[[], bool]
-_JOB_ID = re.compile(r"^[A-Za-z0-9-]{1,128}$")
+_JOB_ID = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
+_AUTHENTICATED_URI = re.compile(r"^roblox-player:1\+launchmode:play\+", re.IGNORECASE)
 
 
 class WindowsRobloxLauncher:
@@ -81,6 +82,29 @@ class WindowsRobloxLauncher:
             raise RobloxLaunchError("Windows failed to launch Roblox.") from None
         return LaunchResult(uri=uri, launched=True)
 
+    def launch_authenticated_uri(self, uri: str) -> LaunchResult:
+        """Open a validated, locally generated ``roblox-player`` URI."""
+
+        if (
+            not isinstance(uri, str)
+            or len(uri) > 16_384
+            or not _AUTHENTICATED_URI.match(uri)
+            or any(ord(character) < 32 or character.isspace() for character in uri)
+        ):
+            raise ValidationError("Authenticated Roblox launch URI is invalid.")
+        if self._platform_name().casefold() != "windows":
+            raise RobloxLaunchError("Local Roblox launching is available on Windows only.")
+        if not self._protocol_checker():
+            raise RobloxLaunchError("Roblox is not installed or its Windows protocol is unavailable.")
+        opener = self._opener or getattr(os, "startfile", None)
+        if not callable(opener):
+            raise RobloxLaunchError("Windows cannot open the Roblox protocol.")
+        try:
+            opener(uri)
+        except Exception:
+            raise RobloxLaunchError("Windows failed to launch Roblox.") from None
+        return LaunchResult(uri=uri, launched=True)
+
 
 def _roblox_protocol_is_registered() -> bool:
     """Return whether Windows currently advertises a ``roblox`` URI handler."""
@@ -97,4 +121,3 @@ def _roblox_protocol_is_registered() -> bool:
 
 
 __all__ = ["WindowsRobloxLauncher"]
-

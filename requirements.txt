@@ -3,3 +3,4 @@ PyNaCl>=1.5,<2
 psutil>=6.1,<8
 pywebview==6.2.1
 requests>=2.32,<3
+websockets>=14,<16

@@ -116,6 +116,19 @@ def test_monitor_bounds_current_state_and_history() -> None:
     assert len(monitor.history()) == 2
 
 
+def test_duplicate_guard_covers_pending_launch_before_process_is_seen() -> None:
+    monitor = RobloxProcessMonitor(process_iter=ProcessSource([]), clock=lambda: 100.0)
+
+    monitor.register_launch_intent(
+        account_id="account-one",
+        account_username="AccountOne",
+        place_id=123,
+    )
+
+    assert monitor.has_active_or_pending_account("account-one") is True
+    assert monitor.has_active_or_pending_account("account-two") is False
+
+
 def test_termination_is_disabled_by_default_and_never_calls_process() -> None:
     process = FakeProcess(100)
     source = ProcessSource([process])

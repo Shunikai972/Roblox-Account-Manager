@@ -56,11 +56,19 @@ DEFAULT_SETTINGS: dict[str, Any] = {
         "relaunch_on_exit": False,
         "close_unconnected": False,
         "unconnected_timeout_seconds": 60,
+        "close_if_memory_low": False,
+        "memory_low_mb": 200,
+        "close_if_title_mismatch": False,
+        "health_grace_seconds": 30,
         "expected_window_title": "Roblox",
     },
     "network": {
         "request_timeout_seconds": 15,
         "region_lookup_enabled": False,
+        "region_lookup_provider": "",
+        "region_lookup_format": "{city}, {country}",
+        "region_lookup_timeout_seconds": 4,
+        "region_cache_ttl_seconds": 900,
     },
     "oauth": {
         # OAuth is opt-in because each distribution or developer build needs
@@ -75,6 +83,12 @@ DEFAULT_SETTINGS: dict[str, Any] = {
         "enabled": False,
         "host": "127.0.0.1",
         "port": 7963,
+        "allow_get_cookie": False,
+        "allow_launch_account": False,
+        "allow_account_editing": False,
+        "allow_import_cookie": False,
+        "allow_get_accounts": False,
+        "legacy_password_auth_enabled": False,
     },
     "nexus": {
         "enabled": False,

@@ -6,6 +6,11 @@ from .client import RobloxClient, SessionRobloxClient
 from .client_settings import ClientSettingsPatcher
 from .launcher import WindowsRobloxLauncher
 from .multi_instance import WindowsMultiInstanceController
+from .server_region import (
+    RegionLookupSettings,
+    RequestsRegionTransport,
+    ServerRegionResolver,
+)
 from .oauth import (
     OAuthClientConfiguration,
     OAuthConfigurationError,
@@ -52,9 +57,12 @@ __all__ = [
     "PresenceState",
     "PublicUserProfile",
     "PublicUsernameResolution",
+    "RegionLookupSettings",
+    "RequestsRegionTransport",
     "RobloxClient",
     "RobloxOAuthClient",
     "ServerPage",
+    "ServerRegionResolver",
     "ServerSortOrder",
     "SessionRobloxClient",
     "WindowsMultiInstanceController",

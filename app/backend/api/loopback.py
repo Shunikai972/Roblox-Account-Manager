@@ -39,6 +39,13 @@ if TYPE_CHECKING:
 
 API_PREFIX = "/api/v1"
 MAX_JSON_BODY_BYTES = 64 * 1024
+_API_PERMISSION_DEFAULTS = {
+    "allow_get_cookie": True,
+    "allow_launch_account": True,
+    "allow_account_editing": True,
+    "allow_import_cookie": True,
+    "allow_get_accounts": True,
+}
 
 
 class LoopbackApiError(RuntimeError):
@@ -73,6 +80,9 @@ class LoopbackApiServer:
         token: str | None = None,
         host: str = "127.0.0.1",
         port: int = 7963,
+        permissions: Mapping[str, bool] | None = None,
+        legacy_password_auth_enabled: bool = False,
+        legacy_password: str | None = None,
         logger: logging.Logger | None = None,
     ) -> None:
         if host != "127.0.0.1":
@@ -83,6 +93,23 @@ class LoopbackApiServer:
         self._token = _validated_token(token or secrets.token_urlsafe(32))
         self._host = host
         self._requested_port = port
+        supplied_permissions = dict(permissions or {})
+        unknown_permissions = set(supplied_permissions).difference(_API_PERMISSION_DEFAULTS)
+        if unknown_permissions or any(not isinstance(value, bool) for value in supplied_permissions.values()):
+            raise LoopbackApiError("Local API permissions are invalid.")
+        self._permissions = {**_API_PERMISSION_DEFAULTS, **supplied_permissions}
+        self._legacy_password_auth_enabled = bool(legacy_password_auth_enabled)
+        self._legacy_password: str | None = None
+        if self._legacy_password_auth_enabled:
+            if legacy_password is None:
+                raise LoopbackApiError(
+                    "Legacy password authentication is enabled but no password was supplied."
+                )
+            self._legacy_password = _validated_legacy_password(legacy_password)
+        elif legacy_password is not None:
+            raise LoopbackApiError(
+                "A legacy password was supplied while legacy authentication is disabled."
+            )
         self._logger = logger or logging.getLogger("astro_account_manager.loopback_api")
         self._httpd: ThreadingHTTPServer | None = None
         self._thread: threading.Thread | None = None
@@ -148,6 +175,35 @@ class LoopbackApiServer:
     def __exit__(self, *_: object) -> None:
         self.stop()
 
+    @staticmethod
+    def _required_permission(method: str, route: str) -> str | None:
+        normalized = route.removeprefix(API_PREFIX)
+        if normalized in {"/GetCookie", "/GetCSRFToken"}:
+            return "allow_get_cookie"
+        if normalized in {"/LaunchAccount", "/FollowUser"}:
+            return "allow_launch_account"
+        if normalized == "/ImportCookie":
+            return "allow_import_cookie"
+        if normalized in {"/GetAccounts", "/GetAccountsJson"}:
+            return "allow_get_accounts"
+        if normalized in {
+            "/SetField",
+            "/RemoveField",
+            "/SetAlias",
+            "/SetDescription",
+            "/AppendDescription",
+            "/SetAvatar",
+        }:
+            return "allow_account_editing"
+        if method in {"POST", "PATCH", "DELETE"} and (
+            normalized == "/accounts"
+            or normalized == "/groups"
+            or normalized.startswith("/accounts/")
+            or normalized.startswith("/groups/")
+        ):
+            return "allow_account_editing"
+        return None
+
 
 def _handler_type(api: LoopbackApiServer) -> type[BaseHTTPRequestHandler]:
     """Build an isolated request handler bound to one API instance."""
@@ -183,6 +239,9 @@ def _handler_type(api: LoopbackApiServer) -> type[BaseHTTPRequestHandler]:
                 parsed = urlsplit(self.path)
                 route = unquote(parsed.path[len(API_PREFIX) :]) if parsed.path.startswith(f"{API_PREFIX}/") else unquote(parsed.path)
                 query = parse_qs(parsed.query, keep_blank_values=True)
+                required_permission = api._required_permission(method, route)
+                if required_permission is not None and not api._permissions[required_permission]:
+                    raise SecurityError("This local API method is disabled by its permission settings.")
                 status, payload = self._route(method, route, query)
             except AppError as exc:
                 self._send_error_payload(_status_for_error(exc), exc)
@@ -217,7 +276,7 @@ def _handler_type(api: LoopbackApiServer) -> type[BaseHTTPRequestHandler]:
 
             if method == "GET" and route in ("/FollowUser", "/api/v1/FollowUser"):
                 acct = _single_query(query, "Account")
-                user = _single_query(query, "User")
+                user = _single_query(query, "Username") or _single_query(query, "User")
                 if not acct or not user:
                     raise ValidationError("The Account and User parameters are required.")
                 acc_id = _find_account_id(api._service, acct)
@@ -253,20 +312,20 @@ def _handler_type(api: LoopbackApiServer) -> type[BaseHTTPRequestHandler]:
 
             if method == "GET" and route in ("/BlockUser", "/api/v1/BlockUser"):
                 acct = _single_query(query, "Account")
-                user = _single_query(query, "User")
+                user = _single_query(query, "UserId") or _single_query(query, "User")
                 if not acct or not user:
                     raise ValidationError("Account and User parameters are required.")
                 acc_id = _find_account_id(api._service, acct)
-                target_id = int(user) if user.isdigit() else (api._service.search_players(user, limit=1) or [{"user_id": 0}])[0]["user_id"]
+                target_id = _resolve_user_id(api._service, user)
                 return HTTPStatus.OK, api._service.block_account_user(acc_id, target_id)
 
             if method == "GET" and route in ("/UnblockUser", "/api/v1/UnblockUser"):
                 acct = _single_query(query, "Account")
-                user = _single_query(query, "User")
+                user = _single_query(query, "UserId") or _single_query(query, "User")
                 if not acct or not user:
                     raise ValidationError("Account and User parameters are required.")
                 acc_id = _find_account_id(api._service, acct)
-                target_id = int(user) if user.isdigit() else (api._service.search_players(user, limit=1) or [{"user_id": 0}])[0]["user_id"]
+                target_id = _resolve_user_id(api._service, user)
                 return HTTPStatus.OK, api._service.unblock_account_user(acc_id, target_id)
 
             if method == "GET" and route in ("/GetCookie", "/api/v1/GetCookie"):
@@ -284,8 +343,8 @@ def _handler_type(api: LoopbackApiServer) -> type[BaseHTTPRequestHandler]:
                 acc_id = _find_account_id(api._service, acct)
                 accounts = api._service.list_accounts()
                 target_acc = next((a for a in accounts if a["id"] == acc_id), None)
-                metadata = (target_acc.get("metadata") or {}) if target_acc else {}
-                val = metadata.get(field) or (target_acc.get(field) if target_acc else None)
+                fields = (target_acc.get("custom_fields") or {}) if target_acc else {}
+                val = fields.get(field)
                 return HTTPStatus.OK, {"field": field, "value": val}
 
             if method == "GET" and route in ("/SetField", "/api/v1/SetField"):
@@ -297,17 +356,17 @@ def _handler_type(api: LoopbackApiServer) -> type[BaseHTTPRequestHandler]:
                 acc_id = _find_account_id(api._service, acct)
                 accounts = api._service.list_accounts()
                 target_acc = next((a for a in accounts if a["id"] == acc_id), None)
-                metadata = dict(target_acc.get("metadata") or {}) if target_acc else {}
-                metadata[field] = val
-                return HTTPStatus.OK, api._service.update_account(acc_id, {"metadata": metadata})
+                fields = dict(target_acc.get("custom_fields") or {}) if target_acc else {}
+                fields[field] = val
+                return HTTPStatus.OK, api._service.update_account(acc_id, {"custom_fields": fields})
 
-            if method == "GET" and route in ("/SetAlias", "/api/v1/SetAlias"):
+            if method in ("GET", "POST") and route in ("/SetAlias", "/api/v1/SetAlias"):
                 acct = _single_query(query, "Account")
-                alias = _single_query(query, "Alias")
+                alias = _single_query(query, "Alias") if method == "GET" else self._text_body()
                 if not acct:
                     raise ValidationError("The Account parameter is required.")
                 acc_id = _find_account_id(api._service, acct)
-                return HTTPStatus.OK, api._service.update_account(acc_id, {"display_name": alias or ""})
+                return HTTPStatus.OK, api._service.update_account(acc_id, {"alias": alias or ""})
 
             if method == "GET" and route in ("/UnblockEveryone", "/api/v1/UnblockEveryone"):
                 acct = _single_query(query, "Account")
@@ -329,7 +388,11 @@ def _handler_type(api: LoopbackApiServer) -> type[BaseHTTPRequestHandler]:
                 if not acct or not field:
                     raise ValidationError("Account and Field parameters are required.")
                 acc_id = _find_account_id(api._service, acct)
-                return HTTPStatus.OK, api._service.update_account(acc_id, {field: None})
+                accounts = api._service.list_accounts()
+                target_acc = next((a for a in accounts if a["id"] == acc_id), None)
+                fields = dict(target_acc.get("custom_fields") or {}) if target_acc else {}
+                fields.pop(field, None)
+                return HTTPStatus.OK, api._service.update_account(acc_id, {"custom_fields": fields})
 
             if method == "GET" and route in ("/GetAlias", "/api/v1/GetAlias"):
                 acct = _single_query(query, "Account")
@@ -338,7 +401,15 @@ def _handler_type(api: LoopbackApiServer) -> type[BaseHTTPRequestHandler]:
                 acc_id = _find_account_id(api._service, acct)
                 accounts = api._service.list_accounts()
                 target_acc = next((a for a in accounts if a["id"] == acc_id), None)
-                return HTTPStatus.OK, {"alias": target_acc.get("display_name") if target_acc else ""}
+                return HTTPStatus.OK, {"alias": target_acc.get("alias") if target_acc else ""}
+
+            if method in ("GET", "POST") and route in ("/SetDescription", "/api/v1/SetDescription"):
+                acct = _single_query(query, "Account")
+                description = _single_query(query, "Description") if method == "GET" else self._text_body()
+                if not acct or description is None:
+                    raise ValidationError("Account and Description are required.")
+                acc_id = _find_account_id(api._service, acct)
+                return HTTPStatus.OK, api._service.update_account(acc_id, {"description": description})
 
             if method == "GET" and route in ("/GetDescription", "/api/v1/GetDescription"):
                 acct = _single_query(query, "Account")
@@ -349,49 +420,74 @@ def _handler_type(api: LoopbackApiServer) -> type[BaseHTTPRequestHandler]:
                 target_acc = next((a for a in accounts if a["id"] == acc_id), None)
                 return HTTPStatus.OK, {"description": target_acc.get("description") if target_acc else ""}
 
-            if method == "GET" and route in ("/AppendDescription", "/api/v1/AppendDescription"):
+            if method in ("GET", "POST") and route in ("/AppendDescription", "/api/v1/AppendDescription"):
                 acct = _single_query(query, "Account")
-                desc = _single_query(query, "Description") or ""
+                desc = (_single_query(query, "Description") or "") if method == "GET" else self._text_body()
                 if not acct:
                     raise ValidationError("The Account parameter is required.")
                 acc_id = _find_account_id(api._service, acct)
                 accounts = api._service.list_accounts()
                 target_acc = next((a for a in accounts if a["id"] == acc_id), None)
                 existing = (target_acc.get("description") or "") if target_acc else ""
-                new_desc = existing + "\n" + desc if existing else desc
+                new_desc = existing + desc
                 return HTTPStatus.OK, api._service.update_account(acc_id, {"description": new_desc})
 
-            if method == "GET" and route in ("/SetAvatar", "/api/v1/SetAvatar"):
+            if method in ("GET", "POST") and route in ("/SetAvatar", "/api/v1/SetAvatar"):
                 acct = _single_query(query, "Account")
-                asset_id = _single_query(query, "AssetId")
-                if not acct or not asset_id or not asset_id.isdigit():
-                    raise ValidationError("Account and AssetId parameters are required.")
+                asset_ids: list[int]
+                if method == "GET":
+                    asset_id = _single_query(query, "AssetId")
+                    if not asset_id or not asset_id.isdigit():
+                        raise ValidationError("A valid AssetId parameter is required.")
+                    asset_ids = [int(asset_id)]
+                else:
+                    avatar = self._json_value()
+                    raw_assets = avatar.get("assetIds") if isinstance(avatar, Mapping) else avatar
+                    if not isinstance(raw_assets, list) or not raw_assets:
+                        raise ValidationError("The avatar body must contain a non-empty assetIds array.")
+                    asset_ids = [_positive_query_id(value, "AssetId") for value in raw_assets]
+                if not acct:
+                    raise ValidationError("The Account parameter is required.")
                 acc_id = _find_account_id(api._service, acct)
-                return HTTPStatus.OK, api._service.set_account_avatar(acc_id, [int(asset_id)])
+                return HTTPStatus.OK, api._service.set_account_avatar(acc_id, asset_ids)
 
             if method == "GET" and route in ("/GetAccounts", "/api/v1/GetAccounts"):
                 accounts = api._service.list_accounts()
+                group = _single_query(query, "Group")
+                if group:
+                    group_ids = {item["id"] for item in api._service.list_groups() if item.get("name") == group}
+                    accounts = [account for account in accounts if account.get("group_id") in group_ids]
                 usernames = [a["username"] for a in accounts if a.get("username")]
                 return HTTPStatus.OK, {"accounts": usernames}
 
             if method == "GET" and route in ("/GetAccountsJson", "/api/v1/GetAccountsJson"):
-                return HTTPStatus.OK, api._service.list_accounts()
+                accounts = api._service.list_accounts()
+                group = _single_query(query, "Group")
+                if group:
+                    group_ids = {item["id"] for item in api._service.list_groups() if item.get("name") == group}
+                    accounts = [account for account in accounts if account.get("group_id") in group_ids]
+                include_cookies = (_single_query(query, "IncludeCookies") or "").lower() == "true"
+                if include_cookies and not api._permissions["allow_get_cookie"]:
+                    raise SecurityError("Cookie inclusion is disabled by the local API permission settings.")
+                result = []
+                for account in accounts:
+                    item = dict(account)
+                    item["cookie"] = api._service.get_account_cookie(account["id"])["cookie"] if include_cookies else None
+                    result.append(item)
+                return HTTPStatus.OK, result
 
             if method == "GET" and route in ("/GetCSRFToken", "/api/v1/GetCSRFToken"):
                 acct = _single_query(query, "Account")
                 if not acct:
                     raise ValidationError("The Account parameter is required.")
                 acc_id = _find_account_id(api._service, acct)
-                ticket = api._service.generate_auth_ticket(acc_id)
-                return HTTPStatus.OK, {"csrf_token": ticket.get("ticket", "")}
+                return HTTPStatus.OK, api._service.get_account_csrf_token(acc_id)
 
             if method == "GET" and route in ("/ImportCookie", "/api/v1/ImportCookie"):
-                acct = _single_query(query, "Account")
-                cookie_str = _single_query(query, "Cookie")
-                if not acct or not cookie_str:
-                    raise ValidationError("Account and Cookie parameters are required.")
-                raw_text = f"{acct}::{cookie_str}"
-                return HTTPStatus.OK, api._service.import_bulk_accounts(raw_text)
+                cookie_str = _single_query(query, "Cookie", max_length=8192)
+                if not cookie_str:
+                    raise ValidationError("The Cookie parameter is required.")
+                return HTTPStatus.OK, api._service.add_account_from_cookie(cookie_str)
 
             # Standard REST routes --------------------------------------------
             if method == "GET" and route == "/health":
@@ -445,7 +541,24 @@ def _handler_type(api: LoopbackApiServer) -> type[BaseHTTPRequestHandler]:
         def _authenticated(self) -> bool:
             supplied = self.headers.get("Authorization", "")
             expected = f"Bearer {api._token}"
-            return hmac.compare_digest(supplied, expected)
+            if hmac.compare_digest(supplied, expected):
+                return True
+            return self._legacy_password_authenticated()
+
+        def _legacy_password_authenticated(self) -> bool:
+            expected = api._legacy_password
+            if not api._legacy_password_auth_enabled or not expected:
+                return False
+            header_value = self.headers.get("X-RAM-Password")
+            if header_value and hmac.compare_digest(header_value, expected):
+                return True
+            try:
+                candidates = parse_qs(
+                    urlsplit(self.path).query, keep_blank_values=True
+                ).get("Password", [])
+            except Exception:
+                return False
+            return any(hmac.compare_digest(candidate, expected) for candidate in candidates)
 
         def _json_object(self, *, allow_empty: bool = False) -> dict[str, Any]:
             length = self._content_length()
@@ -465,6 +578,33 @@ def _handler_type(api: LoopbackApiServer) -> type[BaseHTTPRequestHandler]:
             if _contains_sensitive_key(decoded):
                 raise SecurityError("Secrets are not accepted by the local HTTP API.")
             return decoded
+
+        def _json_value(self) -> Any:
+            length = self._content_length()
+            if length == 0:
+                raise _RequestError("A JSON request body is required.")
+            content_type = self.headers.get("Content-Type", "").split(";", 1)[0].strip().lower()
+            if content_type != "application/json":
+                raise _RequestError("Content-Type must be application/json.")
+            try:
+                decoded = json.loads(self.rfile.read(length).decode("utf-8"))
+            except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+                raise _RequestError("JSON request body is invalid.") from exc
+            if _contains_sensitive_key(decoded):
+                raise SecurityError("Secrets are not accepted in this request body.")
+            return decoded
+
+        def _text_body(self) -> str:
+            length = self._content_length()
+            if length == 0:
+                raise _RequestError("A text request body is required.")
+            content_type = self.headers.get("Content-Type", "").split(";", 1)[0].strip().lower()
+            if content_type not in ("text/plain", ""):
+                raise _RequestError("Content-Type must be text/plain.")
+            try:
+                return self.rfile.read(length).decode("utf-8")
+            except UnicodeDecodeError as exc:
+                raise _RequestError("Text request body is invalid UTF-8.") from exc
 
         def _reject_nonempty_body(self) -> None:
             if self._content_length() != 0:
@@ -514,26 +654,56 @@ def _validated_token(value: str) -> str:
     return value
 
 
+def _validated_legacy_password(value: str) -> str:
+    if not isinstance(value, str) or len(value) < 12 or len(value) > 512:
+        raise LoopbackApiError(
+            "Legacy API password must contain at least 12 characters."
+        )
+    if any(
+        character.isspace() or ord(character) < 33 or ord(character) > 126
+        for character in value
+    ):
+        raise LoopbackApiError("Legacy API password contains invalid characters.")
+    return value
+
+
 def _find_account_id(service: Any, identifier: str) -> str:
     accounts = service.list_accounts()
     for acc in accounts:
         if acc["username"].lower() == identifier.lower() or acc["id"] == identifier:
             return acc["id"]
-    if accounts:
-        return accounts[0]["id"]
     raise NotFoundError(f"Account '{identifier}' not found.")
 
 
-def _single_query(query: Mapping[str, list[str]], key: str) -> str | None:
+def _single_query(query: Mapping[str, list[str]], key: str, *, max_length: int = 120) -> str | None:
     values = query.get(key, [])
     if not values:
         return None
     if len(values) != 1:
         raise _RequestError("Search query parameter is ambiguous.")
     value = values[0]
-    if len(value) > 120:
+    if len(value) > max_length:
         raise _RequestError("Search query parameter is too long.")
     return value or None
+
+
+def _resolve_user_id(service: Any, value: str) -> int:
+    if value.isdigit() and int(value) > 0:
+        return int(value)
+    matches = service.search_players(value, limit=1)
+    if not matches or not matches[0].get("user_id"):
+        raise NotFoundError(f"Player '{value}' not found.")
+    return _positive_query_id(matches[0]["user_id"], "UserId")
+
+
+def _positive_query_id(value: Any, label: str) -> int:
+    try:
+        normalized = int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValidationError(f"{label} must be a positive integer.") from exc
+    if normalized <= 0:
+        raise ValidationError(f"{label} must be a positive integer.")
+    return normalized
 
 
 def _opaque_identifier(value: str) -> str:

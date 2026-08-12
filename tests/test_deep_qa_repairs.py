@@ -2,7 +2,7 @@
 Deep QA & Regression Test Suite for Alt Manager Repairs.
 
 Verifies:
-1. Multi-instance state isolation (FPS, Potato Mode, Game ID per instance).
+1. Sequential launch-time FPS and Potato Mode updates.
 2. Direct Game ID validation & persistence in Account Edit and launch targeting.
 3. Quick Controls process termination, binding, and state reflection.
 4. 100% English error messages across backend services and loopback API.
@@ -53,8 +53,8 @@ def app_service(mock_repository, mock_launcher, mock_client_settings):
     return service
 
 
-def test_per_instance_fps_and_potato_isolation(app_service, mock_repository, mock_client_settings):
-    """Verify that launching Instance A with specific FPS/Potato options patches ClientSettings isolatedly from Instance B."""
+def test_sequential_account_fps_and_potato_launch_settings(app_service, mock_repository, mock_client_settings):
+    """Verify each sequential launch applies that account's global ClientSettings."""
     acc_a = Account(id="acc_a", username="UserA", metadata={"launch_options": {"max_fps": 30, "potato_graphics": True}})
     acc_b = Account(id="acc_b", username="UserB", metadata={"launch_options": {"max_fps": 144, "potato_graphics": False}})
     mock_repository.get_account.side_effect = lambda uid: acc_a if uid == "acc_a" else (acc_b if uid == "acc_b" else None)
@@ -82,10 +82,15 @@ def test_game_id_direct_validation_and_launch_targeting(app_service, mock_reposi
     # Fallback to saved_place_id when no place_id in target
     res_saved = app_service.launch_account("acc_1", None)
     assert res_saved["target"]["place_id"] == 123456
+    # The production duplicate guard intentionally blocks a second click while
+    # this launch intent is pending. Cancel it here because this test isolates
+    # target selection rather than duplicate prevention.
+    app_service.monitor.cancel_launch_intent(res_saved["watcher_request_id"])
 
     # Valid explicit target overrides saved_place_id
     res = app_service.launch_account("acc_1", {"place_id": 987654})
     assert res["target"]["place_id"] == 987654
+    assert acc.saved_place_id == 123456
 
     # Invalid place_id validation
     with pytest.raises(ValidationError) as exc:

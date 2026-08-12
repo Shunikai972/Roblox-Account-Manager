@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
+import time
 
 import pytest
 
@@ -21,6 +22,63 @@ class _Monitor:
 
     def current_instances(self) -> tuple[object, ...]:
         return ()
+
+
+class _LaunchAwareMonitor:
+    """Small deterministic monitor that exposes the launch-registration race."""
+
+    def __init__(self, *, complete: bool = True) -> None:
+        self.complete = complete
+        self.pending_account_id: str | None = None
+        self.observed_account_id: str | None = None
+        self.cancelled: list[str] = []
+
+    def register_launch_intent(self, **values: object) -> str:
+        self.pending_account_id = str(values["account_id"])
+        return "watch-request"
+
+    def cancel_launch_intent(self, request_id: str) -> bool:
+        self.cancelled.append(request_id)
+        self.pending_account_id = None
+        return True
+
+    def has_active_or_pending_account(self, account_id: str) -> bool:
+        return account_id in {self.pending_account_id, self.observed_account_id}
+
+    def scan(self) -> SimpleNamespace:
+        instances = ()
+        if self.observed_account_id:
+            instances = (SimpleNamespace(account_id=self.observed_account_id, pid=42001),)
+        return SimpleNamespace(
+            instances=instances,
+            started=instances,
+            events=(),
+            complete=self.complete,
+        )
+
+    def current_instances(self) -> tuple[object, ...]:
+        return self.scan().instances
+
+
+class _LaunchAwareLauncher:
+    def __init__(self, monitor: _LaunchAwareMonitor, *, accepted: bool = True) -> None:
+        self.monitor = monitor
+        self.accepted = accepted
+
+    def launch(self, target: object) -> LaunchResult:
+        assert self.monitor.pending_account_id is not None, "watcher intent was registered after Windows hand-off"
+        if self.accepted:
+            self.monitor.observed_account_id = self.monitor.pending_account_id
+            self.monitor.pending_account_id = None
+        return LaunchResult(uri="roblox://experiences/start?placeId=222", launched=self.accepted)
+
+
+class _ClientSettings:
+    def get_fps_cap(self) -> int:
+        return 0
+
+    def patch_launch_settings(self, *, fps: int, potato_graphics: bool) -> bool:
+        return True
 
 
 class _Roblox:
@@ -168,6 +226,81 @@ def test_account_group_game_and_backup_use_cases_are_persisted(tmp_path: Path) -
         assert Path(backup["path"]).is_dir()
         assert service.get_activity()
         assert service.get_notifications()
+    finally:
+        service.close()
+
+
+def test_launch_registers_before_handoff_preserves_default_and_avoids_fixed_delay(tmp_path: Path) -> None:
+    monitor = _LaunchAwareMonitor()
+    launcher = _LaunchAwareLauncher(monitor)
+    service = ApplicationService(
+        paths=_paths(tmp_path),
+        roblox=_Roblox(),  # type: ignore[arg-type]
+        launcher=launcher,  # type: ignore[arg-type]
+        monitor=monitor,  # type: ignore[arg-type]
+        client_settings=_ClientSettings(),  # type: ignore[arg-type]
+    )
+    try:
+        account = service.create_account({"username": "LaunchRace", "saved_place_id": 111})
+        started = time.monotonic()
+        result = service.launch_account(account["id"], {"place_id": 222})
+        elapsed = time.monotonic() - started
+
+        assert result["accepted"] is True
+        assert result["target"]["place_id"] == 222
+        refreshed = service.list_accounts()[0]
+        assert refreshed["saved_place_id"] == 111
+        assert refreshed["status"] == "in_game"
+        assert elapsed < 0.8, "an observed launch should not pay the former unconditional 1.2 s delay"
+    finally:
+        service.close()
+
+
+def test_complete_scan_repairs_stale_runtime_status_but_partial_scan_preserves_it(tmp_path: Path) -> None:
+    monitor = _LaunchAwareMonitor(complete=True)
+    service = ApplicationService(
+        paths=_paths(tmp_path),
+        roblox=_Roblox(),  # type: ignore[arg-type]
+        launcher=_Launcher([]),  # type: ignore[arg-type]
+        monitor=monitor,  # type: ignore[arg-type]
+        client_settings=_ClientSettings(),  # type: ignore[arg-type]
+    )
+    try:
+        created = service.create_account({"username": "StaleRuntime", "saved_place_id": 333})
+        stored = service.repository.get_account(created["id"])
+        stored.status = "in_game"
+        service.repository.save_account(stored)
+
+        service.refresh_instances()
+        assert service.list_accounts()[0]["status"] == "ready"
+
+        stored = service.repository.get_account(created["id"])
+        stored.status = "in_game"
+        service.repository.save_account(stored)
+        monitor.complete = False
+        service.refresh_instances()
+        assert service.list_accounts()[0]["status"] == "in_game"
+    finally:
+        service.close()
+
+
+def test_rejected_windows_handoff_cancels_watcher_and_does_not_fake_launching(tmp_path: Path) -> None:
+    monitor = _LaunchAwareMonitor()
+    launcher = _LaunchAwareLauncher(monitor, accepted=False)
+    service = ApplicationService(
+        paths=_paths(tmp_path),
+        roblox=_Roblox(),  # type: ignore[arg-type]
+        launcher=launcher,  # type: ignore[arg-type]
+        monitor=monitor,  # type: ignore[arg-type]
+        client_settings=_ClientSettings(),  # type: ignore[arg-type]
+    )
+    try:
+        account = service.create_account({"username": "RejectedLaunch", "saved_place_id": 444})
+        result = service.launch_account(account["id"])
+        assert result["accepted"] is False
+        assert result["watcher_request_id"] is None
+        assert monitor.cancelled == ["watch-request"]
+        assert service.list_accounts()[0]["status"] == "ready"
     finally:
         service.close()
 

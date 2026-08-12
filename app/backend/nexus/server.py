@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import hmac
 import json
 import logging
+import re
 from datetime import UTC, datetime
 from typing import Any, Callable
 from urllib.parse import parse_qs, urlparse
@@ -15,6 +17,8 @@ from websockets.asyncio.server import ServerConnection, serve
 from app.backend.nexus.controlled_account import ControlledAccount
 
 logger = logging.getLogger("astro.nexus")
+_USERNAME = re.compile(r"^[A-Za-z0-9_]{1,20}$")
+_MAX_MESSAGE_BYTES = 64 * 1024
 
 
 class NexusServer:
@@ -24,10 +28,12 @@ class NexusServer:
         self,
         host: str = "127.0.0.1",
         port: int = 5242,
+        authentication_token: str | None = None,
         on_auto_relaunch_trigger: Callable[[str], None] | None = None,
     ) -> None:
         self.host = host
         self.port = port
+        self.authentication_token = authentication_token
         self.on_auto_relaunch_trigger = on_auto_relaunch_trigger
         self.on_log_callback: Callable[[str, str], None] | None = None
         self.is_running = False
@@ -36,6 +42,7 @@ class NexusServer:
         self._thread = None
         self._connections: dict[str, WebSocketServerProtocol] = {}
         self.accounts: dict[str, ControlledAccount] = {}
+        self._startup_error: Exception | None = None
 
     def start(self) -> None:
         """Start the Nexus WebSocket server in a background event loop thread."""
@@ -44,7 +51,6 @@ class NexusServer:
 
         import threading
 
-        self.is_running = True
         ready_event = threading.Event()
 
         def _run_loop():
@@ -53,6 +59,7 @@ class NexusServer:
 
             async def _main():
                 self._server = await serve(self._handle_connection, self.host, self.port)
+                self.is_running = True
                 logger.info(f"Nexus WebSocket server started on ws://{self.host}:{self.port}/Nexus")
                 ready_event.set()
                 await self._server.wait_closed()
@@ -62,12 +69,17 @@ class NexusServer:
             except asyncio.CancelledError:
                 pass
             except Exception as exc:
-                logger.error(f"Nexus server error: {exc}")
+                self._startup_error = exc
+                self.is_running = False
+                logger.exception("Nexus server failed")
                 ready_event.set()
 
         self._thread = threading.Thread(target=_run_loop, daemon=True, name="nexus_server")
         self._thread.start()
         ready_event.wait(timeout=5.0)
+        if not self.is_running or self._server is None:
+            self.is_running = False
+            raise RuntimeError("Nexus WebSocket server could not be started.") from self._startup_error
 
     def stop(self) -> None:
         """Stop the Nexus WebSocket server and disconnect all clients."""
@@ -97,11 +109,22 @@ class NexusServer:
         parsed_url = urlparse(full_path)
         params = parse_qs(parsed_url.query)
 
+        if parsed_url.path != "/Nexus":
+            await websocket.close(code=1008, reason="Invalid Nexus endpoint")
+            return
+        supplied_token = (params.get("token") or [""])[0]
+        if self.authentication_token and not hmac.compare_digest(supplied_token, self.authentication_token):
+            await websocket.close(code=1008, reason="Nexus authentication required")
+            return
+
         username = (params.get("name") or params.get("username") or ["Unknown"])[0]
         raw_user_id = (params.get("id") or params.get("userId") or [None])[0]
         job_id = (params.get("jobId") or params.get("jobid") or [None])[0]
 
         user_id = int(raw_user_id) if raw_user_id and raw_user_id.isdigit() else None
+        if not _USERNAME.fullmatch(username) or user_id is None or user_id <= 0:
+            await websocket.close(code=1008, reason="Invalid Nexus identity")
+            return
 
         # Clean username key
         account_key = username.lower()
@@ -123,7 +146,7 @@ class NexusServer:
             acc.connected_at = datetime.now(UTC).isoformat()
             acc.last_ping_at = datetime.now(UTC).isoformat()
 
-        logger.info(f"Nexus client connected: {username} (ID: {user_id}, JobId: {job_id})")
+        logger.info("Nexus client connected")
         self.accounts[account_key].add_log(f"Connected from client {username}")
 
         try:
@@ -137,7 +160,7 @@ class NexusServer:
                 acc = self.accounts[account_key]
                 acc.status = "Offline"
                 acc.add_log("Disconnected")
-                logger.info(f"Nexus client disconnected: {username}")
+                logger.info("Nexus client disconnected")
 
                 if acc.auto_relaunch and self.on_auto_relaunch_trigger:
                     logger.info(f"Triggering auto-relaunch for {username}")
@@ -147,8 +170,12 @@ class NexusServer:
         """Process incoming WebSocket JSON payload from Roblox client."""
         try:
             text = raw_message.decode("utf-8") if isinstance(raw_message, bytes) else raw_message
+            if len(text.encode("utf-8")) > _MAX_MESSAGE_BYTES:
+                return
             data = json.loads(text)
         except (json.JSONDecodeError, UnicodeDecodeError):
+            return
+        if not isinstance(data, dict):
             return
 
         cmd = data.get("Name") or data.get("name") or data.get("command")

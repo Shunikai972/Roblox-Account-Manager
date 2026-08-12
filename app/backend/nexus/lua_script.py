@@ -1,5 +1,8 @@
 """Reference Lua script template for Nexus client integration."""
 
+import json
+import re
+
 NEXUS_LUA_SCRIPT = r"""-- Nexus Account Control Client Script for Astro Account Manager
 -- Place this script in your executor auto-execute folder or run it on client launch.
 
@@ -9,6 +12,7 @@ local LocalPlayer = Players.LocalPlayer
 
 local SERVER_HOST = "127.0.0.1"
 local SERVER_PORT = 5242
+local SERVER_TOKEN = ""
 local RECONNECT_DELAY = 5
 
 local function getWebSocket()
@@ -28,12 +32,13 @@ if not wsModule then
     return
 end
 
-local url = string.format("ws://%s:%d/Nexus?name=%s&id=%d&jobId=%s",
+local url = string.format("ws://%s:%d/Nexus?name=%s&id=%d&jobId=%s&token=%s",
     SERVER_HOST,
     SERVER_PORT,
     HttpService:UrlEncode(LocalPlayer.Name),
     LocalPlayer.UserId,
-    HttpService:UrlEncode(game.JobId or "")
+    HttpService:UrlEncode(game.JobId or ""),
+    HttpService:UrlEncode(SERVER_TOKEN)
 )
 
 local socket = nil
@@ -115,8 +120,18 @@ task.spawn(connect)
 """
 
 
-def get_nexus_lua_script(host: str = "127.0.0.1", port: int = 5242) -> str:
+def get_nexus_lua_script(host: str = "127.0.0.1", port: int = 5242, token: str = "") -> str:
     """Returns the customized Lua client script with host and port injected."""
-    return NEXUS_LUA_SCRIPT.replace('SERVER_HOST = "127.0.0.1"', f'SERVER_HOST = "{host}"').replace(
-        "SERVER_PORT = 5242", f"SERVER_PORT = {port}"
+    if not isinstance(host, str) or not re.fullmatch(r"[A-Za-z0-9.:-]{1,253}", host):
+        raise ValueError("Nexus host is invalid.")
+    if isinstance(port, bool) or not isinstance(port, int) or not 1 <= port <= 65535:
+        raise ValueError("Nexus port is invalid.")
+    if not isinstance(token, str) or len(token) > 512 or any(ord(character) < 33 for character in token):
+        if token:
+            raise ValueError("Nexus token is invalid.")
+    return (
+        NEXUS_LUA_SCRIPT
+        .replace('SERVER_HOST = "127.0.0.1"', f"SERVER_HOST = {json.dumps(host)}")
+        .replace("SERVER_PORT = 5242", f"SERVER_PORT = {port}")
+        .replace('SERVER_TOKEN = ""', f"SERVER_TOKEN = {json.dumps(token)}")
     )

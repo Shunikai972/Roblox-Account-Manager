@@ -1,40 +1,39 @@
 # Registre de portage 3.7.2 → Astro Account Manager
 
-Ce registre relie chaque fonction observée dans la source historique et la Developer API officielle (`https://ic3w0lf22.gitbook.io/roblox-account-manager/`) à son état dans le nouveau code.
+Ce registre décrit les lots effectivement retrouvés dans le code RAM et portés dans l’architecture Astro. Le statut ne décrit pas seulement l’existence d’une méthode : il tient compte de l’intégration service, bridge, frontend et de la nature réelle ou simulée des tests.
 
-## Convention de statut
+| Fonctionnalité historique | Implémentation historique retrouvée | Équivalent Astro | Fichiers principaux modifiés | Test effectué | Statut matrice |
+|---|---|---|---|---|---|
+| Ajout par navigateur | `AccountBrowser.cs` lance Chromium avec profil isolé et récupère la session | Edge CDP à port dynamique, `DevToolsActivePort`, polling d’opération, fallback pywebview | `roblox/browser_login.py`, `application_service.py`, `bridge.py`, `app.js` | vraie fenêtre Edge isolée et terminaison d'opération + `test_browser_login_flow.py` | TESTED BUT NOT VERIFIED |
+| Solveur CAPTCHA tiers | `AccountBrowser.Page_FrameAttached` appelle NopeCHA sur l’ancien DOM FunCaptcha et auto-clique en option | chargement d’une extension Chromium de solveur fournie par l’utilisateur dans le seul profil Edge isolé ; clé gérée par l’extension, jamais lue par Astro | `browser_login.py` | validation manifest/arguments, aucun challenge réel | TESTED BUT NOT VERIFIED |
+| Ajout/import cookie | `Account.Refresh` valide l’identité de la session | `/users/authenticated`, contrôle d’identité, DPAPI puis transaction compte+secret | `application_service.py`, `bridge.py`, `app.js` | deux sessions réelles distinctes revalidées + tests | VERIFIED PARITY |
+| Refresh session | `Account.Refresh` revalide cookie et profil | `refresh_account_session` empêche le changement d’identité silencieux | service/bridge/frontend | vraie session revalidée + tests | VERIFIED PARITY |
+| Cookie brut | Developer API et outils RAM exposent le cookie sur demande | copie UI et export plaintext confirmé dans `exports/` | service/bridge/frontend | écriture fichier réelle et absence des logs | VERIFIED PARITY |
+| Auth ticket / lien | `GetCSRFToken`, launcher `rbx-player` | POST JSON, challenge CSRF, ticket, URI encodée, copie UI | `auth_tools.py`, `launcher.py`, service/frontend | vrai 403→200, vrai handler + `test_auth_tools.py` | VERIFIED PARITY |
+| Lancement par compte | `Account.JoinServer` obtient ticket et joint Place/Job | session vault → ticket → URI authentifiée ; intention enregistrée avant le handoff ; cible explicite puis cible propre au compte | service, `launcher.py`, `private_servers.py`, `app.js` | deux vrais comptes simultanés, deux PID et deux Place ID concordants + tests | VERIFIED PARITY |
+| File/délai | délai de jointure RAM | worker borné, annulation, statut, refus des doublons, UI réellement raccordée | `batch_launcher.py`, `app.js` | `test_automations.py` | VERIFIED PARITY |
+| Import bulk | import user/pass/cookie RAM | formats colon/virgule, champ traînant, déduplication riche, vault DPAPI | `storage/bulk_import.py`, service/frontend | parser, SQLite et vault | PARTIAL |
+| Prévention doublon | option RAM par compte | vérification atomique instance ou intention de lancement en attente | `process_monitor.py`, service | `test_watcher_process_monitor.py` | VERIFIED PARITY |
+| Multi-instance | mutex exact `ROBLOX_singletonMutex` dans `AccountManager.cs` | mutex Win32 exact, préférence persistante et switch UI | `multi_instance.py`, service/frontend | mutex réel + deux PID clients simultanés + `test_multi_instance.py` | VERIFIED PARITY |
+| ClientSettings | `ClientSettingsPatcher.cs` lit `HKCR\roblox\DefaultIcon`, vérifie `version-*` | même découverte, backup et remplacement atomique, préservation des flags | `client_settings.py` | installation réelle : FPS 144 écrit/retiré et SHA restauré + tests | VERIFIED PARITY |
+| Recherche serveur aléatoire | `SetRecommendedServer` | `list_public_servers` et modèle `max_players` correct | `random_server.py` | endpoint réel, JobId valide + `test_extended_features.py` | VERIFIED PARITY |
+| Présence / FollowUser | présence Roblox renvoie `gameId` comme JobId | mapping `game_id`→`job_id`, recherche puis lancement | `player_search.py`, `loopback.py`, `app.js` | tests typés/API | TESTED BUT NOT VERIFIED |
+| Recherche joueur dans les serveurs | `ServerList.cs` pagine 100 serveurs, résout chaque `playerToken` par `/v1/batch`, compare l’URL d’avatar | pagination/cursors bornés, batch de 100, aucun token exposé, fallback UI Follow | `player_search.py`, `client.py`, service/bridge/frontend | `test_player_server_scan.py` | TESTED BUT NOT VERIFIED |
+| Utilitaires compte | `Forms/AccountUtils.cs`, méthodes `Account.cs` | mot de passe, email, logout, display name, amis, blocage, privacy, PIN, avatar, Quick Login | `account_utils.py`, service/bridge/frontend | HTTP simulé + validation UI | TESTED BUT NOT VERIFIED |
+| Région serveur | `IPApiLink`, `ServerRegionFormat` | lookup opt-in, transport/cache bornés, filtrage IP et Settings | `server_region.py`, service/bridge/frontend | tests hors réseau ; adresse réelle absente | PARTIAL |
+| API RAM | switch d’endpoints dans `AccountManager.cs` | 22 routes historiques + `AllowGetAccounts`, REST v1 conservé | `api/loopback.py` | routes et permission sur serveur HTTP loopback réel | PARTIAL |
+| Auth API | `EveryRequestRequiresPassword` | bearer moderne + password RAM facultatif en mémoire | config, loopback, `main.py`, Settings UI | query/header/bearer/permissions Windows | TESTED BUT NOT VERIFIED |
+| Permissions API | `AllowGetCookie`, `AllowGetAccounts`, `AllowLaunchAccount`, `AllowAccountEditing` | mêmes capacités + import cookie séparé | config, loopback, `main.py`, Settings UI | tests 403/200 | VERIFIED PARITY |
+| Nexus | `Nexus/*`, `RAMAccount.lua` | WebSocket authentifié, handshake, messages RAM, UI Lua | `nexus/server.py`, `lua_script.py`, service/frontend | tests WebSocket locaux | TESTED BUT NOT VERIFIED |
+| UWP | types du binaire et `UWPInstanceManager.cs` au commit `73a291e` | découverte lecture seule et lancement d’un paquet déjà enregistré | `roblox/uwp.py`, bridge | `test_roblox_uwp.py` | TESTED BUT NOT VERIFIED |
+| Watcher processus/logs | `RobloxWatcher.cs` et `RobloxProcess.cs` | PID+create-time, intentions avant handoff, bind, relance bornée, association log par création | `watchers/*`, service/bridge/frontend | deux clients/logs/Place ID réels associés + tests watcher/runtime | VERIFIED PARITY |
+| Fermeture mémoire/titre/timeout | `RobloxWatcher.cs` attend 30 s, ignore la fenêtre focus, teste WorkingSet/titre | règles indépendantes opt-in, seuils UI, fenêtre et PID vérifiés, terminaison gracieuse | config, `window_positioner.py`, service/frontend | deux clients réels fermés séparément ; règles automatiques simulées | TESTED BUT NOT VERIFIED |
+| Mémorisation fenêtre | `RobloxWatcher.cs` capture `Window_*` après 30 s ; `Account.AdjustWindowPosition` réessaie 45 s | géométrie persistée par compte, capture périodique, restore borné et actions UI confirmées | `window_positioner.py`, service/bridge/frontend | vraie fenêtre capturée, déplacée, restaurée + tests | VERIFIED PARITY |
+| Beta Home | titre attendu dans watcher RAM | règle automatique après 30 s, processus/titre exacts vérifiés | `beta_home_cleaner.py`, service | tests validation/âge ; pas de vraie fenêtre Beta Home | TESTED BUT NOT VERIFIED |
+| Branding | distribution historique RAM | nom visible, binaire et assets `Astro Account Manager` | `main.py`, frontend, `scripts/build_windows.py`, assets | inspection visuelle + build | VERIFIED PARITY |
 
-- **Portée et vérifiée** : comportement implémenté et testé dans Astro.
+## Écarts toujours ouverts
 
-## 1. Ajout de compte et authentification
-
-| Élément | Référence 3.7.2 & API Officielle | Équivalent Astro | État |
-| --- | --- | --- | --- |
-| Authentification OAuth 2.0 & PKCE | `AccountManager.cs` | `roblox/oauth.py`, navigateurs systèmes, callback loopback | Portée et vérifiée |
-| Importation en masse user:pass / cookie | `AccountManager.cs` | `storage/bulk_import.py`, parseur multi-format | Portée et vérifiée |
-| Extraction de Cookie & Secret Vault | `Account.cs` | `security/dpapi.py`, vault chiffré `CurrentUserDPAPI` | Portée et vérifiée |
-
-## 2. Developer API Officielle (GitBook 1:1 Parity)
-
-| Endpoint Developer API | Route Officielle GitBook | Implémentation Astro Loopback & Bridge | État |
-| --- | --- | --- | --- |
-| `LaunchAccount` | `GET /LaunchAccount?Account=...&PlaceId=...&JobId=...` | `app/backend/api/loopback.py` (`_route`) + `launch_account` | Portée et vérifiée |
-| `FollowUser` | `GET /FollowUser?Account=...&User=...` | `app/backend/api/loopback.py` + `search_players` & `get_player_presence` | Portée et vérifiée |
-| `SetServer` | `GET /SetServer?Account=...&PlaceId=...&JobId=...` | `app/backend/api/loopback.py` + `update_account` | Portée et vérifiée |
-| `SetRecommendedServer` | `GET /SetRecommendedServer?Account=...&PlaceId=...` | `app/backend/api/loopback.py` + `RandomServerSelector` | Portée et vérifiée |
-| `BlockUser` | `GET /BlockUser?Account=...&User=...` | `app/backend/api/loopback.py` + `AccountUtils.block_user` | Portée et vérifiée |
-| `UnblockUser` | `GET /UnblockUser?Account=...&User=...` | `app/backend/api/loopback.py` + `AccountUtils.unblock_user` | Portée et vérifiée |
-| `GetCookie` | `GET /GetCookie?Account=...` | `app/backend/api/loopback.py` + `get_account_cookie` | Portée et vérifiée |
-| `GetField` / `SetField` | `GET /GetField` / `GET /SetField` | `app/backend/api/loopback.py` + SQLite metadata fields | Portée et vérifiée |
-| `SetAlias` / `SetDescription` | `GET /SetAlias` / `GET /SetDescription` | `app/backend/api/loopback.py` + `update_account` | Portée et vérifiée |
-
-## 3. Utilitaires de Compte & Lancement Avancé
-
-| Élément | Référence 3.7.2 | Équivalent Astro | État |
-| --- | --- | --- | --- |
-| Plafond FPS Client | `ClientSettingsPatcher.cs` | `roblox/client_settings.py` (`ClientSettingsPatcher`) | Portée et vérifiée |
-| Multi-Instance Mutex | `AccountManager.cs` | `roblox/multi_instance.py` (`WindowsMultiInstanceController`) | Portée et vérifiée |
-| Lancement en lot (`Batch Launch`) | `Classes/Batch.cs` | `roblox/batch_launcher.py` (`BatchLauncher`) | Portée et vérifiée |
-| Serveurs Privés / VIP | `ServerList.cs` | `roblox/private_servers.py` (`PrivateServerHelper`) | Portée et vérifiée |
-| Nettoyage Beta Home | `RobloxWatcher.cs` | `watchers/beta_home_cleaner.py` (`BetaHomeCleaner`) | Portée et vérifiée |
-| Account Control / Nexus | `Nexus/*` | `app/backend/nexus/server.py` (`NexusServer` WebSocket `5242`) | Portée et vérifiée |
+- clones UWP par compte (copie de package, manifeste, enregistrement et désinstallation) ;
+- équivalence complète de certaines réponses de l’API RAM et association multi-log/processus ;
+- validation durable avec deux identités Roblox distinctes, un paquet UWP et un client Nexus en jeu.

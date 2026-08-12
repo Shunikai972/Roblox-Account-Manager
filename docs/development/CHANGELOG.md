@@ -1,40 +1,97 @@
 # Changelog
 
-Ce projet suit le versionnage sémantique. La version `4.0.0a1` est une préversion de migration, destinée à la validation fonctionnelle et de sécurité avant une première version stable.
+## [4.0.0a1] — 2026-08-11
 
-## [4.0.0a1] — 2026-08-10
+### Intégration du lot Opus — 2026-08-12
 
-### Ajouté
+- ajout de la permission RAM `AllowGetAccounts` sur `GetAccounts` et
+  `GetAccountsJson`, avec switch Settings et tests 403/200 ;
+- coexistence bearer moderne / mot de passe RAM facultatif via
+  `ASTRO_LOCAL_API_PASSWORD`, query historique ou header, sans persistance ;
+- reprise de la région serveur : transport HTTP réellement câblé, taille,
+  timeout et redirections bornés, cache, filtrage IP, service, bridge et onglet
+  Network ;
+- bulk import durci : champ traînant toléré, déduplication, préférence au cookie
+  et correction du format `username,password,cookie` ;
+- corrections apportées au lot reçu avant fusion : contrat Markdown, réglages
+  UI manquants et chemins `/data` non portables non intégrés ;
+- validations exécutées sans lancer ou fermer Roblox ; l’EXE a été reconstruit
+  après ce lot le 12 août, sans être lancé pendant la session Roblox active.
 
-- Nouvelle application desktop locale Python + pywebview et interface HTML/CSS/JavaScript modulaire.
-- Stockage SQLite transactionnel pour les métadonnées de comptes, groupes, jeux, activité, notifications et réglages.
-- Vault de secrets Windows DPAPI ; les modèles publics, exports de diagnostic et journaux sont expurgés des sessions.
-- Gestion des comptes et groupes, recherche, sélections groupées, activité et notifications depuis le bridge desktop.
-- Consultation de jeux et de serveurs publics Roblox avec délais réseau bornés et retours d’erreurs lisibles.
-- Lancement local de destinations Roblox validées par le protocole Windows officiel, sans lien portable contenant de session.
-- Monitoring opt-in des processus Roblox avec informations PID, durée et consommation mémoire ; terminaison seulement après confirmation explicite.
-- Backups SQLite versionnés et vérifiés, ainsi qu’un import legacy non destructif qui crée d’abord une copie datée.
-- Export/import Astro de métadonnées publiques versionnées et checksummées, avec confirmation, limite de taille et backup de sûreté avant import ; aucune session ou donnée de vault n'est transférée.
-- Documentation d’architecture, sécurité, migration, configuration, dépannage et contrat de bridge.
-- Script de packaging Windows PyInstaller avec assets frontend et icônes embarqués, contrôle `--dry-run` et build réel vérifié.
+### Conversion et parité
 
-### Migration et compatibilité
+- ajout réel par cookie validé, vault DPAPI et navigateur Edge/CDP avec état
+  d'opération suivi par le frontend ;
+- fermeture du navigateur de connexion correctement détectée : aucun faux
+  `waiting` ne bloque l'essai suivant ;
+- lancement authentifié par session, ticket Roblox et URI `rbx-player`, avec
+  PlaceId, JobId et lien privé ;
+- correction HTTP 415 du ticket : POST JSON explicite, challenge CSRF puis
+  ticket HTTP 200 ;
+- intention de lancement enregistrée avant le handoff Windows, annulée en cas
+  d'échec, puis associée au PID observé ;
+- priorité de cible corrigée : cible explicite, puis Place/Job sauvegardé pour
+  le compte, puis cible globale ; un lancement ponctuel n'écrase plus la
+  configuration du compte ;
+- lancement multiple corrigé : le bulk n'applique plus le même Place ID à tous
+  les comptes et les boutons possèdent un état `Launching` par compte ;
+- états `launching`/`in_game` réconciliés après un scan complet pour supprimer
+  les faux comptes « en jeu » ;
+- mutex multi-instance historique exact `ROBLOX_singletonMutex`, activable par
+  un switch persistant dans Settings ;
+- association multi-log revue : les logs Player sont corrélés aux PID par
+  heure de création et ordre de lancement ;
+- auto-relaunch réel réutilisant la session et la cible du compte ;
+- Beta Home fermé automatiquement après la grâce historique de 30 secondes,
+  uniquement si le processus et le titre Roblox sont exacts ;
+- recherche jeux migrée de l'ancien `/v1/games/list` retiré vers l'endpoint
+  Omni Search actuel, avec cache 60 secondes ;
+- affichage/copie de session, export plaintext confirmé, ticket, CSRF et lien
+  de lancement accessibles depuis les outils de compte ;
+- scan paginé de joueur, Follow, serveur aléatoire, ClientSettings/FPS,
+  géométrie de fenêtre, Nexus, UWP et API loopback conservés dans la nouvelle
+  architecture ;
+- assets, titre visible et binaire renommés `Astro Account Manager`.
 
-- La distribution historique 3.7.2 a été analysée à partir du tag source correspondant et du binaire fourni ; les fichiers d’origine ne sont jamais modifiés par le nouvel outil.
-- L’import de métadonnées est séparé des secrets. L’import de sessions doit être explicitement confirmé et reste local à l’utilisateur Windows qui l’effectue.
-- Les fonctions historiques de copie de cookie, export de lien `rbx-player` avec session, exécution distante Nexus et patch/bypass de client ne sont pas reprises. Elles sont remplacées ou laissées hors périmètre conformément à la matrice de fonctionnalités.
+### Interface et performances
 
-### Sécurité
+- suppression des appels réseau de jeux au démarrage : chargement à la première
+  ouverture de la page Games ;
+- polling monitor compact toutes les trois secondes et resynchronisation ciblée
+  après lancement ;
+- boutons rapides protégés contre les doubles clics, avec erreurs visibles au
+  lieu d'échecs silencieux ;
+- picker/modal de connexion fermé dès que le navigateur isolé démarre ;
+- inspection réelle à 1080×680, 1366×768 et 1500×960, navigation Tab et focus
+  visibles ;
+- audit des actions : 81 actions déclarées, 82 handlers click et 24 formulaires
+  pris en charge.
 
-- Les secrets ne sont ni retournés au frontend, ni écrits dans les logs, ni inclus dans les diagnostics.
-- Les URLs et destinations de lancement sont validées ; les appels HTTP ont des délais explicites.
-- Le nouveau stockage évite les effets de bord directs et les sauvegardes silencieuses de la base legacy.
+### Validation réelle
 
-### À valider avant une version stable
+- **269 tests passés**, compilation Python et syntaxe JavaScript valides ;
+- deux sessions Roblox distinctes revalidées sans afficher les secrets ;
+- Astrolucifer972 et Pierremayou lancés simultanément avec deux PID et deux
+  Place ID propres, confirmés par les logs ;
+- fermeture réelle et séparée de chaque client, statuts revenus à `ready` ;
+- crash forcé puis relance automatique réelle vers la cible du bon compte ;
+- fenêtre Roblox réellement déplacée, capturée et restaurée ;
+- ClientSettings réel modifié à 144 FPS puis restauré bit pour bit ;
+- 22 routes historiques exercées individuellement sur HTTP loopback réel ;
+- vrai build et smoke test de `dist/AstroAccountManager.exe`.
 
-- Tests manuels WebView2 sur Windows 10 et Windows 11.
-- Vérification de la migration sur des copies de jeux de données représentatifs, y compris les cas chiffrés autorisés.
-- Signature Authenticode, scan de l’artefact et revue de licence de toute distribution publique.
-- Complément intégral des 22 routes de la Developer API officielle RAM GitBook (LaunchAccount, FollowUser, SetServer, SetRecommendedServer, BlockUser, UnblockUser, UnblockEveryone, GetBlockedList, GetField, SetField, RemoveField, SetAlias, GetAlias, SetDescription, GetDescription, AppendDescription, SetAvatar, GetCookie, GetAccounts, GetAccountsJson, GetCSRFToken, ImportCookie).
-- Intégration du serveur WebSocket Nexus (port 5242) avec relai Lua et auto-relaunch.
-- Intégration de la gestion Multi-Instance Mutex Win32 et du nettoyeur Beta Home.
+### Artefact
+
+- taille : 20 666 396 octets ;
+- SHA-256 :
+  `B5F7FC368A79B5F4B157DEB6D7416E828421E98FDA602526FA3E78517D792868`.
+
+### Travail restant explicite
+
+- cinq lignes `PARTIAL` : import username/password, clones UWP, région serveur,
+  validation in-game de `RAMAccount.lua` et réponses API legacy ;
+- validations réelles encore dépendantes d'une donnée ou cible externe : login
+  navigateur complet, OAuth, VIP, certaines opérations utilitaires mutantes,
+  client Nexus en jeu, paquet UWP et extension CAPTCHA.
+
+Voir la [validation individuelle des 42 lignes](../QA_MATRIX_2026-08-11.md).

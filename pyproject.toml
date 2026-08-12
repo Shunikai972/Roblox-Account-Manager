@@ -16,6 +16,7 @@ dependencies = [
   "psutil>=6.1,<8",
   "pywebview==6.2.1",
   "requests>=2.32,<3",
+  "websockets>=14,<16",
 ]
 
 [project.optional-dependencies]
@@ -41,4 +42,4 @@ show_missing = true
 skip_covered = false
 
 [tool.setuptools]
-packages = ["app", "app.backend", "app.backend.api", "app.backend.core", "app.backend.models", "app.backend.repositories", "app.backend.roblox", "app.backend.security", "app.backend.services", "app.backend.storage", "app.backend.watchers"]
+packages = ["app", "app.backend", "app.backend.api", "app.backend.core", "app.backend.models", "app.backend.nexus", "app.backend.repositories", "app.backend.roblox", "app.backend.security", "app.backend.services", "app.backend.storage", "app.backend.watchers"]

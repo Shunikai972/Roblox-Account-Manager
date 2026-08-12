@@ -20,7 +20,7 @@ class RandomServerSelector:
     def get_random_server(self, place_id: int) -> dict[str, Any] | None:
         """Fetch server list for place_id and return a randomly chosen server."""
 
-        page = self.client.list_servers(place_id, limit=25)
+        page = self.client.list_public_servers(place_id, limit=25)
         servers = page.servers
         if not servers:
             return None
@@ -30,6 +30,6 @@ class RandomServerSelector:
             "job_id": chosen.job_id,
             "place_id": place_id,
             "playing": chosen.playing,
-            "capacity": chosen.capacity,
+            "capacity": chosen.max_players,
             "ping": chosen.ping,
         }

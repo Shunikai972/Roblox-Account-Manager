@@ -72,6 +72,47 @@ def test_runtime_requires_one_process_and_one_complete_candidate_before_tailing(
     assert "[FLog::Output]" not in str(payloads)
 
 
+def test_runtime_matches_two_processes_to_two_timestamped_logs(tmp_path: Path) -> None:
+    logs = tmp_path / "Roblox" / "logs"
+    first = logs / "0.623.0.623_20260810T120000Z_Player_123_last.log"
+    second = logs / "0.623.0.623_20260810T120008Z_Player_456_last.log"
+    logs.mkdir(parents=True)
+    first.write_text(_joined_line(111), encoding="utf-8")
+    second.write_text(_joined_line(222), encoding="utf-8")
+    runtime = RobloxPlayerLogRuntime(discovery=RobloxPlayerLogDiscovery(logs))
+
+    snapshot = runtime.poll(
+        (
+            SimpleNamespace(pid=41, started_at="2026-08-10T12:00:00+00:00"),
+            SimpleNamespace(pid=42, started_at="2026-08-10T12:00:08+00:00"),
+        )
+    )
+    events = sorted(runtime.history(), key=lambda item: item.pid)
+
+    assert snapshot.association_state == "associated"
+    assert snapshot.associated_pid is None
+    assert [(event.pid, event.place_id) for event in events] == [(41, 111), (42, 222)]
+
+
+def test_runtime_preserves_launch_order_when_next_process_is_nearest_to_previous_log(tmp_path: Path) -> None:
+    logs = tmp_path / "Roblox" / "logs"
+    first = logs / "0.623.0.623_20260810T120007Z_Player_123_last.log"
+    second = logs / "0.623.0.623_20260810T120015Z_Player_456_last.log"
+    logs.mkdir(parents=True)
+    first.write_text(_joined_line(111), encoding="utf-8")
+    second.write_text(_joined_line(222), encoding="utf-8")
+    runtime = RobloxPlayerLogRuntime(discovery=RobloxPlayerLogDiscovery(logs))
+
+    runtime.poll(
+        (
+            SimpleNamespace(pid=41, started_at="2026-08-10T12:00:00+00:00"),
+            SimpleNamespace(pid=42, started_at="2026-08-10T12:00:07+00:00"),
+        )
+    )
+
+    assert sorted((event.pid, event.place_id) for event in runtime.history()) == [(41, 111), (42, 222)]
+
+
 def test_runtime_refuses_association_when_bounded_discovery_is_incomplete(tmp_path: Path) -> None:
     logs = tmp_path / "Roblox" / "logs"
     _player_log(logs, _joined_line())

@@ -28,6 +28,26 @@ _SENSITIVE_KEY_EXACT = re.compile(
     re.IGNORECASE,
 )
 
+# These names describe authorization switches, not credential values.  Keeping
+# the exception exact avoids weakening the conservative key classifier for
+# arbitrary payloads such as ``allow_cookie_value``.
+_NON_SECRET_PERMISSION_KEYS = frozenset(
+    {
+        "api.allow_get_cookie",
+        "api.allow_launch_account",
+        "api.allow_account_editing",
+        "api.allow_import_cookie",
+        "api.allow_get_accounts",
+        "allow_get_cookie",
+        "allow_launch_account",
+        "allow_account_editing",
+        "allow_import_cookie",
+        "allow_get_accounts",
+        "api.legacy_password_auth_enabled",
+        "legacy_password_auth_enabled",
+    }
+)
+
 _JSON_SECRET = re.compile(
     r'(?P<key>"(?:password|passwd|pwd|cookie|token|secret|credentials?|'
     r'authorization|api[_-]?key|session(?:_?id)?|roblosecurity)")'
@@ -52,6 +72,8 @@ def is_sensitive_key(key: object) -> bool:
     if not isinstance(key, str):
         return False
     normalized = key.strip()
+    if normalized.casefold() in _NON_SECRET_PERMISSION_KEYS:
+        return False
     if bool(
         _SENSITIVE_KEY_EXACT.fullmatch(normalized)
         or _SENSITIVE_KEY.search(normalized)

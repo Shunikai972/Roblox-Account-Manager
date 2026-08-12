@@ -131,6 +131,7 @@ class Server:
     ping: float | None = None
     fps: float | None = None
     region: str | None = None
+    address: str | None = None
     server_type: str = "public"
     player_tokens: list[str] = field(default_factory=list)
 

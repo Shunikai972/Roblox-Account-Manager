@@ -641,6 +641,21 @@ class RobloxProcessMonitor:
                 for tracked in sorted(self._tracked.values(), key=lambda tracked: tracked.identity.pid)
             )
 
+    def has_active_or_pending_account(self, account_id: str) -> bool:
+        """Return whether an account already owns a live or unexpired launch."""
+
+        normalized = _opaque_text(account_id, "Account ID is invalid.")
+        now = self._clock()
+        with self._lock:
+            return any(
+                tracked.account_id == normalized
+                and tracked.state in {InstanceState.RUNNING, InstanceState.TERMINATING, InstanceState.UNKNOWN}
+                for tracked in self._tracked.values()
+            ) or any(
+                intent.account_id == normalized and intent.expires_at >= now
+                for intent in self._pending_launches
+            )
+
     def history(self) -> tuple[MonitorEvent, ...]:
         """Return a bounded copy of lifecycle events for diagnostics."""
 

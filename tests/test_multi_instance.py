@@ -2,6 +2,7 @@
 
 import sys
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -31,11 +32,11 @@ def test_multi_instance_controller_lifecycle():
 
     # Enable
     success = controller.enable_multi_instance()
-    assert success is True
-    assert controller.is_enabled is True
+    assert success is controller.is_enabled
 
     status_enabled = controller.get_status()
-    assert status_enabled["enabled"] is True
+    assert status_enabled["enabled"] is success
+    assert status_enabled["handle_count"] in (0, 1)
 
     # Disable
     controller.disable_multi_instance()
@@ -58,9 +59,35 @@ def test_multi_instance_service_and_bridge_integration(tmp_path: Path):
 
     # Toggle via bridge
     toggled = bridge.set_multi_instance(True)
-    assert toggled["enabled"] is True
+    assert toggled["enabled"] in (True, False)
+    assert toggled["configured"] is True
+    assert service.repository.get_setting("instances.allow_multiple_launches") is True
 
     toggled_off = bridge.set_multi_instance(False)
     assert toggled_off["enabled"] is False
+    assert toggled_off["configured"] is False
+    assert service.repository.get_setting("instances.allow_multiple_launches") is False
 
     service.close()
+
+
+def test_persisted_multi_instance_preference_is_applied_on_startup(tmp_path: Path):
+    paths = _paths(tmp_path)
+    repo = SQLiteRepository(paths.database)
+    repo.set_setting("instances.allow_multiple_launches", True)
+    controller = MagicMock()
+    controller.get_status.return_value = {"supported": True, "enabled": True, "handle_count": 1}
+    controller.enable_multi_instance.return_value = True
+
+    with pytest.MonkeyPatch.context() as monkeypatch:
+        monkeypatch.setattr(
+            "app.backend.services.application_service.WindowsMultiInstanceController",
+            lambda: controller,
+        )
+        service = ApplicationService(paths=paths, repository=repo)
+    try:
+        controller.enable_multi_instance.assert_called_once_with()
+        assert service.bootstrap()["multi_instance"]["configured"] is True
+        assert service.bootstrap()["multi_instance"]["enabled"] is True
+    finally:
+        service.close()

@@ -1,66 +1,76 @@
-# Astro Account Manager 🚀
+# Astro Account Manager
 
-A modern, high-performance Windows desktop application for managing Roblox accounts, multi-instance gaming sessions, FastFlags optimization (FPS Unlocker & Potato Graphics Mode), and live Lua execution via the Nexus WebSocket RPC Server.
+Astro Account Manager est une conversion desktop moderne et fidèle de Roblox
+Account Manager 3.7.2. L'application reste locale : Python 3.12, pywebview,
+SQLite, DPAPI Windows et une interface HTML/CSS/JavaScript.
 
-[![Documentation Website](https://img.shields.io/badge/Docs-Live_GitHub_Pages-purple.svg)](https://shunikai972.github.io/Account-Manager-Doc/)
-[![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
-[![Python 3.12](https://img.shields.io/badge/Python-3.12-brightgreen.svg)](https://python.org)
+L'objectif est une parité fonctionnelle prouvée, jamais un « 100 % » déclaré
+sur la base de mocks. La [matrice canonique](docs/user-guide/FEATURE_MATRIX.md)
+compte actuellement 46 fonctionnalités `VERIFIED PARITY`, 5 `PARTIAL` et 26
+`TESTED BUT NOT VERIFIED`. Les 42 éléments non vérifiés au début de la passe
+passe sont détaillés un par un dans le
+[rapport QA du 11 août 2026](docs/QA_MATRIX_2026-08-11.md).
 
----
+## Fonctionnalités principales
 
-## 🌟 Key Features
+- comptes réels par cookie validé ou navigateur Edge/CDP dédié, profils locaux
+  et OAuth Open Cloud PKCE ;
+- extension Chromium de solveur CAPTCHA facultative dans le profil de connexion
+  isolé via `ASTRO_CAPTCHA_SOLVER_EXTENSION` ;
+- sessions et mots de passe hors SQLite dans le vault DPAPI `CurrentUser` ;
+- affichage, copie et export volontaire de sessions brutes, tickets
+  d'authentification et liens `rbx-player` ;
+- lancement authentifié par compte, PlaceId/JobId propre à chaque compte,
+  serveur privé, Follow, serveur aléatoire et file de lancement ;
+- multi-instance par mutex historique `ROBLOX_singletonMutex`, vérifié avec
+  deux comptes, deux PID et deux Place ID distincts ;
+- watcher processus/logs, association PID, fermeture, règles mémoire/titre/
+  timeout opt-in, géométrie par compte et auto-relaunch ;
+- groupes, tri persistant, recherche, alias, descriptions, champs, avatars et
+  présence ;
+- utilitaires authentifiés : mot de passe, email, sessions, display name, amis,
+  blocage, confidentialité, PIN, avatar et Quick Log In ;
+- Nexus WebSocket avec handshake authentifié et commandes RAM/Lua ;
+- découverte UWP, ClientSettings/FPS et positionnement de fenêtres ;
+- API loopback compatible RAM, bearer obligatoire et permissions séparées ;
+- migration 3.7.2, backups vérifiés, restauration confirmée et transfert de
+  métadonnées publiques.
 
-- **🔐 Windows DPAPI Encrypted Vault**: `.ROBLOSECURITY` session cookies are encrypted locally with native `Win32 DPAPI` (`CurrentUser`). Secrets are never logged or exposed in metadata.
-- **🌐 Edge CDP Login Engine**: Automated Chromium DevTools Protocol login (port `9222`) that intercepts 100% of `HttpOnly` cookies and auto-closes on validation.
-- **⚡ Potato Mode & FPS Unlocker**: Custom FastFlags engine modifying `ClientAppSettings.json` prior to launch to force minimum graphics, remove shadows/water/grass, and unlock 240+ FPS.
-- **🚀 Nexus Lua Executor**: Integrated WebSocket server (port `5242`) for broadcasting scripts, managing teleports, and streaming live client `print()` logs.
-- **🔌 Developer REST API (Port 7963)**: Complete REST compatibility layer providing endpoints for launching accounts, getting status, and triggering automation.
-
----
-
-## 📖 Live Documentation Portal
-
-The full developer guide, architecture overview, and API reference are hosted live on GitHub Pages:
-
-👉 **[Launch Live Documentation Portal (GitHub Pages)](https://shunikai972.github.io/Account-Manager-Doc/)**
-
-- [Architecture & Security Overview](https://shunikai972.github.io/Account-Manager-Doc/#features)
-- [FastFlags & Potato Graphics Configuration](https://shunikai972.github.io/Account-Manager-Doc/#potato-mode)
-- [Nexus WebSocket RPC Protocol](https://shunikai972.github.io/Account-Manager-Doc/#nexus-executor)
-- [Developer REST API Reference](https://shunikai972.github.io/Account-Manager-Doc/#developer-api)
-- [Documentation GitHub Repository](https://github.com/Shunikai972/Account-Manager-Doc)
-
----
-
-## 🚀 Quickstart & Building
-
-### Running from Source
+## Exécution depuis les sources
 
 ```powershell
-# Create & activate virtual environment
 python -m venv .venv
-.venv\Scripts\activate
-
-# Install dependencies & launch application
-pip install -r requirements.txt
+.venv\Scripts\Activate.ps1
+python -m pip install -r requirements.txt
 python main.py
 ```
 
-### Running Test Suite
+## Validation
 
 ```powershell
-python -m pytest
+python -m pytest -q
+python -m compileall -q app main.py scripts\build_windows.py
+node --check app/frontend/src/app.js
+node --check app/frontend/src/bridge.js
 ```
 
-### Compiling Standalone Executable
+Dernier résultat complet : **269 tests passés** sans lancer ni fermer Roblox.
+
+## Build Windows
 
 ```powershell
+python -m pip install ".[dev]"
 python scripts/build_windows.py
 ```
-The compiled single-file binary will be generated at `dist/AstroAccountManager.exe` and `release/AstroAccountManager.exe`.
 
----
+Artefact actuel : `dist/AstroAccountManager.exe`, 20 666 396 octets,
+SHA-256
+`B5F7FC368A79B5F4B157DEB6D7416E828421E98FDA602526FA3E78517D792868`.
 
-## 📜 License
+Consultez aussi [l'audit d'intégration](docs/architecture/FINAL_AUDIT.md), le
+[registre de portage](docs/PORTING_LEDGER.md) et la
+[documentation API](docs/API.md) avant toute distribution.
 
-Distributed under the **GPL-3.0 License**. See [LICENSE](LICENSE) for details.
+## Licence
+
+GPL-3.0-or-later. Voir [LICENSE](LICENSE).

@@ -107,6 +107,9 @@ class DesktopBridge:
     def list_servers(self, place_id: int | str) -> list[dict[str, Any]]:
         return self._invoke(self._service.list_servers, place_id)
 
+    def resolve_server_region(self, address: str) -> dict[str, Any]:
+        return self._invoke(self._service.resolve_server_region, address)
+
     def launch_account(self, account_id: str, target: Mapping[str, Any] | None = None) -> dict[str, Any]:
         return self._invoke(self._service.launch_account, account_id, target)
 
@@ -226,17 +229,32 @@ class DesktopBridge:
     def generate_auth_ticket(self, account_id: str) -> dict[str, Any]:
         return self._invoke(self._service.generate_auth_ticket, account_id)
 
+    def get_account_csrf_token(self, account_id: str) -> dict[str, Any]:
+        return self._invoke(self._service.get_account_csrf_token, account_id)
+
     def generate_rbx_player_link(self, account_id: str, place_id: int, job_id: str | None = None) -> dict[str, Any]:
         return self._invoke(self._service.generate_rbx_player_link, account_id, place_id, job_id)
 
     def get_account_cookie(self, account_id: str) -> dict[str, Any]:
         return self._invoke(self._service.get_account_cookie, account_id)
 
+    def refresh_account_session(self, account_id: str) -> dict[str, Any]:
+        return self._invoke(self._service.refresh_account_session, account_id)
+
+    def export_account_sessions(self, account_ids: list[str], confirm: bool = False) -> dict[str, Any]:
+        return self._invoke(self._service.export_account_sessions, account_ids, confirm=confirm)
+
     def import_bulk_accounts(self, raw_text: str, group_id: str | None = None) -> dict[str, Any]:
         return self._invoke(self._service.import_bulk_accounts, raw_text, group_id)
 
     def position_instance_window(self, pid: int, x: int, y: int, width: int = 800, height: int = 600) -> dict[str, Any]:
         return self._invoke(self._service.position_instance_window, pid, x, y, width, height)
+
+    def capture_instance_window(self, pid: int, confirm: bool = False) -> dict[str, Any]:
+        return self._invoke(self._service.capture_instance_window, pid, confirm=confirm)
+
+    def restore_instance_window(self, pid: int, confirm: bool = False) -> dict[str, Any]:
+        return self._invoke(self._service.restore_instance_window, pid, confirm=confirm)
 
     def change_account_password(self, account_id: str, current_pass: str, new_pass: str) -> dict[str, Any]:
         return self._invoke(self._service.change_account_password, account_id, current_pass, new_pass)
@@ -250,23 +268,32 @@ class DesktopBridge:
     def set_account_display_name(self, account_id: str, new_display_name: str) -> dict[str, Any]:
         return self._invoke(self._service.set_account_display_name, account_id, new_display_name)
 
-    def send_account_friend_request(self, account_id: str, target_user_id: int) -> dict[str, Any]:
+    def send_account_friend_request(self, account_id: str, target_user_id: int | str) -> dict[str, Any]:
         return self._invoke(self._service.send_account_friend_request, account_id, target_user_id)
 
-    def block_account_user(self, account_id: str, target_user_id: int) -> dict[str, Any]:
+    def block_account_user(self, account_id: str, target_user_id: int | str) -> dict[str, Any]:
         return self._invoke(self._service.block_account_user, account_id, target_user_id)
 
-    def unblock_account_user(self, account_id: str, target_user_id: int) -> dict[str, Any]:
+    def unblock_account_user(self, account_id: str, target_user_id: int | str) -> dict[str, Any]:
         return self._invoke(self._service.unblock_account_user, account_id, target_user_id)
 
     def quick_log_in_account(self, account_id: str, code: str) -> dict[str, Any]:
         return self._invoke(self._service.quick_log_in_account, account_id, code)
+
+    def set_account_follow_privacy(self, account_id: str, privacy: str) -> dict[str, Any]:
+        return self._invoke(self._service.set_account_follow_privacy, account_id, privacy)
+
+    def unlock_account_pin(self, account_id: str, pin: str) -> dict[str, Any]:
+        return self._invoke(self._service.unlock_account_pin, account_id, pin)
 
     def add_account_from_cookie(self, cookie: str, group_id: str | None = None) -> dict[str, Any]:
         return self._invoke(self._service.add_account_from_cookie, cookie, group_id)
 
     def start_manual_browser_login(self, group_id: str | None = None) -> dict[str, Any]:
         return self._invoke(self._service.start_manual_browser_login, group_id)
+
+    def poll_manual_browser_login(self, operation_id: str) -> dict[str, Any]:
+        return self._invoke(self._service.poll_manual_browser_login, operation_id)
 
     def get_account_blocked_list(self, account_id: str) -> list[dict[str, Any]]:
         return self._invoke(self._service.get_account_blocked_list, account_id)
@@ -285,6 +312,9 @@ class DesktopBridge:
 
     def get_player_presence(self, user_id: int) -> dict[str, Any]:
         return self._invoke(self._service.get_player_presence, user_id)
+
+    def find_player_server(self, place_id: int, user_id: int, max_pages: int = 10) -> dict[str, Any] | None:
+        return self._invoke(self._service.find_player_server, place_id, user_id, max_pages)
 
     def get_random_server(self, place_id: int) -> dict[str, Any] | None:
         return self._invoke(self._service.get_random_server, place_id)

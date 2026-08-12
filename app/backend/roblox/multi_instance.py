@@ -1,7 +1,7 @@
 """Windows Multi-Instance controller for Roblox desktop clients.
 
-Provides named mutex and event handling to bypass Roblox single-instance
-restrictions on Windows, allowing multiple accounts to run simultaneously.
+Retains the exact named mutex used by RAM 3.7.2 so Roblox clients opened
+after Astro do not become the owner of the single-instance gate.
 """
 
 from __future__ import annotations
@@ -13,20 +13,13 @@ from typing import Any
 
 logger = logging.getLogger("astro.multi_instance")
 
-# Win32 Constants
-INVALID_HANDLE_VALUE = -1
 ERROR_ALREADY_EXISTS = 183
 
 
 class WindowsMultiInstanceController:
     """Manages global named Windows mutexes to allow multiple Roblox clients."""
 
-    MUTEX_NAMES = (
-        "ROBLOX_singletonEvent",
-        "Global\\ROBLOX_singletonEvent",
-        "ROBLOX_singletonMutex",
-        "Global\\ROBLOX_singletonMutex",
-    )
+    MUTEX_NAME = "ROBLOX_singletonMutex"
 
     def __init__(self) -> None:
         self._handles: list[Any] = []
@@ -43,9 +36,8 @@ class WindowsMultiInstanceController:
             return True
 
         if sys.platform != "win32":
-            logger.info("Multi-instance controller is not required on non-Windows platforms.")
-            self._enabled = True
-            return True
+            logger.info("Multi-instance controller is unavailable outside Windows.")
+            return False
 
         try:
             kernel32 = ctypes.windll.kernel32
@@ -53,28 +45,21 @@ class WindowsMultiInstanceController:
             create_mutex.argtypes = [ctypes.c_void_p, ctypes.c_bool, ctypes.c_wchar_p]
             create_mutex.restype = ctypes.c_void_p
 
-            create_event = kernel32.CreateEventW
-            create_event.argtypes = [ctypes.c_void_p, ctypes.c_bool, ctypes.c_bool, ctypes.c_wchar_p]
-            create_event.restype = ctypes.c_void_p
+            kernel32.SetLastError(0)
+            handle = create_mutex(None, True, self.MUTEX_NAME)
+            if not handle:
+                return False
+            if kernel32.GetLastError() == ERROR_ALREADY_EXISTS:
+                kernel32.CloseHandle(handle)
+                logger.warning("Roblox already owns the multi-instance mutex; restart Astro before Roblox.")
+                return False
 
-            handles = []
-            for name in self.MUTEX_NAMES:
-                # Create mutex
-                handle_mutex = create_mutex(None, True, name)
-                if handle_mutex and handle_mutex != INVALID_HANDLE_VALUE:
-                    handles.append(handle_mutex)
-
-                # Create event
-                handle_event = create_event(None, True, False, name)
-                if handle_event and handle_event != INVALID_HANDLE_VALUE:
-                    handles.append(handle_event)
-
-            self._handles = handles
+            self._handles = [handle]
             self._enabled = True
-            logger.info(f"Multi-instance enabled: holding {len(handles)} singleton handles.")
+            logger.info("Multi-instance enabled: holding the RAM 3.7.2 singleton mutex.")
             return True
-        except Exception as exc:
-            logger.error(f"Failed to enable multi-instance: {exc}")
+        except Exception:
+            logger.exception("Failed to enable multi-instance")
             self.disable_multi_instance()
             return False
 

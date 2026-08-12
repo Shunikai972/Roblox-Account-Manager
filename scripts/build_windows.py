@@ -30,7 +30,7 @@ from typing import Sequence
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 ENTRY_POINT = PROJECT_ROOT / "main.py"
 FRONTEND_DIR = PROJECT_ROOT / "app" / "frontend"
-DEFAULT_ICON = FRONTEND_DIR / "assets" / "asteria.ico"
+DEFAULT_ICON = FRONTEND_DIR / "assets" / "astro.ico"
 DEFAULT_NAME = "AstroAccountManager"
 MINIMUM_PYTHON = (3, 12)
 

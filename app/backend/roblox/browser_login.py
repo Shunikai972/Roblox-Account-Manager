@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import logging
+import os
+from pathlib import Path
 import threading
 import time
 from typing import Any, Callable
@@ -20,7 +22,11 @@ class BrowserLoginService:
         self._polling_thread: threading.Thread | None = None
         self._is_polling = False
 
-    def start_manual_login(self, on_cookie_captured: Callable[[str], Any]) -> bool:
+    def start_manual_login(
+        self,
+        on_cookie_captured: Callable[[str], Any],
+        on_finished: Callable[[bool], Any] | None = None,
+    ) -> bool:
         """Opens a browser window for Roblox login and polls for the .ROBLOSECURITY cookie."""
         if self._is_polling:
             logger.warning("Browser login already in progress.")
@@ -51,12 +57,14 @@ class BrowserLoginService:
                     res = session.post(
                         "https://auth.roblox.com/v1/authentication-ticket/redeem",
                         json={"authenticationTicket": ticket},
+                        timeout=15.0,
                     )
                     if res.status_code == 403 and "x-csrf-token" in res.headers:
                         session.headers["x-csrf-token"] = res.headers["x-csrf-token"]
                         res = session.post(
                             "https://auth.roblox.com/v1/authentication-ticket/redeem",
                             json={"authenticationTicket": ticket},
+                            timeout=15.0,
                         )
                     for cookie in session.cookies:
                         if cookie.name == ".ROBLOSECURITY" and cookie.value:
@@ -68,8 +76,13 @@ class BrowserLoginService:
                         val = parts[1].split(";")[0].strip()
                         if val and len(val) > 20:
                             return val
-                except Exception as exc:
-                    logger.error(f"Error redeeming auth ticket: {exc}")
+                except Exception:
+                    logger.warning("Browser authentication ticket could not be redeemed", exc_info=True)
+                finally:
+                    try:
+                        session.close()
+                    except Exception:
+                        pass
                 return None
 
             def _poll_cookies() -> None:
@@ -84,7 +97,8 @@ class BrowserLoginService:
                         var xhr = new XMLHttpRequest();
                         xhr.open('POST', 'https://auth.roblox.com/v1/authentication-ticket', false);
                         xhr.setRequestHeader('Referer', 'https://www.roblox.com/');
-                        xhr.send(null);
+                        xhr.setRequestHeader('Content-Type', 'application/json');
+                        xhr.send('{}');
                         if (xhr.status === 403) {
                             var csrf = xhr.getResponseHeader('x-csrf-token');
                             if (csrf) {
@@ -92,7 +106,8 @@ class BrowserLoginService:
                                 xhr2.open('POST', 'https://auth.roblox.com/v1/authentication-ticket', false);
                                 xhr2.setRequestHeader('Referer', 'https://www.roblox.com/');
                                 xhr2.setRequestHeader('x-csrf-token', csrf);
-                                xhr2.send(null);
+                                xhr2.setRequestHeader('Content-Type', 'application/json');
+                                xhr2.send('{}');
                                 return xhr2.getResponseHeader('rbx-authentication-ticket') || '';
                             }
                         }
@@ -159,7 +174,7 @@ class BrowserLoginService:
                         try:
                             current_url = str(window.get_current_url() or "").lower()
                             if any(p in current_url for p in ("roblox.com/home", "roblox.com/my/", "roblox.com/landing", "roblox.com/discover", "roblox.com/users")):
-                                logger.info(f"User reached logged-in URL ({current_url}). Attempting JS ticket extraction...")
+                                logger.info("Browser reached an authenticated Roblox page; attempting ticket extraction")
                                 ticket = window.evaluate_js(js_ticket_script)
                                 if ticket and isinstance(ticket, str) and len(ticket) > 10:
                                     logger.info(f"Retrieved Roblox auth ticket from browser session!")
@@ -194,6 +209,11 @@ class BrowserLoginService:
                         logger.error(f"Error handling captured cookie: {exc}")
                 else:
                     logger.warning("Browser login closed or timed out without capturing cookie.")
+                if on_finished is not None:
+                    try:
+                        on_finished(bool(captured_cookie))
+                    except Exception:
+                        logger.warning("Browser login completion callback failed", exc_info=True)
 
             self._polling_thread = threading.Thread(target=_poll_cookies, daemon=True, name="browser_login_poll")
             self._polling_thread.start()
@@ -215,19 +235,15 @@ class BrowserLoginService:
 
 
 class EdgeCDPLoginService:
-    """Uses native Windows Edge browser via Chrome DevTools Protocol for 100% cookie capture."""
+    """Uses a temporary Edge/Chrome profile and CDP for HttpOnly cookie capture."""
 
     @staticmethod
     def find_edge_executable() -> str | None:
-        import os
         import shutil
 
         edge_paths = [
             r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
             r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
-            os.path.expandencode(r"%LOCALAPPDATA%\Microsoft\Edge\Application\msedge.exe")
-            if hasattr(os, "path") and hasattr(os.path, "expandencode")
-            else "",
             os.path.expandvars(r"%LOCALAPPDATA%\Microsoft\Edge\Application\msedge.exe"),
         ]
         for p in edge_paths:
@@ -235,12 +251,62 @@ class EdgeCDPLoginService:
                 return p
         return shutil.which("msedge") or shutil.which("chrome")
 
-    def start_login(self, on_cookie_captured: Callable[[str], Any]) -> bool:
+    @staticmethod
+    def build_launch_command(
+        executable: str,
+        user_data_directory: str,
+        *,
+        solver_extension_directory: str | None = None,
+    ) -> list[str]:
+        """Build the isolated browser command, optionally loading a solver.
+
+        RAM 3.7.2 called the NopeCHA API against FunCaptcha's then-current
+        DOM.  That DOM integration is obsolete and brittle.  Astro supports
+        the equivalent current Chromium extension workflow: the user supplies
+        an unpacked solver extension (and configures its own key inside that
+        isolated profile), while Astro validates the directory and never
+        reads, stores or logs the solver credential.
+        """
+
+        command = [
+            executable,
+            "--remote-debugging-port=0",
+            f"--user-data-dir={user_data_directory}",
+            "--no-first-run",
+            "--no-default-browser-check",
+        ]
+        if solver_extension_directory:
+            extension = Path(solver_extension_directory).expanduser()
+            try:
+                extension = extension.resolve(strict=True)
+            except (OSError, RuntimeError):
+                extension = Path()
+            if (
+                extension.is_absolute()
+                and extension.is_dir()
+                and (extension / "manifest.json").is_file()
+                and len(str(extension)) <= 2048
+            ):
+                command.extend(
+                    [
+                        f"--disable-extensions-except={extension}",
+                        f"--load-extension={extension}",
+                    ]
+                )
+        command.append("https://www.roblox.com/login")
+        return command
+
+    def start_login(
+        self,
+        on_cookie_captured: Callable[[str], Any],
+        on_finished: Callable[[bool], Any] | None = None,
+    ) -> bool:
         import json
-        import os
         import subprocess
         import tempfile
         import urllib.request
+        import shutil
+        from urllib.parse import urlsplit
 
         exe = self.find_edge_executable()
         if not exe:
@@ -248,19 +314,18 @@ class EdgeCDPLoginService:
             return False
 
         temp_user_data = tempfile.mkdtemp(prefix="astro_edge_login_")
-        port = 9222
-
-        cmd = [
+        cmd = self.build_launch_command(
             exe,
-            f"--remote-debugging-port={port}",
-            f"--user-data-dir={temp_user_data}",
-            "--no-first-run",
-            "--no-default-browser-check",
-            "https://www.roblox.com/login",
-        ]
+            temp_user_data,
+            solver_extension_directory=os.environ.get("ASTRO_CAPTCHA_SOLVER_EXTENSION"),
+        )
 
-        logger.info(f"Launching Edge CDP login window: {exe}")
-        proc = subprocess.Popen(cmd)
+        logger.info("Launching the dedicated Edge/Chrome sign-in profile")
+        try:
+            proc = subprocess.Popen(cmd)
+        except OSError:
+            shutil.rmtree(temp_user_data, ignore_errors=True)
+            return False
 
         def _poll_cdp() -> None:
             import websockets.sync.client as ws_client
@@ -270,14 +335,25 @@ class EdgeCDPLoginService:
             captured: str | None = None
 
             ws_url = None
-            for _ in range(20):
+            port = None
+            active_port_file = os.path.join(temp_user_data, "DevToolsActivePort")
+            for _ in range(40):
                 time.sleep(0.5)
                 try:
+                    if port is None and os.path.isfile(active_port_file):
+                        with open(active_port_file, encoding="utf-8") as active_port:
+                            first_line = active_port.readline().strip()
+                        if first_line.isdigit() and 1 <= int(first_line) <= 65535:
+                            port = int(first_line)
+                    if port is None:
+                        continue
                     req = urllib.request.urlopen(f"http://127.0.0.1:{port}/json/version", timeout=2)
                     data = json.loads(req.read().decode("utf-8"))
                     ws_url = data.get("webSocketDebuggerUrl")
-                    if ws_url:
+                    parsed_ws = urlsplit(str(ws_url or ""))
+                    if ws_url and parsed_ws.scheme in ("ws", "wss") and parsed_ws.hostname in ("127.0.0.1", "localhost"):
                         break
+                    ws_url = None
                 except Exception:
                     pass
 
@@ -287,18 +363,18 @@ class EdgeCDPLoginService:
                     proc.terminate()
                 except Exception:
                     pass
+                shutil.rmtree(temp_user_data, ignore_errors=True)
                 return
 
             try:
                 with ws_client.connect(ws_url) as client:
-                    client.send(json.dumps({"id": 1, "method": "Network.enable"}))
                     while time.time() - start_time < timeout:
                         time.sleep(1.0)
                         if proc.poll() is not None:
                             logger.info("Edge login window closed by user.")
                             break
 
-                        client.send(json.dumps({"id": 2, "method": "Network.getAllCookies"}))
+                        client.send(json.dumps({"id": 2, "method": "Storage.getCookies"}))
                         res_raw = client.recv(timeout=2.0)
                         if not res_raw:
                             continue
@@ -312,22 +388,27 @@ class EdgeCDPLoginService:
                                     break
                         if captured:
                             break
-            except Exception as exc:
-                logger.error(f"CDP polling error: {exc}")
+            except Exception:
+                logger.warning("CDP cookie polling stopped", exc_info=True)
 
             try:
                 proc.terminate()
                 proc.wait(timeout=3.0)
             except Exception:
                 pass
+            shutil.rmtree(temp_user_data, ignore_errors=True)
 
             if captured:
                 try:
                     on_cookie_captured(captured)
-                except Exception as exc:
-                    logger.error(f"Error handling CDP captured cookie: {exc}")
+                except Exception:
+                    logger.exception("Captured CDP session could not be handled")
+            if on_finished is not None:
+                try:
+                    on_finished(bool(captured))
+                except Exception:
+                    logger.warning("CDP login completion callback failed", exc_info=True)
 
         t = threading.Thread(target=_poll_cdp, daemon=True, name="edge_cdp_poll")
         t.start()
         return True
-

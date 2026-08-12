@@ -97,32 +97,44 @@ def test_missing_game_is_a_safe_not_found_error() -> None:
         RobloxClient(session=session, retry_attempts=0).get_game_details(123)
 
 
-def test_search_games_handles_legacy_shape_and_skips_malformed_entries() -> None:
+def test_search_games_handles_omni_shape_skips_malformed_entries_and_caches() -> None:
     session = ScriptedSession(
         [
             FakeResponse(
                 200,
                 {
-                    "games": [
-                        {"universeId": 1, "placeId": 2, "name": "Moon Farm"},
-                        {"name": "missing ids"},
+                    "searchResults": [
+                        {
+                            "contentGroupType": "Game",
+                            "contents": [
+                                {"universeId": 1, "rootPlaceId": 2, "name": "Moon Farm", "contentType": "Game", "playerCount": 321},
+                                {"name": "missing ids", "contentType": "Game"},
+                            ],
+                        },
+                        {
+                            "contentGroupType": "User",
+                            "contents": [{"id": 55, "name": "MoonUser", "contentType": "User"}],
+                        },
                     ]
                 },
             )
         ]
     )
 
-    games = RobloxClient(session=session, retry_attempts=0).search_games("  Moon   Farm  ")
+    client = RobloxClient(session=session, retry_attempts=0)
+    games = client.search_games("  Moon   Farm  ")
+    cached = client.search_games("Moon Farm")
 
     assert [(game.universe_id, game.place_id, game.name) for game in games] == [
         (1, 2, "Moon Farm")
     ]
-    assert session.calls[0][1] == {
-        "model.keyword": "Moon Farm",
-        "model.startRows": 0,
-        "model.maxRows": 20,
-        "model.sortOrder": 1,
-    }
+    assert games[0].playing == 321
+    assert cached == games
+    assert len(session.calls) == 1
+    assert session.calls[0][0].endswith("/search-api/omni-search")
+    assert session.calls[0][1]["searchQuery"] == "Moon Farm"
+    assert session.calls[0][1]["pageType"] == "all"
+    assert isinstance(session.calls[0][1]["sessionId"], str)
 
 
 def test_server_page_is_typed_and_does_not_surface_player_tokens() -> None:

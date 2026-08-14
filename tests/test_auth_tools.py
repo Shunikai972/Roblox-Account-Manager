@@ -73,6 +73,26 @@ def test_get_csrf_token_uses_roblox_challenge_header(mock_post):
     assert mock_post.call_args.kwargs["timeout"] == 15.0
 
 
+@patch("requests.Session.post")
+def test_authenticated_server_probe_reads_historical_machine_address(mock_post):
+    response = MagicMock(status_code=200, headers={})
+    response.json.return_value = {
+        "status": 2,
+        "joinScript": {"MachineAddress": "128.116.0.1", "ServerPort": 53640},
+    }
+    mock_post.return_value = response
+
+    result = RobloxAuthTools().probe_server_instance(
+        "_|WARNING...|_COOKIE", 2512643572, "job_xyz"
+    )
+
+    assert result == {"address": "128.116.0.1", "port": 53640}
+    assert mock_post.call_args.kwargs == {
+        "json": {"gameId": "job_xyz", "placeId": 2512643572},
+        "timeout": 15.0,
+    }
+
+
 @patch("app.backend.services.application_service.time.sleep", return_value=None)
 def test_launch_with_stored_session_uses_authenticated_player_handoff(_sleep, tmp_path: Path):
     launcher = MagicMock()

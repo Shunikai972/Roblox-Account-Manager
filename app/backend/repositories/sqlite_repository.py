@@ -22,7 +22,7 @@ from app.backend.models.domain import Account, Activity, Game, Group, Notificati
 from app.backend.security.redaction import is_sensitive_key, redact_mapping
 
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 _T = TypeVar("_T")
 _MISSING = object()
 
@@ -526,7 +526,11 @@ class SQLiteRepository:
         if clauses:
             query += " WHERE " + " AND ".join(clauses)
         if recent_only:
-            query += " ORDER BY last_used_at DESC, updated_at DESC, name COLLATE NOCASE, place_id"
+            # Windows clocks can return the same timestamp for rapid launches.
+            # rowid is a deterministic newest-insert tie-breaker instead of
+            # letting SQLite return an arbitrary order in that sub-millisecond
+            # window.
+            query += " ORDER BY last_used_at DESC, updated_at DESC, rowid DESC, name COLLATE NOCASE, place_id"
         else:
             query += " ORDER BY is_favorite DESC, last_used_at DESC, name COLLATE NOCASE, place_id"
         if limit is not None:
@@ -576,7 +580,7 @@ class SQLiteRepository:
                 SELECT place_id, is_favorite
                 FROM games
                 WHERE last_used_at IS NOT NULL
-                ORDER BY last_used_at DESC, updated_at DESC, place_id DESC
+                ORDER BY last_used_at DESC, updated_at DESC, rowid DESC, place_id DESC
                 LIMIT -1 OFFSET ?
                 """,
                 (normalized_maximum,),
@@ -625,6 +629,71 @@ class SQLiteRepository:
     def delete_setting(self, key: str) -> bool:
         with self.transaction():
             result = self._execute("DELETE FROM settings WHERE key = ?", (key,))
+        return result.rowcount > 0
+
+    # Macros -----------------------------------------------------------------
+    def save_macro(self, values: Mapping[str, Any]) -> dict[str, Any]:
+        """Persist one secret-free macro definition."""
+
+        identifier = _text(values.get("id") or uuid4())
+        name = _required_text(values.get("name"), "macro name", maximum=120)
+        description = _optional_text(values.get("description")) or ""
+        if len(description) > 500:
+            raise RepositoryError("Macro description is too long.")
+        mode = _required_text(values.get("mode") or "blocks", "macro mode", maximum=20)
+        if mode not in {"blocks", "dsl"}:
+            raise RepositoryError("Macro mode is invalid.")
+        source = str(values.get("source") or "")
+        if len(source) > 32_000:
+            raise RepositoryError("Macro source is too large.")
+        actions = values.get("actions")
+        if not isinstance(actions, list):
+            raise RepositoryError("Macro actions must be a list.")
+        account_id = _optional_text(values.get("account_id"))
+        now = _utc_now()
+        existing = self._fetchone("SELECT created_at FROM macros WHERE id = ?", (identifier,))
+        payload = {
+            "id": identifier,
+            "name": name,
+            "description": description,
+            "account_id": account_id,
+            "mode": mode,
+            "source": source,
+            "actions_json": _json_dump(actions),
+            "created_at": str(existing["created_at"]) if existing else now,
+            "updated_at": now,
+        }
+        with self.transaction():
+            self._execute(
+                """
+                INSERT INTO macros (id, name, description, account_id, mode, source, actions_json, created_at, updated_at)
+                VALUES (:id, :name, :description, :account_id, :mode, :source, :actions_json, :created_at, :updated_at)
+                ON CONFLICT(id) DO UPDATE SET
+                    name = excluded.name,
+                    description = excluded.description,
+                    account_id = excluded.account_id,
+                    mode = excluded.mode,
+                    source = excluded.source,
+                    actions_json = excluded.actions_json,
+                    updated_at = excluded.updated_at
+                """,
+                payload,
+            )
+        return self.get_macro(identifier)
+
+    def get_macro(self, macro_id: str) -> dict[str, Any]:
+        row = self._fetchone("SELECT * FROM macros WHERE id = ?", (_text(macro_id),))
+        if row is None:
+            raise NotFoundError("Macro was not found.")
+        return _macro_from_row(row)
+
+    def list_macros(self) -> list[dict[str, Any]]:
+        rows = self._fetchall("SELECT * FROM macros ORDER BY name COLLATE NOCASE, id")
+        return [_macro_from_row(row) for row in rows]
+
+    def delete_macro(self, macro_id: str) -> bool:
+        with self.transaction():
+            result = self._execute("DELETE FROM macros WHERE id = ?", (_text(macro_id),))
         return result.rowcount > 0
 
     # Activity ---------------------------------------------------------------
@@ -759,6 +828,13 @@ class SQLiteRepository:
                 self._execute(
                     "INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)",
                     (3, _utc_now()),
+                )
+                version = 3
+            if version < 4:
+                self._migrate_v4_macros()
+                self._execute(
+                    "INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)",
+                    (4, _utc_now()),
                 )
 
     def _create_v1_schema(self) -> None:
@@ -916,6 +992,26 @@ class SQLiteRepository:
             self._execute("UPDATE groups SET sort_order = ? WHERE id = ?", (position, row["id"]))
         self._execute("CREATE INDEX IF NOT EXISTS idx_groups_sort_order ON groups(sort_order, id)")
 
+    def _migrate_v4_macros(self) -> None:
+        """Add secret-free, account-scoped macro definitions."""
+
+        self._execute(
+            """
+            CREATE TABLE IF NOT EXISTS macros (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL COLLATE NOCASE,
+                description TEXT NOT NULL DEFAULT '',
+                account_id TEXT REFERENCES accounts(id) ON DELETE SET NULL,
+                mode TEXT NOT NULL CHECK (mode IN ('blocks', 'dsl')),
+                source TEXT NOT NULL DEFAULT '',
+                actions_json TEXT NOT NULL DEFAULT '[]',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        self._execute("CREATE INDEX IF NOT EXISTS idx_macros_account ON macros(account_id, name COLLATE NOCASE)")
+
     def record_migration_run(
         self,
         *,
@@ -1068,6 +1164,21 @@ def _notification_from_row(row: sqlite3.Row) -> Notification:
         action=action,
         created_at=row["created_at"],
     )
+
+
+def _macro_from_row(row: sqlite3.Row) -> dict[str, Any]:
+    actions = _json_load(row["actions_json"], default=[])
+    return {
+        "id": row["id"],
+        "name": row["name"],
+        "description": row["description"],
+        "account_id": row["account_id"],
+        "mode": row["mode"],
+        "source": row["source"],
+        "actions": actions if isinstance(actions, list) else [],
+        "created_at": row["created_at"],
+        "updated_at": row["updated_at"],
+    }
 
 
 def _utc_now() -> str:

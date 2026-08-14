@@ -300,6 +300,10 @@ class EdgeCDPLoginService:
         self,
         on_cookie_captured: Callable[[str], Any],
         on_finished: Callable[[bool], Any] | None = None,
+        *,
+        prefill_username: str | None = None,
+        prefill_password: str | None = None,
+        auto_submit: bool = False,
     ) -> bool:
         import json
         import subprocess
@@ -366,6 +370,74 @@ class EdgeCDPLoginService:
                 shutil.rmtree(temp_user_data, ignore_errors=True)
                 return
 
+            credentials_filled = False
+
+            def _fill_login_form() -> bool:
+                """Fill the isolated page without placing secrets in argv or logs."""
+
+                if not port or not prefill_username or not prefill_password:
+                    return False
+                try:
+                    with urllib.request.urlopen(
+                        f"http://127.0.0.1:{port}/json/list", timeout=2
+                    ) as response:
+                        targets = json.loads(response.read().decode("utf-8"))
+                    page_url = next(
+                        (
+                            item.get("webSocketDebuggerUrl")
+                            for item in targets
+                            if item.get("type") == "page"
+                            and "roblox.com" in str(item.get("url") or "").casefold()
+                            and item.get("webSocketDebuggerUrl")
+                        ),
+                        None,
+                    )
+                    if not page_url:
+                        return False
+                    credentials = json.dumps(
+                        {"username": prefill_username, "password": prefill_password},
+                        ensure_ascii=False,
+                    )
+                    expression = f"""
+                    (function(credentials, autoSubmit) {{
+                      const find = (selectors) => selectors.map((s) => document.querySelector(s)).find(Boolean);
+                      const username = find(['#login-username', 'input[name="username"]', 'input[autocomplete="username"]']);
+                      const password = find(['#login-password', 'input[name="password"]', 'input[type="password"]']);
+                      if (!username || !password) return {{filled: false}};
+                      const write = (element, value) => {{
+                        const descriptor = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(element), 'value');
+                        if (descriptor && descriptor.set) descriptor.set.call(element, value);
+                        else element.value = value;
+                        element.dispatchEvent(new Event('input', {{bubbles: true}}));
+                        element.dispatchEvent(new Event('change', {{bubbles: true}}));
+                      }};
+                      write(username, credentials.username);
+                      write(password, credentials.password);
+                      if (autoSubmit) window.setTimeout(() => {{
+                        const submit = find(['#login-button', 'button[type="submit"]', 'button[data-testid="login-button"]']);
+                        if (submit && !submit.disabled) submit.click();
+                      }}, 250);
+                      return {{filled: true, submitted: Boolean(autoSubmit)}};
+                    }})({credentials}, {str(bool(auto_submit)).lower()})
+                    """
+                    with ws_client.connect(str(page_url)) as page_client:
+                        page_client.send(
+                            json.dumps(
+                                {
+                                    "id": 41,
+                                    "method": "Runtime.evaluate",
+                                    "params": {"expression": expression, "returnByValue": True},
+                                }
+                            )
+                        )
+                        raw_result = page_client.recv(timeout=2.0)
+                    result = json.loads(raw_result or "{}")
+                    value = result.get("result", {}).get("result", {}).get("value", {})
+                    return bool(value.get("filled")) if isinstance(value, dict) else False
+                except Exception:
+                    # Roblox can revise its form; manual entry remains available.
+                    return False
+
             try:
                 with ws_client.connect(ws_url) as client:
                     while time.time() - start_time < timeout:
@@ -373,6 +445,13 @@ class EdgeCDPLoginService:
                         if proc.poll() is not None:
                             logger.info("Edge login window closed by user.")
                             break
+
+                        if not credentials_filled and prefill_username and prefill_password:
+                            credentials_filled = _fill_login_form()
+                            if credentials_filled:
+                                logger.info(
+                                    "Saved credentials were supplied to the isolated Roblox login page"
+                                )
 
                         client.send(json.dumps({"id": 2, "method": "Storage.getCookies"}))
                         res_raw = client.recv(timeout=2.0)

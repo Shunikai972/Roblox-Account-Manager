@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import ipaddress
 import re
 import time
 from typing import Any
@@ -85,6 +86,60 @@ class RobloxAuthTools:
         if not token or any(ord(character) < 33 for character in token):
             raise RobloxServiceError("Roblox did not return an X-CSRF token for this session.")
         return token
+
+    def probe_server_instance(self, cookie: str, place_id: int, job_id: str) -> dict[str, Any]:
+        """Resolve one public JobId to the machine address RAM used for region UI."""
+
+        if not isinstance(cookie, str) or not cookie.strip():
+            raise RobloxServiceError("A Roblox session is required for server-region probing.")
+        if isinstance(place_id, bool) or not isinstance(place_id, int) or place_id <= 0:
+            raise RobloxServiceError("PlaceId must be a positive integer.")
+        if not isinstance(job_id, str) or not _JOB_ID.fullmatch(job_id):
+            raise RobloxServiceError("JobId is invalid.")
+        session = requests.Session()
+        session.headers.update(
+            {
+                "Referer": "https://www.roblox.com/",
+                "Origin": "https://www.roblox.com",
+                "User-Agent": "AstroAccountManager/4.0",
+                "Accept": "application/json",
+                "Content-Type": "application/json",
+            }
+        )
+        session.cookies.set(".ROBLOSECURITY", cookie, domain=".roblox.com")
+        endpoint = "https://gamejoin.roblox.com/v1/join-game-instance"
+        body = {"gameId": job_id, "placeId": place_id}
+        try:
+            response = session.post(endpoint, json=body, timeout=15.0)
+            if response.status_code == 403 and response.headers.get("x-csrf-token"):
+                session.headers["x-csrf-token"] = response.headers["x-csrf-token"]
+                response = session.post(endpoint, json=body, timeout=15.0)
+            if response.status_code != 200:
+                raise RobloxServiceError(
+                    f"Roblox server-region probe returned HTTP {response.status_code}."
+                )
+            payload = response.json()
+        except RobloxServiceError:
+            raise
+        except (requests.RequestException, TypeError, ValueError) as exc:
+            raise RobloxServiceError("Roblox did not return a usable server join response.") from exc
+        finally:
+            session.close()
+        if not isinstance(payload, dict):
+            raise RobloxServiceError("Roblox returned an invalid server join response.")
+        join_script = payload.get("joinScript")
+        if not isinstance(join_script, dict):
+            raise RobloxServiceError("Roblox did not expose this server's machine address.")
+        address = join_script.get("MachineAddress")
+        port = join_script.get("ServerPort")
+        try:
+            normalized_address = str(ipaddress.ip_address(str(address or "").strip()))
+        except ValueError as exc:
+            raise RobloxServiceError("Roblox did not expose this server's machine address.") from exc
+        normalized_port = int(port) if isinstance(port, (int, str)) and str(port).isdigit() else None
+        if normalized_port is not None and not 1 <= normalized_port <= 65535:
+            normalized_port = None
+        return {"address": normalized_address, "port": normalized_port}
 
     def generate_rbx_player_uri(self, auth_ticket: str, place_id: int, job_id: str | None = None) -> str:
         """Format an rbx-player protocol URI using a valid auth ticket."""

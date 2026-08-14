@@ -1,10 +1,10 @@
-"""An opt-in, authenticated loopback HTTP surface for local integrations.
+"""An opt-in, authenticated HTTP surface for local integrations.
 
 The desktop application works without an HTTP server through :mod:`pywebview`.
 This module exists for explicit local automations that need a versioned API. It
-is deliberately narrow: it only binds the IPv4 loopback interface, requires a
-high-entropy bearer token for *every* route, disables caching, and never
-accepts session/password/cookie values over HTTP.
+is deliberately narrow: it binds loopback by default, requires authentication
+for *every* route, and disables caching.  An explicit setting may expose the
+same authenticated listener to the LAN for RAM 3.7.2 compatibility.
 """
 
 from __future__ import annotations
@@ -80,19 +80,28 @@ class LoopbackApiServer:
         token: str | None = None,
         host: str = "127.0.0.1",
         port: int = 7963,
+        allow_external: bool = False,
         permissions: Mapping[str, bool] | None = None,
         legacy_password_auth_enabled: bool = False,
         legacy_password: str | None = None,
         logger: logging.Logger | None = None,
     ) -> None:
-        if host != "127.0.0.1":
-            raise LoopbackApiError("Local API host must be bound to 127.0.0.1.")
+        if not isinstance(allow_external, bool):
+            raise LoopbackApiError("External API access setting is invalid.")
+        allowed_hosts = {"127.0.0.1", "localhost"}
+        if allow_external:
+            allowed_hosts.update({"0.0.0.0", "::"})
+        if host not in allowed_hosts:
+            raise LoopbackApiError(
+                "API host must be loopback unless external connections are explicitly enabled."
+            )
         if isinstance(port, bool) or not isinstance(port, int) or not 0 <= port <= 65535:
             raise LoopbackApiError("Local API port is invalid.")
         self._service = service
         self._token = _validated_token(token or secrets.token_urlsafe(32))
         self._host = host
         self._requested_port = port
+        self._allow_external = allow_external
         supplied_permissions = dict(permissions or {})
         unknown_permissions = set(supplied_permissions).difference(_API_PERMISSION_DEFAULTS)
         if unknown_permissions or any(not isinstance(value, bool) for value in supplied_permissions.values()):
@@ -237,7 +246,14 @@ def _handler_type(api: LoopbackApiServer) -> type[BaseHTTPRequestHandler]:
                 return
             try:
                 parsed = urlsplit(self.path)
-                route = unquote(parsed.path[len(API_PREFIX) :]) if parsed.path.startswith(f"{API_PREFIX}/") else unquote(parsed.path)
+                is_rest = parsed.path.startswith(f"{API_PREFIX}/")
+                is_legacy_v2 = parsed.path.startswith("/v2/")
+                if is_rest:
+                    route = unquote(parsed.path[len(API_PREFIX) :])
+                elif is_legacy_v2:
+                    route = unquote(parsed.path[3:])
+                else:
+                    route = unquote(parsed.path)
                 query = parse_qs(parsed.query, keep_blank_values=True)
                 required_permission = api._required_permission(method, route)
                 if required_permission is not None and not api._permissions[required_permission]:
@@ -254,7 +270,17 @@ def _handler_type(api: LoopbackApiServer) -> type[BaseHTTPRequestHandler]:
                     AppError("An internal server error occurred.", code="internal_error"),
                 )
             else:
-                self._send_json(status, {"data": payload})
+                if not is_rest and _is_legacy_route(route):
+                    raw = _legacy_raw_response(route, query, payload)
+                    if is_legacy_v2:
+                        raw = json.dumps(
+                            {"Success": int(status) < 300, "Message": raw},
+                            ensure_ascii=False,
+                            separators=(",", ":"),
+                        )
+                    self._send_text(status, raw)
+                else:
+                    self._send_json(status, {"data": payload})
 
         def _route(
             self, method: str, route: str, query: Mapping[str, list[str]]
@@ -635,6 +661,16 @@ def _handler_type(api: LoopbackApiServer) -> type[BaseHTTPRequestHandler]:
             self.end_headers()
             self.wfile.write(encoded)
 
+        def _send_text(self, status: HTTPStatus, payload: str) -> None:
+            encoded = str(payload).encode("utf-8")
+            self.send_response(int(status))
+            self.send_header("Content-Type", "text/plain; charset=utf-8")
+            self.send_header("Content-Length", str(len(encoded)))
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.end_headers()
+            self.wfile.write(encoded)
+
         def log_message(self, format: str, *args: object) -> None:
             api._logger.debug("Loopback API request completed: %s", self.command)
 
@@ -644,6 +680,114 @@ def _handler_type(api: LoopbackApiServer) -> type[BaseHTTPRequestHandler]:
 @dataclass(frozen=True, slots=True)
 class _RequestError(Exception):
     message: str
+
+
+_LEGACY_ROUTE_NAMES = {
+    "LaunchAccount",
+    "FollowUser",
+    "SetServer",
+    "SetRecommendedServer",
+    "BlockUser",
+    "UnblockUser",
+    "GetCookie",
+    "GetField",
+    "SetField",
+    "SetAlias",
+    "UnblockEveryone",
+    "GetBlockedList",
+    "RemoveField",
+    "GetAlias",
+    "SetDescription",
+    "GetDescription",
+    "AppendDescription",
+    "SetAvatar",
+    "GetAccounts",
+    "GetAccountsJson",
+    "GetCSRFToken",
+    "ImportCookie",
+}
+
+
+def _is_legacy_route(route: str) -> bool:
+    return route.lstrip("/") in _LEGACY_ROUTE_NAMES
+
+
+def _legacy_raw_response(
+    route: str,
+    query: Mapping[str, list[str]],
+    payload: Any,
+) -> str:
+    """Render the unwrapped text shapes returned by RAM 3.7.2.
+
+    The compatibility root keeps legacy scripts working, while ``/api/v1``
+    remains the structured Astro REST surface.  Values unavailable in the old
+    response message are serialized compactly rather than inventing secrets.
+    """
+
+    name = route.lstrip("/")
+    account = _single_query(query, "Account") or ""
+    if name == "LaunchAccount":
+        return f"Launched {account} to {_single_query(query, 'PlaceId') or ''}"
+    if name == "FollowUser":
+        user = _single_query(query, "Username") or _single_query(query, "User") or ""
+        return f"Joining {user}'s game on {account}"
+    if name == "GetCookie" and isinstance(payload, Mapping):
+        return str(payload.get("cookie") or "")
+    if name == "GetCSRFToken" and isinstance(payload, Mapping):
+        return str(payload.get("csrf_token") or "")
+    if name == "GetField" and isinstance(payload, Mapping):
+        value = payload.get("value")
+        return "" if value is None else str(value)
+    if name == "GetAlias" and isinstance(payload, Mapping):
+        return str(payload.get("alias") or "")
+    if name == "GetDescription" and isinstance(payload, Mapping):
+        return str(payload.get("description") or "")
+    if name == "GetAccounts" and isinstance(payload, Mapping):
+        return ",".join(str(value) for value in payload.get("accounts", []) if value)
+    if name == "GetAccountsJson":
+        rows = payload if isinstance(payload, list) else []
+        legacy_rows = [
+            {
+                "Username": row.get("username"),
+                "UserID": row.get("user_id"),
+                "Alias": row.get("alias"),
+                "Description": row.get("description"),
+                "Group": row.get("group_name") or row.get("group_id"),
+                "CSRFToken": row.get("csrf_token"),
+                "LastUsed": row.get("last_used") or row.get("last_used_at"),
+                "Cookie": row.get("cookie"),
+                "Fields": row.get("custom_fields") or {},
+            }
+            for row in rows
+            if isinstance(row, Mapping)
+        ]
+        return json.dumps(legacy_rows, ensure_ascii=False, separators=(",", ":"))
+    if name == "ImportCookie":
+        return "true" if payload else "false"
+    if name == "SetField":
+        return (
+            f"Set Field {_single_query(query, 'Field') or ''} to "
+            f"{_single_query(query, 'Value') or ''} for {account}"
+        )
+    if name == "RemoveField":
+        return f"Removed Field {_single_query(query, 'Field') or ''} from {account}"
+    if name == "SetAlias":
+        alias = _single_query(query, "Alias") or (
+            str(payload.get("alias") or "") if isinstance(payload, Mapping) else ""
+        )
+        return f"Set Alias of {account} to {alias}"
+    if name == "SetDescription":
+        description = _single_query(query, "Description") or (
+            str(payload.get("description") or "") if isinstance(payload, Mapping) else ""
+        )
+        return f"Set Description of {account} to {description}"
+    if name == "AppendDescription":
+        return f"Appended Description of {account} with {_single_query(query, 'Description') or ''}"
+    if name == "SetAvatar":
+        return f"Attempting to set avatar of {account} to {_single_query(query, 'AssetId') or ''}"
+    if isinstance(payload, str):
+        return payload
+    return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
 
 
 def _validated_token(value: str) -> str:

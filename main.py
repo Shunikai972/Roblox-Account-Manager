@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 import sys
+import threading
 
 # PyInstaller's windowed bootloader intentionally starts without console
 # streams.  Several transitive desktop dependencies inspect or write to
@@ -19,6 +20,7 @@ if sys.stderr is None:
 from app.backend.api import DesktopBridge, LoopbackApiError, LoopbackApiServer
 from app.backend.core.config import APP_NAME, AppPaths
 from app.backend.core.logging import configure_logging
+from app.backend.core.crash_reporting import CrashReporter
 from app.backend.services import ApplicationService
 
 
@@ -35,6 +37,8 @@ def main() -> int:
         or os.environ.get("ASTERIA_DEBUG") == "1"
     )
     logger = configure_logging(paths.logs, verbose=debug_enabled)
+    crash_reporter = CrashReporter(paths.logs, logger)
+    crash_reporter.install()
     service = ApplicationService(paths=paths, logger=logger)
     bridge = DesktopBridge(service, logger=logger.logger)
     loopback_api: LoopbackApiServer | None = None
@@ -49,6 +53,11 @@ def main() -> int:
         import webview
 
         service.start_watcher()
+        threading.Thread(
+            target=service.auto_update_tick,
+            name="astro-update-check",
+            daemon=True,
+        ).start()
         api_settings = service.get_settings()["categories"].get("api", {})
         if bool(api_settings.get("enabled")):
             api_token = os.environ.get("ASTRO_LOCAL_API_TOKEN") or os.environ.get(
@@ -78,7 +87,13 @@ def main() -> int:
                     loopback_api = LoopbackApiServer(
                         service,
                         token=api_token,
+                        host=(
+                            "0.0.0.0"
+                            if bool(api_settings.get("allow_external", False))
+                            else "127.0.0.1"
+                        ),
                         port=int(api_settings.get("port", 7963)),
+                        allow_external=bool(api_settings.get("allow_external", False)),
                         permissions={
                             key: bool(api_settings.get(key, False))
                             for key in (

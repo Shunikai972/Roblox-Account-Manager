@@ -239,6 +239,41 @@ class RobloxClient:
             raise NotFoundError("No Roblox universe was found for this PlaceId.")
         return universe_id
 
+    def list_universe_places(self, universe_id: int, *, maximum: int = 500) -> tuple[dict[str, Any], ...]:
+        """Return the same paged public universe-place list exposed by RAM 3.7.2."""
+
+        validated = _positive_id(universe_id, "UniverseId")
+        if isinstance(maximum, bool) or not isinstance(maximum, int) or not 1 <= maximum <= 1_000:
+            raise ValidationError("Universe place limit must be between 1 and 1000.")
+        rows: list[dict[str, Any]] = []
+        cursor: str | None = None
+        while len(rows) < maximum:
+            params: dict[str, Any] = {"sortOrder": "Asc", "limit": min(100, maximum - len(rows))}
+            if cursor:
+                params["cursor"] = cursor
+            payload = self._request_json(
+                f"https://develop.roblox.com/v1/universes/{validated}/places", params=params
+            )
+            data = payload.get("data")
+            if not isinstance(data, list):
+                raise RobloxServiceError("Roblox returned an invalid universe places response.")
+            for item in data:
+                if not isinstance(item, Mapping):
+                    continue
+                place_id = _as_positive_int(item.get("id") or item.get("placeId"))
+                name = item.get("name")
+                if place_id and isinstance(name, str):
+                    rows.append({"place_id": place_id, "name": name[:200]})
+                    if len(rows) >= maximum:
+                        break
+            next_cursor = payload.get("nextPageCursor")
+            if not isinstance(next_cursor, str) or not next_cursor or next_cursor == cursor:
+                break
+            if len(next_cursor) > _MAX_CURSOR_LENGTH:
+                raise RobloxServiceError("Roblox returned an invalid universe cursor.")
+            cursor = next_cursor
+        return tuple(rows)
+
     def get_game_details(self, place_id: int) -> Game:
         """Fetch an experience's details using its public PlaceId."""
 

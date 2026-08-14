@@ -8,9 +8,9 @@ const CONTRACT_METHODS = [
   'delete_accounts', 'get_public_profile', 'refresh_account_public_profile', 'get_public_presence', 'refresh_account_presence',
   'start_oauth_login', 'poll_oauth_login', 'cancel_oauth_login',
   'refresh_oauth_account', 'disconnect_oauth_account', 'list_groups', 'create_group', 'update_group', 'delete_group', 'move_accounts', 'reorder_accounts', 'list_games',
-  'list_recent_games', 'list_favorite_games', 'get_game', 'set_game_favorite', 'remove_game', 'list_servers',
-  'resolve_server_region', 'launch_account', 'list_uwp_packages', 'launch_uwp_package', 'list_instances',
-  'refresh_instances', 'get_instance_monitor', 'close_instance', 'bind_instance', 'configure_account_watcher', 'get_settings', 'update_settings',
+  'search_games', 'list_recent_games', 'list_favorite_games', 'get_game', 'set_game_favorite', 'remove_game', 'list_servers',
+  'resolve_server_region', 'probe_server_regions', 'launch_account', 'list_uwp_packages', 'launch_uwp_package', 'create_uwp_account_clone', 'unregister_uwp_account_clone', 'list_instances',
+  'refresh_instances', 'get_instance_monitor', 'close_instance', 'bind_instance', 'configure_account_watcher', 'get_settings', 'update_settings', 'reset_settings',
   'get_windows_startup_status', 'set_windows_startup', 'get_activity',
   'get_notifications', 'dismiss_notification', 'backup_data', 'list_backups',
   'restore_backup', 'export_metadata', 'import_metadata', 'migrate_legacy', 'get_diagnostics',
@@ -23,7 +23,14 @@ const CONTRACT_METHODS = [
   'set_account_follow_privacy', 'unlock_account_pin',
   'parse_vip_link', 'search_players', 'get_player_presence', 'find_player_server', 'get_random_server', 'close_beta_home_windows', 'check_for_updates',
   'get_account_blocked_list', 'unblock_all_account_users', 'set_account_avatar',
-  'add_account_from_cookie', 'start_manual_browser_login', 'poll_manual_browser_login'
+  'add_account_from_cookie', 'start_manual_browser_login', 'start_saved_password_browser_login', 'poll_manual_browser_login'
+  , 'list_macros', 'save_macro', 'delete_macro', 'start_macro', 'stop_macro', 'list_macro_runs'
+  , 'get_discord_presence_status', 'refresh_discord_presence'
+  , 'get_update_status', 'download_update', 'schedule_update_install', 'cancel_update'
+  , 'get_roblox_background_status', 'close_running_roblox', 'launch_account_from_private_link'
+  , 'export_support_bundle'
+  , 'list_universe_places', 'list_user_outfits', 'wear_account_outfit', 'join_account_group'
+  , 'open_account_browser', 'get_account_saved_password'
 ];
 
 const DAY = 86400000;
@@ -191,6 +198,9 @@ class PreviewBridge {
       games: clone(this.state.games), instances: clone(this.state.instances),
       settings: clone(this.state.settings), activity: clone(this.state.activity),
       notifications: clone(this.state.notifications), diagnostics: await this.get_diagnostics()
+      , macros: [], macro_runs: [], discord_presence: { enabled: false, connected: false }
+      , updater: { frozen: false, staged: false, pending_install: false }
+      , roblox_background: { running: false, count: 0, processes: [] }
     };
   }
 
@@ -321,6 +331,15 @@ class PreviewBridge {
 
   async list_games() { return clone(this.state.games); }
 
+  async search_games(query, limit) {
+    const phrase = String(query || '').trim().toLowerCase();
+    const bounded = Number(limit) > 0 ? Number(limit) : 20;
+    if (!phrase) return clone(this.state.games).slice(0, bounded);
+    return clone(this.state.games.filter(function (game) {
+      return [game.title, game.creator, game.category].join(' ').toLowerCase().includes(phrase);
+    })).slice(0, bounded);
+  }
+
   async list_recent_games() {
     return clone(this.state.games.slice().sort(function (left, right) { return Number(right.last_opened || 0) - Number(left.last_opened || 0); }));
   }
@@ -374,6 +393,10 @@ class PreviewBridge {
     return this.desktopOperationUnavailable('Resolving a live server region');
   }
 
+  async probe_server_regions() {
+    return this.desktopOperationUnavailable('Probing authenticated server regions');
+  }
+
   async launch_account(id, target) {
     const account = this.account(id);
     const game = target && target.place_id ? this.state.games.find(function (item) { return String(item.place_id) === String(target.place_id); }) : null;
@@ -393,6 +416,8 @@ class PreviewBridge {
 
   async list_uwp_packages() { return this.uwpUnavailable(); }
   async launch_uwp_package() { return this.uwpUnavailable(); }
+  async create_uwp_account_clone() { return this.uwpUnavailable(); }
+  async unregister_uwp_account_clone() { return this.uwpUnavailable(); }
 
   windowsStartupUnavailable() {
     throw new Error('Windows startup registration requires the desktop bridge. Preview mode never simulates a Windows Run registration.');
@@ -458,6 +483,10 @@ class PreviewBridge {
     Object.assign(this.state.settings, next);
     this.save();
     return clone(this.state.settings);
+  }
+
+  async reset_settings() {
+    throw new Error('Settings reset requires the Astro desktop bridge.');
   }
 
   async get_activity() { return clone(this.state.activity); }
@@ -762,6 +791,29 @@ class PreviewBridge {
     return this.desktopOperationUnavailable('Checking for application updates');
   }
 
+  async list_macros() { return []; }
+  async save_macro() { return this.desktopOperationUnavailable('Saving a per-instance macro'); }
+  async delete_macro() { return this.desktopOperationUnavailable('Deleting a per-instance macro'); }
+  async start_macro() { return this.desktopOperationUnavailable('Running a per-instance macro'); }
+  async stop_macro() { return this.desktopOperationUnavailable('Stopping a per-instance macro'); }
+  async list_macro_runs() { return []; }
+  async get_discord_presence_status() { return { enabled: false, connected: false, configured: false }; }
+  async refresh_discord_presence() { return this.desktopOperationUnavailable('Publishing Discord Rich Presence'); }
+  async get_update_status() { return { frozen: false, staged: false, pending_install: false }; }
+  async download_update() { return this.desktopOperationUnavailable('Downloading an application update'); }
+  async schedule_update_install() { return this.desktopOperationUnavailable('Installing an application update'); }
+  async cancel_update() { return this.desktopOperationUnavailable('Cancelling an application update'); }
+  async get_roblox_background_status() { return { running: false, count: 0, processes: [] }; }
+  async close_running_roblox() { return this.desktopOperationUnavailable('Closing running Roblox clients'); }
+  async launch_account_from_private_link() { return this.desktopOperationUnavailable('Joining a private Roblox server'); }
+  async export_support_bundle() { return this.desktopOperationUnavailable('Creating a support bundle'); }
+  async list_universe_places() { return this.publicDataUnavailable(); }
+  async list_user_outfits() { return this.publicDataUnavailable(); }
+  async wear_account_outfit() { return this.desktopOperationUnavailable('Wearing a Roblox outfit'); }
+  async join_account_group() { return this.desktopOperationUnavailable('Joining a Roblox group'); }
+  async open_account_browser() { return this.desktopOperationUnavailable('Opening an authenticated Roblox browser'); }
+  async get_account_saved_password() { return this.desktopOperationUnavailable('Reading a saved password'); }
+
   async get_account_blocked_list(account_id) {
     return this.desktopOperationUnavailable('Reading a Roblox blocked-user list');
   }
@@ -780,6 +832,10 @@ class PreviewBridge {
 
   async start_manual_browser_login(group_id) {
     return this.desktopOperationUnavailable('Opening the Roblox sign-in browser');
+  }
+
+  async start_saved_password_browser_login(account_id) {
+    return this.desktopOperationUnavailable('Using an imported password in the isolated Roblox sign-in browser');
   }
 
   async poll_manual_browser_login(operation_id) {

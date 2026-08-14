@@ -14,11 +14,11 @@ def test_version_comparison_handles_prereleases_semantically() -> None:
 @patch("app.backend.core.updater.requests.get")
 def test_update_checker_uses_astro_version_and_semantic_release_order(mock_get: MagicMock) -> None:
     response = MagicMock(status_code=200)
-    response.json.return_value = {"tag_name": "v4.0.0", "body": "stable", "html_url": "https://example.invalid/release"}
+    response.json.return_value = {"tag_name": "v4.0.4", "body": "stable", "html_url": "https://example.invalid/release"}
     mock_get.return_value = response
 
     result = UpdateChecker.check_for_updates()
 
-    assert result["current_version"] == CURRENT_VERSION == "4.0.0a1"
-    assert result["latest_version"] == "4.0.0"
+    assert result["current_version"] == CURRENT_VERSION == "4.0.3"
+    assert result["latest_version"] == "4.0.4"
     assert result["update_available"] is True

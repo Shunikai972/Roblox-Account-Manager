@@ -39,7 +39,7 @@ class PrivateServerHelper:
             except (ValueError, TypeError):
                 pass
 
-        if place_id and code:
+        if place_id and isinstance(code, str) and _LINK_CODE.fullmatch(code):
             return {"place_id": place_id, "link_code": code}
 
         return None

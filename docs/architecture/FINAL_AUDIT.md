@@ -71,7 +71,7 @@ python scripts\build_windows.py
 
 Résultats :
 
-- **269 tests passés, 0 échec** en 50,92 s après l’intégration du 12 août ;
+- **360 tests passés, 2 ignorés, 0 échec** en 81,51 s après le lot roadmap du 14 août ;
 - compilation Python et syntaxe JavaScript sans erreur ;
 - les 22 routes historiques testées une par une sur un serveur loopback réel ;
 - 81 actions frontend déclarées, 82 handlers click et 24 formulaires gérés ;
@@ -87,17 +87,16 @@ Résultats :
 ## Artefact actuel
 
 - chemin : `dist/AstroAccountManager.exe` ;
-- taille : **20 666 396 octets** ;
+- taille : **20 774 084 octets** ;
 - SHA-256 :
-  `B5F7FC368A79B5F4B157DEB6D7416E828421E98FDA602526FA3E78517D792868` ;
+  `EC68F3995DC9B6A7BBE470D64337585E57EEFDCA879E965BE46E9B06F093F0BA` ;
 - mode : PyInstaller onefile, windowed, icône Astro ;
 - environnement validé : Windows 11, Python 3.12, PyInstaller 6.21.
 
-Cet artefact inclut l’intégration source du 12 août (région, API legacy et
-bulk import). Il a été reconstruit le 12 août sans lancer l’application ni
-interrompre le client Roblox actif. Le mécanisme de build a déjà été validé par
-un smoke test antérieur ; cet artefact précis reste à ouvrir une fois Roblox
-fermé volontairement pour confirmer son démarrage et le bridge pywebview.
+Cet artefact inclut les correctifs v5 du 13 août. Il a été ouvert pour un smoke
+test ciblé du bridge et de Games & servers, puis fermé proprement. Deux jeux et
+50 serveurs publics ont été observés ; aucun compte ni processus Roblox n’a été
+lancé ou fermé par ce test.
 
 ## Travail restant concret
 

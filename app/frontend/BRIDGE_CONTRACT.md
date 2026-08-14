@@ -61,6 +61,7 @@ collections, although a complete desktop response should provide every field.
 | `move_accounts` | `ids: string[]`, `group_id: string \| null` | `{ moved: string[], group_id: string \| null }`. |
 | `reorder_accounts` | `account_ids: string[]` | Full ordered `Account[]`; the request must contain each current account exactly once. |
 | `list_games` | — | `Game[]`. |
+| `search_games` | `query: string`, `limit?: number` | `Game[]`. Roblox omni-search, bounded to 50 results, falls back to locally saved games when Roblox is unreachable. |
 | `list_recent_games` | — | Bounded `Game[]`, newest recent use first. |
 | `list_favorite_games` | — | Persisted favourite `Game[]`. |
 | `get_game` | `place_id: string` | `Game` with optional `description`. |
@@ -68,9 +69,12 @@ collections, although a complete desktop response should provide every field.
 | `remove_game` | `place_id: string | number` | `{ deleted: number }`; removes the local game record and favourite marker. |
 | `list_servers` | `place_id: string` | `Server[]`. |
 | `resolve_server_region` | `address: string` | `{ region: string | null, enabled: boolean, reason: string | null }`; opt-in and never echoes the address. |
+| `probe_server_regions` | `account_id: string`, `place_id: string`, `job_ids: string[]` | At most 16 authenticated results containing JobId, redacted region, ping and status; never returns the machine address. |
 | `launch_account` | `id: string`, `target: LaunchTarget \| null` | `{ accepted: boolean, account_id: string }`. |
 | `list_uwp_packages` | — | `{ available, reason?, packages: UwpPackage[] }`; installed-package metadata only. |
 | `launch_uwp_package` | `package_full_name: string` | `{ package_full_name, app_user_model_id, launched }` after Windows accepts a launch for an already registered Roblox UWP app. |
+| `create_uwp_account_clone` | `account_id: string`, `source_package_full_name?: string`, `supports_multiple_instances: boolean`, `confirm: boolean` | Creates/registers one staged per-account clone with rollback; confirmation required. |
+| `unregister_uwp_account_clone` | `account_id: string`, `confirm: boolean` | Unregisters only the exact clone identity associated with the account; confirmation required and copied files are retained. |
 | `list_instances` | — | `Instance[]`. |
 | `refresh_instances` | — | `Instance[]`. |
 | `get_instance_monitor` | — | `{ instances, events, log_watcher, log_events, pending_restarts, last_scan_complete, termination_enabled }`. `log_events` is a bounded, typed and redacted local Player-log history; it contains no path, filename or raw log line and never requests process control. |
@@ -78,11 +82,12 @@ collections, although a complete desktop response should provide every field.
 | `set_multi_instance` | `enabled: boolean` | Persists the preference and applies the mutex immediately; `restart_required` is true when Roblox was already open. |
 | `close_instance` | `pid: number`, `confirm: boolean` | Graceful local close result; requires `confirm: true` and a backend opt-in. |
 | `bind_instance` | `pid: number`, `account_id: string`, `target: LaunchTarget`, `confirm: boolean` | Explicitly binds an orphaned observed process; requires `confirm: true`. |
-| `configure_account_watcher` | `id: string`, `rule: AccountWatcherRule` | Persists an opt-in bounded relaunch rule for one account. |
+| `configure_account_watcher` | `id: string`, `rule: AccountWatcherRule` | Persists the per-account watcher rule. `AccountWatcherRule.enabled` (default true) turns local process monitoring and the bounded relaunch on or off for that account. |
 | `capture_instance_window` | `pid: number`, `confirm: boolean` | Saves verified visible Roblox geometry for the bound account; confirmation required. |
 | `restore_instance_window` | `pid: number`, `confirm: boolean` | Restores saved geometry to a verified Roblox window; confirmation required. |
 | `get_settings` | — | `Settings`. |
 | `update_settings` | `values: Partial<Settings>` | Updated `Settings`. |
+| `reset_settings` | `category: string \| null`, `confirm: boolean` | Restores one canonical category or all settings to defaults; requires `confirm: true` and preserves accounts/data. |
 | `get_windows_startup_status` | — | Current-user Windows Run capability and Astro registration state, without a command or filesystem path. |
 | `set_windows_startup` | `enabled: boolean`, `confirm: boolean` | Explicitly enables/disables Astro's own Run value; rejects unconfirmed calls and never registers `python.exe` from a development runtime. |
 | `get_activity` | — | `Activity[]`. |
@@ -364,7 +369,7 @@ session must never appear in this settings object or in an OAuth bridge response
 ### Authenticated account tools
 
 The desktop contract exposes the explicitly user-triggered methods
-`add_account_from_cookie`, `start_manual_browser_login`,
+`add_account_from_cookie`, `start_manual_browser_login`, `start_saved_password_browser_login`,
 `poll_manual_browser_login`, `refresh_account_session`, `generate_auth_ticket`,
 `get_account_csrf_token`, `generate_rbx_player_link`, `get_account_cookie`,
 `export_account_sessions`, `change_account_password`, `change_account_email`,
@@ -382,11 +387,13 @@ metadata. PreviewBridge rejects every method in this section.
 
 ### Local API settings
 
-`categories.api` contains `enabled`, `host`, `port`, `allow_get_cookie`,
+`categories.api` contains `enabled`, `host`, `port`, `allow_external`, `allow_get_cookie`,
 `allow_launch_account`, `allow_account_editing`, `allow_import_cookie`,
 `allow_get_accounts` and `legacy_password_auth_enabled`.
-The UI always sends `host=127.0.0.1`; enabling the listener also requires the
-runtime-only `ASTRO_LOCAL_API_TOKEN` and an application restart.
+The UI sends `host=127.0.0.1` unless the user separately enables
+`allow_external`. That switch binds all interfaces; authentication and
+per-capability permissions remain mandatory. Enabling the listener also
+requires the runtime-only `ASTRO_LOCAL_API_TOKEN` and an application restart.
 Historical password compatibility additionally requires the runtime-only
 `ASTRO_LOCAL_API_PASSWORD`; neither credential is returned by the bridge.
 
@@ -394,4 +401,18 @@ Historical password compatibility additionally requires the runtime-only
 `region_lookup_provider`, `region_lookup_format`,
 `region_lookup_timeout_seconds` and `region_cache_ttl_seconds`. Region lookup
 is disabled by default and only sends validated public server IP addresses to
-the configured provider.
+the configured provider. The account-backed probe is capped at 16 JobIds and
+never returns a machine address to JavaScript.
+
+### Macros and desktop integrations
+
+The native bridge also exposes:
+
+- `list_macros()`, `save_macro(payload)`, `delete_macro(id, confirm)`, `start_macro(id, pid)`, `stop_macro(run_id)`, `list_macro_runs()`;
+- `get_discord_presence_status()`, `refresh_discord_presence()`;
+- `get_update_status()`, `check_for_updates()`, `download_update(confirm)`, `schedule_update_install(confirm)`, `cancel_update(confirm)`;
+- `get_roblox_background_status()`, `close_running_roblox(confirm)`;
+- `launch_account_from_private_link(account_id, link)` and `export_support_bundle()`;
+- historical utilities `open_account_browser`, `join_account_group`, `get_account_saved_password`, `list_universe_places`, `list_user_outfits`, `wear_account_outfit`.
+
+PreviewBridge reports read-only empty/capability states and rejects every desktop mutation; it never simulates macro input, a Discord connection, an updater install, a Roblox close, or an authenticated browser.

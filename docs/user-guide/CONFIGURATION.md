@@ -11,11 +11,14 @@ Les préférences sont persistées dans la base locale et exposées dans la page
 | Watcher | intervalle, association prudente PID+création, fermeture manuelle confirmée, règles automatiques opt-in et relance bornée. |
 | Network | timeout et résolution de région opt-in. |
 | OAuth | liaison d'identité Roblox opt-in via client ID public, callback loopback et PKCE. |
-| API | serveur local désactivé par défaut, bind loopback uniquement. |
+| API | serveur local désactivé par défaut, loopback par défaut et exposition LAN séparément opt-in. |
 | Notifications | durée des toasts et notifications desktop. |
 | Developer | logs détaillés, sans capacités de lecture de secrets. |
 
-Le reset fin par catégorie et le reset global sont recensés dans la matrice de migration mais ne sont pas encore exposés par l’interface ; modifier une valeur existante est immédiatement persistant. Ils ne doivent donc pas être présentés comme disponibles avant leur implémentation.
+Le bouton **Reset settings** restaure une catégorie canonique ou toutes les
+préférences après confirmation. Les comptes, sessions, groupes, jeux et backups
+ne sont pas touchés. Un reset incluant General désactive aussi proprement le
+démarrage Windows s’il était actif.
 
 ## Régions de serveurs
 
@@ -34,17 +37,18 @@ elle peut envoyer l’adresse IP publique d’un serveur au fournisseur configur
 La réponse est limitée à 64 Kio, les redirections sont refusées, le cache LRU
 est borné à 512 entrées et les erreurs sont mises en cache brièvement. Les
 adresses privées, loopback, link-local, multicast et réservées ne sont jamais
-envoyées. Si Roblox ne fournit aucune adresse machine dans la liste publique,
-la région reste simplement inconnue.
+envoyées. Le bouton **Load regions** reproduit la sonde authentifiée RAM
+`join-game-instance` pour au plus 16 JobIds avec le compte sélectionné. Seuls
+région, ping et statut sont renvoyés à l’interface ; l’adresse reste backend-only.
 
 ## Watcher d'instances
 
 Le switch **Settings → Instances → Multi Roblox** appelle directement le
-contrôleur desktop et persiste `instances.allow_multiple_launches`. Activez-le
-avant d’ouvrir Roblox. Astro détient alors le mutex historique exact
-`ROBLOX_singletonMutex` pendant toute sa durée de vie. Si Roblox est déjà
-ouvert, le choix est conservé et l’interface demande de fermer Roblox puis de
-redémarrer Astro avant les prochains lancements.
+contrôleur desktop et persiste `instances.allow_multiple_launches`. Astro
+détient le mutex historique et l’événement singleton sur un thread persistant ;
+au lancement il surveille aussi brièvement les nouveaux processus et détache
+leur handle `ROBLOX_singletonEvent` moderne. Astro doit rester ouvert, mais
+l’activation n’exige plus de fermer un client déjà en cours.
 
 `watcher.enabled` démarre le polling local au lancement de l'application.
 `scan_interval_seconds` est validé entre 1 et 300 secondes. Les scans partiels
@@ -92,7 +96,7 @@ l’extension dans ce profil isolé. Un dossier invalide est simplement ignoré.
 
 ## API locale
 
-L’API HTTP est un complément opt-in du bridge pywebview, jamais un service exposé par défaut. Activez `api.enabled`, conservez `api.host` à `127.0.0.1`, choisissez un port local, puis définissez un `ASTRO_LOCAL_API_TOKEN` d’au moins 32 caractères avant de démarrer l’application. Sans ce jeton, Astro Account Manager laisse l’API arrêtée et le reste du desktop fonctionne normalement. `ASTERIA_LOCAL_API_TOKEN` reste accepté uniquement pour les scripts locaux existants.
+L’API HTTP est un complément opt-in du bridge pywebview, jamais un service exposé par défaut. Activez `api.enabled`, conservez `api.host` à `127.0.0.1`, choisissez un port local, puis définissez un `ASTRO_LOCAL_API_TOKEN` d’au moins 32 caractères avant de démarrer l’application. `api.allow_external` est une autorisation indépendante : si elle est cochée, Astro utilise `0.0.0.0`/`::` pour le LAN tout en conservant authentification et permissions. Sans jeton, Astro Account Manager laisse l’API arrêtée. `ASTERIA_LOCAL_API_TOKEN` reste accepté uniquement pour les scripts locaux existants.
 
 `api.allow_get_accounts` gouverne séparément `GetAccounts` et
 `GetAccountsJson`. La compatibilité facultative avec le mot de passe RAM
@@ -101,3 +105,64 @@ s’active par `api.legacy_password_auth_enabled` et lit uniquement
 permissions s’appliquent aux deux schémas.
 
 Voir [la documentation API](docs/API.md) pour les routes, l’authentification et les restrictions sur les secrets.
+
+## Performance (`performance`)
+
+`performance.global_max_fps` fixe la limite d'images par seconde appliquee au
+lancement quand le compte n'a pas sa propre valeur. `0` signifie "ne rien
+imposer". `performance.potato_graphics` active les FastFlags graphiques minimaux
+de maniere globale.
+
+Ordre de resolution au lancement, du plus specifique au plus general :
+
+1. cible de lancement explicite (`fps` / `fps_cap`) ;
+2. options du compte (`launch_options.max_fps`, `launch_options.potato_graphics`) ;
+3. preference globale ci-dessus ;
+4. valeur deja presente dans `ClientAppSettings.json`.
+
+Astro cherche le dossier de version via le protocole `roblox` enregistre, puis
+via `Roblox/Versions/version-*`. Il met aussi à jour le réglage natif
+`GlobalBasicSettings_13.xml` (`FramerateCap`) avec backup et relecture, car les
+FastFlags seuls peuvent être refusés par le client moderne. Un échec d’écriture
+n’est plus silencieux : il apparaît dans l’activité et une notification.
+
+Attention : `ClientAppSettings.json` est un fichier unique partage par toutes
+les instances. La valeur d'un compte est donc appliquee au moment de son
+lancement ; deux clients simultanes ne peuvent pas avoir deux limites
+differentes.
+
+## Watcher par compte
+
+En plus des reglages globaux `watcher.*`, chaque compte possede une regle locale
+enregistree via `configure_account_watcher`. La cle `enabled` (vraie par defaut)
+se regle depuis la page de gestion du compte. Un compte desactive ne participe
+pas au relancement automatique, meme si `watcher.auto_relaunch_enabled` est vrai.
+
+## Multi Roblox
+
+`allow_multiple_launches` demande a Astro de detenir `ROBLOX_singletonMutex` et
+`ROBLOX_singletonEvent` sur un thread dedie. Astro doit rester ouvert pendant
+toute la session multi-instance : si le processus se termine, les objets sont
+liberes et Roblox reprend la porte d'instance unique.
+
+## Watchdog par compte
+
+La relance automatique n'est jamais implicite. Elle exige, dans cet ordre :
+
+1. `watcher.enabled` - le moniteur de processus local tourne.
+2. La case *Watch this account* du compte.
+3. La case *Auto-relaunch this account if it stops* du compte.
+4. `watcher.auto_relaunch_enabled` - l'autorisation globale des regles de relance.
+5. Au moins un declencheur : crash ou fermeture propre.
+6. Un nombre maximal de tentatives superieur a zero.
+
+Depuis la fiche du compte, cocher la relance arme aussi les points 1 et 4 ; le
+libelle de la case l'indique. Si une regle reste inerte, Astro renvoie la raison
+exacte dans le champ `effective` et l'affiche au lieu de laisser croire a un
+succes.
+
+Windows n'indique pas la cause d'un arret de client. Un processus qui disparaît
+dans la fenetre `watcher.crash_window_seconds` est traite comme un crash ; une
+session plus longue qui se termine est traitee comme une sortie. Pour couvrir
+les deux cas, activez aussi *Relaunch even when the client closes without
+crashing*.

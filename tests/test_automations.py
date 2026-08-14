@@ -48,6 +48,27 @@ def test_client_settings_updates_are_atomic_and_preserve_existing_flags(tmp_path
     assert patcher.backup_file.read_text(encoding="utf-8") == '{"ExistingFlag": true}'
 
 
+def test_fps_cap_updates_and_restores_roblox_global_frame_cap(tmp_path: Path):
+    patcher = ClientSettingsPatcher(local_app_data=tmp_path)
+    patcher.global_settings_file.parent.mkdir(parents=True, exist_ok=True)
+    original = """<?xml version='1.0' encoding='utf-8'?>
+<roblox><Item><Properties><int name="FramerateCap">60</int><bool name="Other">true</bool></Properties></Item></roblox>
+"""
+    patcher.global_settings_file.write_text(original, encoding="utf-8")
+
+    assert patcher.set_fps_cap(144) is True
+    assert '<int name="FramerateCap">144</int>' in patcher.global_settings_file.read_text(encoding="utf-8")
+    assert patcher.global_settings_backup_file.read_text(encoding="utf-8") == original
+
+    assert patcher.set_fps_cap(240) is True
+    assert '<int name="FramerateCap">240</int>' in patcher.global_settings_file.read_text(encoding="utf-8")
+    # The backup remains the user's original value, not the previous Astro cap.
+    assert patcher.global_settings_backup_file.read_text(encoding="utf-8") == original
+
+    assert patcher.remove_fps_cap() is True
+    assert patcher.global_settings_file.read_text(encoding="utf-8") == original
+
+
 def test_client_settings_invalid_json_is_never_overwritten(tmp_path: Path):
     patcher = ClientSettingsPatcher(local_app_data=tmp_path)
     patcher.settings_dir.mkdir(parents=True)
@@ -125,7 +146,14 @@ def test_default_client_settings_path_uses_validated_roblox_version(monkeypatch,
 
 
 def test_default_client_settings_path_refuses_when_roblox_is_not_discovered(monkeypatch):
+    # Discovery now has two stages: the registered ``roblox`` protocol first,
+    # then the Roblox ``Versions`` directories. Refusing requires *both* to come
+    # up empty, so both are neutralised here. On a machine where Roblox really
+    # is installed, silencing only the registry probe lets the fallback find the
+    # actual client, and the patcher is then correctly available.
     monkeypatch.setattr(ClientSettingsPatcher, "_discover_version_directory", staticmethod(lambda: None))
+    monkeypatch.setattr(ClientSettingsPatcher, "_discover_versions_directory", staticmethod(lambda: None))
+    monkeypatch.setattr(ClientSettingsPatcher, "_scan_all_versions_roots", staticmethod(lambda _roots: []))
     patcher = ClientSettingsPatcher()
 
     assert patcher.status()["available"] is False

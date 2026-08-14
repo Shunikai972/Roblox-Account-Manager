@@ -33,6 +33,18 @@ def test_frontend_contract_covers_desktop_bridge_methods() -> None:
     assert backend_methods <= frontend_methods
 
 
+def test_every_static_frontend_action_and_form_has_a_handler() -> None:
+    source = FRONTEND_APP_SOURCE.read_text(encoding="utf-8")
+    actions = set(re.findall(r'data-action=["\']([^"\']+)["\']', source))
+    handlers = set(re.findall(r'action === ["\']([^"\']+)["\']', source))
+    forms = set(re.findall(r'data-form=["\']([^"\']+)["\']', source))
+    form_handlers = set(re.findall(r'form\.dataset\.form === ["\']([^"\']+)["\']', source))
+    # Dynamic concatenations are checked by their literal prefix elsewhere;
+    # this catches every concrete button/form emitted by the renderer.
+    assert {item for item in actions if "'" not in item} <= handlers
+    assert forms <= form_handlers
+
+
 def test_region_and_legacy_api_settings_are_reachable_from_the_frontend() -> None:
     source = FRONTEND_APP_SOURCE.read_text(encoding="utf-8")
     bridge = BRIDGE_SOURCE.read_text(encoding="utf-8")
@@ -84,6 +96,23 @@ def test_bulk_launch_uses_each_selected_accounts_saved_place() -> None:
     assert "account.saved_place_id" in body
     assert "start_batch_launch', ids, null" in body
     assert "Choose an experience first" not in body
+
+
+def test_server_join_requires_an_explicit_available_account() -> None:
+    """A server row must never silently launch the first workspace account."""
+
+    source = FRONTEND_APP_SOURCE.read_text(encoding="utf-8")
+    method = re.search(r"async joinServer\(id\) \{(?P<body>.*?)\n  \}\n", source, re.DOTALL)
+    assert method is not None
+    body = method.group("body")
+    assert "this.openModal({ kind: 'server-launch'" in body
+    assert "item.has_session" in body
+    assert "this.state.accounts[0]" not in body
+    assert "find(function (item) { return item.status === 'ready'; })" not in body
+
+    assert "data-form=\"server-launch\"" in source
+    assert "Choose the account to join" in source
+    assert "Astro will not silently choose the first account anymore." in source
 
 
 def test_runtime_poll_is_compact_and_never_replaces_an_open_form() -> None:

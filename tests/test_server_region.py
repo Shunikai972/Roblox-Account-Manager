@@ -2,6 +2,10 @@ from __future__ import annotations
 
 import pytest
 
+from app.backend.core.config import AppPaths
+from app.backend.roblox.types import LaunchResult
+from app.backend.services import ApplicationService
+
 from app.backend.roblox.server_region import (
     DEFAULT_CACHE_TTL_SECONDS,
     DEFAULT_PROVIDER_URL,
@@ -248,3 +252,44 @@ def test_requests_transport_rejects_large_or_non_object_payloads():
         RequestsRegionTransport(FakeSession(large))("https://example.test/{ip}", 1)
     with pytest.raises(ValueError):
         RequestsRegionTransport(FakeSession(FakeResponse([])))("https://example.test/{ip}", 1)
+
+
+def test_service_authenticated_region_probe_is_bounded_and_redacts_addresses(tmp_path, monkeypatch):
+    root = tmp_path / "app-data"
+    paths = AppPaths(root, root / "astro.db", root / "logs", root / "backups", root / "cache", root / "exports")
+    resolver = ServerRegionResolver(fetch_json=RecordingFetch())
+    service = ApplicationService(paths=paths, region_resolver=resolver)
+    try:
+        account = service.create_account({"username": "RegionUser"})
+        service.repository.save_protected_secret(
+            account["id"], "session", service.vault.protect(b"region-cookie")
+        )
+        domain = service.repository.get_account(account["id"])
+        domain.has_session = True
+        service.repository.save_account(domain)
+        service.update_settings(
+            {"categories": {"network": {"region_lookup_enabled": True}}}
+        )
+        calls = []
+
+        def probe(cookie, place_id, job_id):
+            calls.append((cookie, place_id, job_id))
+            return {"address": "128.116.0.1", "port": None}
+
+        monkeypatch.setattr(service.auth_tools, "probe_server_instance", probe)
+
+        result = service.probe_server_regions(
+            account["id"], 2512643572, ["job-one", "job-two"]
+        )
+
+        assert result["resolved"] == 2
+        assert [row["region"] for row in result["servers"]] == [
+            "Ashburn, United States",
+            "Ashburn, United States",
+        ]
+        assert "address" not in result["servers"][0]
+        assert calls[0] == ("region-cookie", 2512643572, "job-one")
+        with pytest.raises(Exception):
+            service.probe_server_regions(account["id"], 1, [f"job-{i}" for i in range(17)])
+    finally:
+        service.close()

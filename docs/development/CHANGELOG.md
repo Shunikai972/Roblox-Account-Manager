@@ -1,5 +1,85 @@
 # Changelog
 
+## 4.0.3 - 2026-08-14
+
+- Added the bounded block/DSL macro studio with independent concurrent runs pinned to verified Roblox PID creation times.
+- Added redacted Discord Rich Presence, support ZIP generation, fixed-source GitHub update staging, private-server links per account, and the configurable existing-Roblox warning.
+- Restored authenticated browser, Join Group, saved-password copy, universe places and outfit list/wear utilities from the historical 3.7.2 behavior.
+- Fixed oversized Discord settings checkboxes found during the real Windows smoke test.
+- Modern Roblox multi-instance support now handles `ROBLOX_singletonEvent` as well as the historical mutex, with a bounded launch guard.
+- Saved imported passwords can drive an isolated Edge CDP login without entering secrets in process arguments or bridge responses; the Roblox identity is checked before the captured session is stored.
+- Per-account UWP clones now support staged copy, manifest identity rewrite, AppX registration/unregistration, confirmation and rollback.
+- Historical server-region probing now uses authenticated `join-game-instance` data, a 16-server cap, cache, TCP ping and a redacted UI result.
+- The 22 RAM routes now preserve their historical text content type, `/v2` keeps its compatibility envelope, `/api/v1` remains structured JSON, and external binding requires a separate opt-in.
+- The native Roblox `GlobalBasicSettings_13.xml` FPS cap is backed up, updated and read back alongside ClientAppSettings.
+- Nexus bridge duplication and the Games favorites accessibility label were corrected.
+
+## 2026-08-13 - Watcher, FPS unlocker, Multi Roblox and Games page fixes
+
+### Multi Roblox (intermittent failures)
+- The Roblox singleton objects are now created and owned on one dedicated
+  long-lived holder thread. Win32 ownership of a mutex is thread affine: if the
+  owning thread ends without releasing, the object is *abandoned* and Roblox can
+  reclaim the gate. This is the mechanism the reliable launchers use, and it is
+  why they must stay running.
+- An object that already exists is adopted instead of refused. The previous code
+  closed its handle and returned failure on ERROR_ALREADY_EXISTS, which is
+  exactly the "works only when Roblox is not already open" symptom.
+- The modern `ROBLOX_singletonEvent` is held alongside `ROBLOX_singletonMutex`.
+- Ownership is released with `ReleaseMutex` before the handle is closed, so no
+  abandoned mutex is left behind.
+- The holder thread retries any object it could not create yet, and
+  `get_status()` reports `mutex_held`, `event_held`, `owned_objects`,
+  `adopted_existing`, `holder_thread_alive`, `reacquisitions` and `last_error`.
+
+### FPS unlocker (no effect, per instance or globally)
+- `ClientSettingsPatcher` gained a validated fallback that scans the Roblox
+  `Versions/version-*` directories when the `roblox` protocol registry probe
+  fails. That probe used to be the only discovery path, so ClientSettings writes
+  were permanently unavailable on many installs.
+- The `performance` settings category was missing, so the existing
+  `global_max_fps` and `potato_graphics` switches had nowhere to persist.
+- Launch-time resolution now consults the global preference. Most specific
+  first: explicit launch target, account launch options, global preference, then
+  the value already in `ClientAppSettings.json`.
+- A failed patch was a log warning only. It now also raises an activity entry
+  and a user notice.
+- The cap is mirrored into every installed Roblox player version, while
+  preserving unrelated flags already present in each folder. Astro re-discovers
+  and rebases onto a version installed after startup instead of recreating a
+  stale folder.
+- Values above 240 set `FFlagTaskSchedulerLimitTargetFpsTo2402=False`; lowering
+  or removing the cap removes that companion flag. Every target is read back
+  and reported after a write.
+
+### Watcher
+- The background polling loop was verified to really scan; passing a bound
+  interval callable is correct by design.
+- The per-account rule gained a validated `enabled` switch, preserved across
+  partial updates. A disabled account is excluded from the relaunch policy.
+- The switch is exposed in the account management page and in the watcher rule
+  dialog, both calling `configure_account_watcher`.
+
+### Games & servers page
+- The page rendered an empty list forever: nothing asked the backend for games,
+  and the search box only filtered an array that was never populated.
+- `search_games` already existed in the Roblox client (omni-search) but was
+  exposed nowhere. It is now available through the service, the desktop bridge
+  and the frontend contract, with a debounced lookup that ignores stale answers
+  and falls back to saved games when Roblox is unreachable.
+- A second runtime defect was fixed: the selected-game `find()` callback read
+  `this.state` without binding `this`, so any saved game aborted the complete
+  render before the DOM changed.
+
+### Validation
+- `315 passed, 2 skipped`; Python compilation, JavaScript syntax and the
+  frontend/bridge/action audit are green.
+- Real UI click confirmed that Games & servers opens with two saved games and
+  loads 50 public servers.
+- Real read/write verification targeted all three installed Roblox version
+  folders at 144 FPS without starting or stopping Roblox.
+
+
 ## [4.0.0a1] — 2026-08-11
 
 ### Intégration du lot Opus — 2026-08-12
@@ -69,7 +149,7 @@
 
 ### Validation réelle
 
-- **269 tests passés**, compilation Python et syntaxe JavaScript valides ;
+- **315 tests passés, 2 ignorés**, compilation Python et syntaxe JavaScript valides ;
 - deux sessions Roblox distinctes revalidées sans afficher les secrets ;
 - Astrolucifer972 et Pierremayou lancés simultanément avec deux PID et deux
   Place ID propres, confirmés par les logs ;
@@ -82,9 +162,9 @@
 
 ### Artefact
 
-- taille : 20 666 396 octets ;
+- taille : 20 680 467 octets ;
 - SHA-256 :
-  `B5F7FC368A79B5F4B157DEB6D7416E828421E98FDA602526FA3E78517D792868`.
+  `88B62C0E5FECFDE2BC968CD95A893BEB7FB30FAD020A191F6FF0BE9156DFA413`.
 
 ### Travail restant explicite
 
@@ -95,3 +175,31 @@
   client Nexus en jeu, paquet UWP et extension CAPTCHA.
 
 Voir la [validation individuelle des 42 lignes](../QA_MATRIX_2026-08-11.md).
+
+## 2026-08-13 - Per-account watchdog repair
+
+### Fixed
+- The automatic relaunch could never fire from the account page. Four independent
+  switches gated it and two of them were unreachable from that page, so the
+  watchdog stayed inactive whatever the user checked.
+- `_account_payload` never returned the saved `enabled` flag of a per-account
+  watcher rule, so both the account form and the relaunch-rule modal always
+  rendered the checkbox as checked, even after the rule had been disabled.
+- The relaunch-rule modal merged its defaults without `enabled`, hiding a
+  disabled account behind a checked box.
+
+### Added
+- The account page now carries the full watchdog rule: watch on/off, automatic
+  relaunch, relaunch delay, maximum attempts, and relaunch after a clean exit.
+  Arming the relaunch from that page also arms the global watcher switches, and
+  the checkbox label states it.
+- `ApplicationService._relaunch_arming_state` is the single decision point that
+  reports whether a relaunch is really armed and, when it is not, which switch
+  is responsible. `configure_account_watcher` returns it as `effective`, and the
+  interface warns instead of silently saving an inert rule.
+
+### Notes
+- Windows never tells Astro why a client stopped. A process that disappears
+  within the crash window counts as a crash; a longer session that ends counts
+  as an exit. Cover both cases with the new "relaunch after a clean exit"
+  option rather than assuming a crash was missed.

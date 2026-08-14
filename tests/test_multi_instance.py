@@ -36,7 +36,16 @@ def test_multi_instance_controller_lifecycle():
 
     status_enabled = controller.get_status()
     assert status_enabled["enabled"] is success
-    assert status_enabled["handle_count"] in (0, 1)
+    # Roblox guards the single-instance rule with a named mutex and, on modern
+    # clients, a named event. Both are held now, so a successful enable reports
+    # up to two handles. Off Windows nothing is held at all.
+    assert status_enabled["handle_count"] in (0, 1, 2)
+    if success:
+        assert status_enabled["mutex_held"] is True
+        assert status_enabled["handle_count"] == len(status_enabled["held_objects"])
+        assert status_enabled["holder_thread_alive"] is True
+    else:
+        assert status_enabled["handle_count"] == 0
 
     # Disable
     controller.disable_multi_instance()

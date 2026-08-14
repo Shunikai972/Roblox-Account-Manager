@@ -15,7 +15,7 @@ APP_SLUG = "AstroAccountManager"
 # the rename, the app continues to use it until the user explicitly migrates
 # their data.
 LEGACY_APP_SLUG = "AsteriaAccountManager"
-APP_VERSION = "4.0.0a1"
+APP_VERSION = "4.0.3"
 
 
 DEFAULT_SETTINGS: dict[str, Any] = {
@@ -25,6 +25,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
         "auto_refresh_account_state": False,
         "auto_backup": True,
         "start_with_windows": False,
+        "warn_if_roblox_running": True,
     },
     "appearance": {
         "theme": "dark",
@@ -42,6 +43,21 @@ DEFAULT_SETTINGS: dict[str, Any] = {
         "prevent_duplicate_accounts": True,
         "remember_window_positions": False,
         "launch_queue_parallelism": 1,
+    },
+    "macros": {
+        "enabled": True,
+        "allow_background_delivery": True,
+    },
+    "discord": {
+        "enabled": False,
+        "client_id": "",
+        "strategy": "latest",
+        "show_account": False,
+    },
+    "updates": {
+        "auto_check": True,
+        "auto_download": False,
+        "install_on_exit": False,
     },
     "watcher": {
         "enabled": True,
@@ -61,6 +77,10 @@ DEFAULT_SETTINGS: dict[str, Any] = {
         "close_if_title_mismatch": False,
         "health_grace_seconds": 30,
         "expected_window_title": "Roblox",
+    },
+    "performance": {
+        "global_max_fps": 0,
+        "potato_graphics": False,
     },
     "network": {
         "request_timeout_seconds": 15,
@@ -83,6 +103,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
         "enabled": False,
         "host": "127.0.0.1",
         "port": 7963,
+        "allow_external": False,
         "allow_get_cookie": False,
         "allow_launch_account": False,
         "allow_account_editing": False,

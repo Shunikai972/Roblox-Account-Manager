@@ -386,6 +386,14 @@ def test_loopback_api_only_accepts_the_ipv4_loopback_interface(tmp_path: Path) -
     try:
         with pytest.raises(LoopbackApiError):
             LoopbackApiServer(service, token="a" * 40, host="0.0.0.0")
+        external = LoopbackApiServer(
+            service,
+            token="b" * 40,
+            host="0.0.0.0",
+            port=0,
+            allow_external=True,
+        )
+        assert external.status.host == "0.0.0.0"
         with pytest.raises(LoopbackApiError):
             LoopbackApiServer(service, token="a" * 40, permissions={"unknown": True})
     finally:

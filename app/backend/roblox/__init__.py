@@ -2,6 +2,8 @@
 
 from .auth_tools import RobloxAuthTools
 from .batch_launcher import BatchLauncher
+from .background import RobloxBackgroundManager
+from .authenticated_browser import AuthenticatedBrowserService
 from .client import RobloxClient, SessionRobloxClient
 from .client_settings import ClientSettingsPatcher
 from .launcher import WindowsRobloxLauncher
@@ -42,6 +44,8 @@ __all__ = [
     "BatchLauncher",
     "ClientSettingsPatcher",
     "RobloxAuthTools",
+    "RobloxBackgroundManager",
+    "AuthenticatedBrowserService",
     "LaunchResult",
     "LaunchTarget",
     "OAuthClientConfiguration",

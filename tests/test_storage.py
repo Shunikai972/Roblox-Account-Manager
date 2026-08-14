@@ -159,7 +159,7 @@ def test_v1_account_database_migrates_to_a_stable_persisted_order(tmp_path: Path
     _create_v1_accounts_database(database)
 
     with SQLiteRepository(database) as repository:
-        assert repository.schema_version == 3
+        assert repository.schema_version == 4
         migrated = repository.list_accounts()
         # This is the v1 observable default order: favourite, then latest
         # usage, then case-insensitive username and ID.  Version 2 freezes it
@@ -177,7 +177,7 @@ def test_v2_group_database_migrates_legacy_numeric_prefix_order(tmp_path: Path) 
     _create_v2_groups_database(database)
 
     with SQLiteRepository(database) as repository:
-        assert repository.schema_version == 3
+        assert repository.schema_version == 4
         migrated = repository.list_groups()
         # RAM 3.7.2 grouped by the raw name, then hid a leading 1-3 digit
         # prefix from the group header.  Version 3 freezes that old ordering.

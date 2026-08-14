@@ -15,6 +15,7 @@ Le frontend appelle exclusivement `window.pywebview.api` via `app/frontend/src/b
 
 - `add_account_from_cookie(cookie, groupId)` valide l’identité Roblox avant toute sauvegarde DPAPI.
 - `start_manual_browser_login(groupId)` et `poll_manual_browser_login(operationId)` pilotent le navigateur dédié sans faux succès.
+- `start_saved_password_browser_login(accountId)` déchiffre uniquement dans le backend un mot de passe importé, préremplit Edge via CDP sans secret dans la ligne de commande, puis vérifie l’identité avant de sauvegarder le cookie capturé.
 - `start_oauth_login`, `poll_oauth_login`, `cancel_oauth_login`, `refresh_oauth_account`, `disconnect_oauth_account` gèrent uniquement le grant Open Cloud ; OAuth ne crée pas de session du client Roblox.
 - `refresh_account_session(id)` revalide une session stockée et refuse une identité différente.
 - `get_account_cookie(id)` renvoie la session brute après une action UI explicite.
@@ -28,10 +29,17 @@ Ces réponses sensibles ne sont jamais incluses dans `bootstrap`, les diagnostic
 - `launch_account`, `start_batch_launch`, `cancel_batch_launch`, `get_batch_launch_status`
 - `parse_vip_link`, `search_players`, `get_player_presence`, `find_player_server`, `get_random_server`
 - `get_multi_instance_status`, `set_multi_instance`, `get_fps_cap`, `set_fps_cap`, `remove_fps_cap`
-- `list_uwp_packages`, `launch_uwp_package`
+- `list_uwp_packages`, `launch_uwp_package`, `create_uwp_account_clone`, `unregister_uwp_account_clone`
 - `list_instances`, `refresh_instances`, `get_instance_monitor`, `bind_instance`, `close_instance`, `configure_account_watcher`, `position_instance_window`, `capture_instance_window`, `restore_instance_window`, `close_beta_home_windows`
 
 `find_player_server(place_id, user_id, max_pages=10)` reproduit le scan RAM par `playerTokens` et miniatures, avec pagination et lots bornés ; les tokens opaques ne quittent jamais le backend. Les règles automatiques mémoire/titre/timeout exigent `watcher.termination_enabled` et leur option indépendante, ignorent la fenêtre au premier plan et ne ciblent qu’un processus/fenêtre Roblox vérifiés. La capture/restauration de géométrie est opt-in via `instances.remember_window_positions` ; les actions manuelles exigent une confirmation.
+
+`probe_server_regions(account_id, place_id, job_ids)` reproduit la sonde RAM
+`join-game-instance` avec la session sélectionnée, au plus 16 serveurs, puis
+résout la région et mesure un ping TCP borné. L’adresse machine reste backend-only.
+Les clones UWP utilisent staging, identité de manifeste propre au compte,
+enregistrement/désenregistrement exact et rollback ; leurs mutations exigent
+une confirmation distincte dans l’interface.
 - `start_nexus_server`, `stop_nexus_server`, `get_nexus_status`, `send_nexus_command`, `get_nexus_lua_script`
 
 La fermeture d’une instance requiert l’activation globale et une confirmation distincte. La relance requiert un opt-in global et un opt-in par compte. Nexus exige son jeton éphémère dans le handshake.
@@ -42,11 +50,15 @@ La fermeture d’une instance requiert l’activation globale et une confirmatio
 
 ### Maintenance
 
-`get_settings`, `update_settings`, `get_windows_startup_status`, `set_windows_startup`, `get_activity`, `get_notifications`, `dismiss_notification`, `backup_data`, `list_backups`, `restore_backup`, `export_metadata`, `import_metadata`, `migrate_legacy`, `get_diagnostics` et `check_for_updates`.
+`get_settings`, `update_settings`, `reset_settings`, `get_windows_startup_status`, `set_windows_startup`, `get_activity`, `get_notifications`, `dismiss_notification`, `backup_data`, `list_backups`, `restore_backup`, `export_metadata`, `import_metadata`, `migrate_legacy`, `get_diagnostics` et `check_for_updates`.
 
 ## API HTTP loopback
 
-`LoopbackApiServer` est désactivé par défaut, écoute uniquement sur `127.0.0.1` et exige un bearer d’au moins 32 caractères pour chaque route. Le bearer vient de `ASTRO_LOCAL_API_TOKEN`, reste en mémoire et n’est jamais journalisé.
+`LoopbackApiServer` est désactivé par défaut et écoute `127.0.0.1`. Une option
+séparée `api.allow_external=true` autorise explicitement un bind
+`0.0.0.0`/`::`; elle ne retire ni l’authentification ni les permissions. Chaque
+route exige un bearer d’au moins 32 caractères ou, si activé, le mot de passe
+RAM. Les secrets runtime restent en mémoire et ne sont jamais journalisés.
 
 L’activation, le port et les permissions se règlent dans Settings → Advanced. Un redémarrage est requis.
 
@@ -85,6 +97,11 @@ l’historique du client appelant.
 
 Les paramètres historiques `Account`, `PlaceId`, `JobId`, `User`/`Username`, `Group`, `IncludeCookies`, `Field`, `Value`, `Alias`, `Description`, `AssetId` et `Cookie` sont pris en charge selon la route. Les routes d’édition texte acceptent également un corps POST borné.
 
+Les routes historiques à la racine répondent en `text/plain` comme RAM 3.7.2.
+Le préfixe `/v2` conserve l’enveloppe texte JSON `{Success, Message}` attendue
+par les scripts compatibles. Les routes `/api/v1` restent la surface Astro
+structurée en `application/json`.
+
 ### Routes REST Astro
 
 - `GET /api/v1/health`, `/accounts`, `/groups`, `/games`, `/instances`, `/settings`, `/activity`
@@ -95,3 +112,17 @@ Les paramètres historiques `Account`, `PlaceId`, `JobId`, `User`/`Username`, `G
 Les succès utilisent `{ "data": ... }`, les erreurs `{ "error": { "code", "message" } }`. Les corps sont bornés à 64 Kio, les réponses utilisent `Cache-Control: no-store`, CORS n’est pas activé et les exceptions internes ne sont pas réfléchies.
 
 La spécification [OpenAPI](api/openapi.yaml) documente la surface REST Astro ; les routes RAM de compatibilité restent décrites ici.
+
+## Surfaces desktop ajoutées le 14 août 2026
+
+Ces méthodes pywebview ne sont pas exposées par l'API HTTP :
+
+- macros : `list_macros`, `save_macro`, `delete_macro`, `start_macro`, `stop_macro`, `list_macro_runs` ;
+- Discord : `get_discord_presence_status`, `refresh_discord_presence` ;
+- updater : `get_update_status`, `check_for_updates`, `download_update`, `schedule_update_install`, `cancel_update` ;
+- préparation locale : `get_roblox_background_status`, `close_running_roblox(confirm)` ;
+- serveur privé : `launch_account_from_private_link(account_id, link)` ;
+- diagnostic : `export_support_bundle` ;
+- parité 3.7.2 : `open_account_browser`, `join_account_group`, `get_account_saved_password`, `list_universe_places`, `list_user_outfits`, `wear_account_outfit`.
+
+Les actions de fermeture, suppression, installation ou mutation de compte exigent un geste utilisateur distinct. Les cookies, mots de passe et tickets ne figurent jamais dans les statuts des nouveaux moteurs.

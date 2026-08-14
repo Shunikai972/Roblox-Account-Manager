@@ -116,3 +116,65 @@ def test_each_legacy_route_is_reachable_over_authenticated_loopback_http(route: 
 
 def test_legacy_route_matrix_contains_all_22_ram_routes() -> None:
     assert len(LEGACY_ROUTES) == 22
+
+
+def _read_http(api: LoopbackApiServer, path: str, token: str) -> tuple[int, str, str]:
+    status = api.status
+    request = Request(
+        f"http://127.0.0.1:{status.port}{path}",
+        headers={"Authorization": f"Bearer {token}"},
+        method="GET",
+    )
+    with urlopen(request, timeout=5) as response:
+        return (
+            response.status,
+            response.headers.get_content_type(),
+            response.read().decode("utf-8"),
+        )
+
+
+def test_historical_root_v2_and_modern_contracts_are_kept_separate() -> None:
+    service = _LegacyRouteService()
+    token = "matrix-shape-token-0123456789abcdef"
+    api = LoopbackApiServer(service, token=token, port=0)  # type: ignore[arg-type]
+    api.start()
+    try:
+        status, content_type, body = _read_http(api, "/GetAccounts?Group=Matrix", token)
+        assert status == 200
+        assert content_type == "text/plain"
+        assert body == "MatrixUser"
+
+        status, content_type, body = _read_http(api, "/v2/GetAccounts?Group=Matrix", token)
+        assert status == 200
+        assert content_type == "text/plain"
+        assert json.loads(body) == {"Success": True, "Message": "MatrixUser"}
+
+        status, content_type, body = _read_http(api, "/api/v1/GetAccounts?Group=Matrix", token)
+        assert status == 200
+        assert content_type == "application/json"
+        assert json.loads(body) == {"data": {"accounts": ["MatrixUser"]}}
+
+        _, _, body = _read_http(api, "/GetAlias?Account=MatrixUser", token)
+        assert body == ""
+        _, _, body = _read_http(api, "/GetField?Account=MatrixUser&Field=xp", token)
+        assert body == "10"
+        _, _, body = _read_http(api, "/GetCookie?Account=MatrixUser", token)
+        assert body == "test-cookie-placeholder"
+        _, _, body = _read_http(api, "/GetCSRFToken?Account=MatrixUser", token)
+        assert body == "test-csrf-placeholder"
+    finally:
+        api.stop()
+
+
+@pytest.mark.parametrize("route", LEGACY_ROUTES, ids=lambda route: "raw-" + route.split("?", 1)[0].lstrip("/"))
+def test_each_historical_root_route_returns_text_plain(route: str) -> None:
+    service = _LegacyRouteService()
+    token = "matrix-raw-token-0123456789abcdef"
+    api = LoopbackApiServer(service, token=token, port=0)  # type: ignore[arg-type]
+    api.start()
+    try:
+        status, content_type, _body = _read_http(api, route, token)
+        assert status == 200
+        assert content_type == "text/plain"
+    finally:
+        api.stop()

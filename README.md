@@ -6,9 +6,9 @@ SQLite, DPAPI Windows et une interface HTML/CSS/JavaScript.
 
 L'objectif est une parité fonctionnelle prouvée, jamais un « 100 % » déclaré
 sur la base de mocks. La [matrice canonique](docs/user-guide/FEATURE_MATRIX.md)
-compte actuellement 46 fonctionnalités `VERIFIED PARITY`, 5 `PARTIAL` et 26
-`TESTED BUT NOT VERIFIED`. Les 42 éléments non vérifiés au début de la passe
-passe sont détaillés un par un dans le
+compte actuellement 48 fonctionnalités `VERIFIED PARITY`, aucune `PARTIAL` et
+37 `TESTED BUT NOT VERIFIED`. Ces dernières sont implémentées et testées, mais
+attendent encore un prérequis externe précis. Les preuves sont détaillées dans le
 [rapport QA du 11 août 2026](docs/QA_MATRIX_2026-08-11.md).
 
 ## Fonctionnalités principales
@@ -22,7 +22,7 @@ passe sont détaillés un par un dans le
   d'authentification et liens `rbx-player` ;
 - lancement authentifié par compte, PlaceId/JobId propre à chaque compte,
   serveur privé, Follow, serveur aléatoire et file de lancement ;
-- multi-instance par mutex historique `ROBLOX_singletonMutex`, vérifié avec
+- multi-instance par mutex historique et événement singleton moderne, vérifié avec
   deux comptes, deux PID et deux Place ID distincts ;
 - watcher processus/logs, association PID, fermeture, règles mémoire/titre/
   timeout opt-in, géométrie par compte et auto-relaunch ;
@@ -31,8 +31,8 @@ passe sont détaillés un par un dans le
 - utilitaires authentifiés : mot de passe, email, sessions, display name, amis,
   blocage, confidentialité, PIN, avatar et Quick Log In ;
 - Nexus WebSocket avec handshake authentifié et commandes RAM/Lua ;
-- découverte UWP, ClientSettings/FPS et positionnement de fenêtres ;
-- API loopback compatible RAM, bearer obligatoire et permissions séparées ;
+- découverte et clones UWP confirmés, ClientSettings/FPS natif et positionnement de fenêtres ;
+- API loopback/LAN opt-in compatible RAM, bearer obligatoire et permissions séparées ;
 - migration 3.7.2, backups vérifiés, restauration confirmée et transfert de
   métadonnées publiques.
 
@@ -54,7 +54,7 @@ node --check app/frontend/src/app.js
 node --check app/frontend/src/bridge.js
 ```
 
-Dernier résultat complet : **269 tests passés** sans lancer ni fermer Roblox.
+Dernier résultat complet : **360 tests passés, 2 ignorés**, sans lancer ni fermer Roblox.
 
 ## Build Windows
 
@@ -63,9 +63,9 @@ python -m pip install ".[dev]"
 python scripts/build_windows.py
 ```
 
-Artefact actuel : `dist/AstroAccountManager.exe`, 20 666 396 octets,
+Artefact actuel : `dist/AstroAccountManager.exe`, 20 774 084 octets,
 SHA-256
-`B5F7FC368A79B5F4B157DEB6D7416E828421E98FDA602526FA3E78517D792868`.
+`EC68F3995DC9B6A7BBE470D64337585E57EEFDCA879E965BE46E9B06F093F0BA`.
 
 Consultez aussi [l'audit d'intégration](docs/architecture/FINAL_AUDIT.md), le
 [registre de portage](docs/PORTING_LEDGER.md) et la

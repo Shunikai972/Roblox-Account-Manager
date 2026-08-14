@@ -9,13 +9,18 @@ import json
 import logging
 import os
 from pathlib import Path
+import re
 import secrets
+import socket
 import sys
 import threading
 import time
 from typing import Any
 
 from app.backend.core.config import APP_VERSION, AppPaths, DEFAULT_SETTINGS, merge_settings
+from app.backend.automations import MacroEngine, MacroParseError, parse_macro_dsl, validate_macro_actions
+from app.backend.core.crash_reporting import SupportBundleBuilder
+from app.backend.integrations import DiscordPresenceManager, DiscordRpcError
 from app.backend.core.windows_startup import StartupRegistrationError, WindowsStartupManager
 from app.backend.core.errors import (
     AppError,
@@ -36,6 +41,7 @@ from app.backend.repositories.sqlite_repository import (
 )
 from app.backend.roblox import (
     BatchLauncher,
+    AuthenticatedBrowserService,
     ClientSettingsPatcher,
     LaunchTarget,
     OAuthClientConfiguration,
@@ -56,7 +62,8 @@ from app.backend.roblox import (
 )
 from app.backend.roblox.errors import RobloxLaunchError, RobloxServiceError, RobloxUwpError
 from app.backend.security.dpapi import CurrentUserDPAPI, DPAPIError, DPAPIUnavailableError
-from app.backend.core.updater import UpdateChecker
+from app.backend.core.updater import UpdateChecker, UpdateError, UpdateManager
+from app.backend.roblox.background import RobloxBackgroundManager
 from app.backend.roblox.account_utils import AccountUtils
 from app.backend.roblox.player_search import PlayerSearchService
 from app.backend.roblox.private_servers import PrivateServerHelper
@@ -85,6 +92,8 @@ _SETTING_ALIASES = {
     "close_when_empty": "instances.close_when_empty",
     "allow_multiple_launches": "instances.allow_multiple_launches",
     "watcher_enabled": "watcher.enabled",
+    "global_max_fps": "performance.global_max_fps",
+    "potato_graphics": "performance.potato_graphics",
     "watcher_termination_enabled": "watcher.termination_enabled",
     "watcher_auto_relaunch_enabled": "watcher.auto_relaunch_enabled",
     "watcher_close_unconnected": "watcher.close_unconnected",
@@ -94,6 +103,14 @@ _SETTING_ALIASES = {
     "auto_backup": "general.auto_backup",
     "notifications": "notifications.desktop_notifications",
     "diagnostics": "developer.verbose_logs",
+    "warn_if_roblox_running": "general.warn_if_roblox_running",
+    "discord_enabled": "discord.enabled",
+    "discord_client_id": "discord.client_id",
+    "discord_strategy": "discord.strategy",
+    "discord_show_account": "discord.show_account",
+    "updates_auto_check": "updates.auto_check",
+    "updates_auto_download": "updates.auto_download",
+    "updates_install_on_exit": "updates.install_on_exit",
 }
 
 _AVATAR_COLOR_TOKENS = frozenset({"violet", "mint", "coral", "blue", "amber"})
@@ -134,6 +151,12 @@ class ApplicationService:
         oauth_login: OAuthLoginCoordinator | None = None,
         client_settings: ClientSettingsPatcher | None = None,
         region_resolver: ServerRegionResolver | None = None,
+        macro_engine: MacroEngine | Any | None = None,
+        discord_presence: DiscordPresenceManager | Any | None = None,
+        update_manager: UpdateManager | Any | None = None,
+        background_manager: RobloxBackgroundManager | Any | None = None,
+        support_bundle_builder: SupportBundleBuilder | Any | None = None,
+        authenticated_browser: AuthenticatedBrowserService | Any | None = None,
         logger: logging.Logger | logging.LoggerAdapter[logging.Logger] | None = None,
     ) -> None:
         self._region_resolver = region_resolver or ServerRegionResolver(
@@ -147,7 +170,9 @@ class ApplicationService:
             timeout_seconds=float(DEFAULT_SETTINGS["network"]["request_timeout_seconds"])
         )
         self.launcher = launcher or WindowsRobloxLauncher()
-        self.uwp_manager = uwp_manager or WindowsUwpRobloxManager()
+        self.uwp_manager = uwp_manager or WindowsUwpRobloxManager(
+            instance_root=self.paths.root / "UWP_Instances"
+        )
         self._windows_startup_manager = startup_manager
         self._windows_startup_unavailable_reason: str | None = None
         if self._windows_startup_manager is None:
@@ -166,10 +191,12 @@ class ApplicationService:
                     "not in the Python development environment."
                 )
         self.monitor = monitor or RobloxProcessMonitor()
-        # This observer is intentionally separate from the process monitor.
-        # Typed log events are exposed for diagnostics/UI only; they are never
-        # fed into close, bind, account-status, or relaunch decisions.
+        # The log observer stays separate from close/relaunch decisions. Its
+        # typed lifecycle events may refine the *display* state of an already
+        # bound account, so a kicked client is not incorrectly shown in-game.
         self._log_runtime = log_runtime or RobloxPlayerLogRuntime()
+        self._seen_log_event_keys: set[tuple[Any, ...]] = set()
+        self._log_disconnected_pids: set[int] = set()
         self.window_positioner = window_positioner or RobloxWindowPositioner
         self.oauth_login = oauth_login or OAuthLoginCoordinator()
         self.backups = VersionedBackupManager(self.paths.backups, app_version=APP_VERSION)
@@ -182,6 +209,7 @@ class ApplicationService:
         self._oauth_results: dict[str, dict[str, Any]] = {}
         self._browser_login_results: dict[str, dict[str, Any]] = {}
         self._browser_login_lock = threading.RLock()
+        self._discord_instance_signature: tuple[tuple[Any, ...], ...] | None = None
         self._pending_window_restores: dict[int, tuple[str, float]] = {}
         self._nexus_server: Any = None
         self._nexus_token: str | None = None
@@ -192,6 +220,20 @@ class ApplicationService:
         self.account_utils = AccountUtils()
         self.player_search = PlayerSearchService(self.roblox)
         self.random_server = RandomServerSelector(self.roblox)
+        self.macro_engine = macro_engine or MacroEngine()
+        self.discord_presence = discord_presence or DiscordPresenceManager()
+        frozen_runtime = bool(getattr(sys, "frozen", False)) if runtime_is_frozen is None else bool(runtime_is_frozen)
+        executable_runtime = runtime_executable if runtime_executable is not None else Path(sys.executable)
+        self.update_manager = update_manager or UpdateManager(
+            self.paths.cache / "updates",
+            runtime_executable=executable_runtime,
+            runtime_is_frozen=frozen_runtime,
+        )
+        self.background_manager = background_manager or RobloxBackgroundManager()
+        self.support_bundle_builder = support_bundle_builder or SupportBundleBuilder(
+            self.paths.logs, self.paths.exports
+        )
+        self.authenticated_browser = authenticated_browser or AuthenticatedBrowserService()
         self._ensure_default_settings()
         self._configure_multi_instance_from_settings()
         self._configure_monitor_from_settings()
@@ -199,14 +241,23 @@ class ApplicationService:
     def close(self) -> None:
         """Release owned external resources on application shutdown."""
 
+        update_preferences = self.get_settings()["categories"].get("updates", {})
         self.stop_nexus_server()
         self.stop_watcher()
+        self.macro_engine.stop_all()
+        self.discord_presence.close()
         self.multi_instance.disable_multi_instance()
         close_client = getattr(self.roblox, "close", None)
         if callable(close_client):
             close_client()
         self.oauth_login.close()
         self.repository.close()
+        close_updater = getattr(self.update_manager, "close", None)
+        apply_update = getattr(self.update_manager, "apply_pending_on_exit", None)
+        if bool(update_preferences.get("install_on_exit", False)) and callable(apply_update):
+            apply_update()
+        if callable(close_updater):
+            close_updater()
 
     # Bootstrap -------------------------------------------------------------
     def bootstrap(self) -> dict[str, Any]:
@@ -226,6 +277,11 @@ class ApplicationService:
             "activity": self.get_activity(),
             "notifications": self.get_notifications(),
             "diagnostics": self.get_diagnostics(include_logs=False),
+            "macros": self.list_macros(),
+            "macro_runs": self.list_macro_runs(),
+            "discord_presence": self.get_discord_presence_status(),
+            "updater": self.get_update_status(),
+            "roblox_background": self.get_roblox_background_status(),
         }
 
     # Accounts --------------------------------------------------------------
@@ -587,6 +643,49 @@ class ApplicationService:
     def list_games(self) -> list[dict[str, Any]]:
         return [self._game_payload(item) for item in self.repository.list_games(limit=100)]
 
+    def search_games(self, query: str, limit: int = 20) -> list[dict[str, Any]]:
+        """Search Roblox experiences through the omni-search endpoint.
+
+        The Roblox client already implemented this call, but nothing exposed it,
+        which left the Games & servers page unable to discover any experience.
+        Locally saved games are still matched first so the page keeps working
+        when the network is unavailable.
+        """
+
+        phrase = str(query or "").strip()
+        if not phrase:
+            return self.list_games()
+        if len(phrase) > 120:
+            raise ValidationError("A game search phrase must be 120 characters or fewer.")
+        bounded = self._positive_int(limit, "The search limit")
+        if bounded > 50:
+            bounded = 50
+
+        lowered = phrase.lower()
+        local = [
+            payload
+            for payload in self.list_games()
+            if lowered in str(payload.get("title", "")).lower()
+            or lowered in str(payload.get("creator", "")).lower()
+        ]
+        try:
+            remote = self.roblox.search_games(phrase, limit=bounded)
+        except RobloxServiceError as exc:
+            if local:
+                return local[:bounded]
+            raise ExternalServiceError(str(exc), retryable=getattr(exc, "retryable", False)) from exc
+
+        merged = list(local)
+        seen = {str(item.get("place_id")) for item in merged}
+        for game in remote:
+            payload = self._game_payload(game)
+            key = str(payload.get("place_id"))
+            if key in seen:
+                continue
+            seen.add(key)
+            merged.append(payload)
+        return merged[:bounded]
+
     def list_recent_games(self) -> list[dict[str, Any]]:
         """Return the bounded most-recent game history, newest first."""
 
@@ -696,6 +795,55 @@ class ApplicationService:
             "reason": None if region else "No region resolved for this server.",
         }
 
+    def probe_server_regions(
+        self,
+        account_id: str,
+        place_id: int | str,
+        job_ids: list[str],
+    ) -> dict[str, Any]:
+        """Port RAM's explicit 16-server authenticated region probe."""
+
+        account = self._get_account(account_id)
+        normalized_place_id = self._positive_int(place_id, "Place ID")
+        if not isinstance(job_ids, list) or not 1 <= len(job_ids) <= 16:
+            raise ValidationError("Select between 1 and 16 public servers for region probing.")
+        if len(set(job_ids)) != len(job_ids):
+            raise ValidationError("Server region probe contains duplicate Job IDs.")
+        resolver = self._region_resolver_for_settings()
+        if not resolver.enabled:
+            raise ValidationError("Enable server region lookup in Settings > Network first.")
+        cookie = self._get_account_cookie_raw(account.id)
+        rows: list[dict[str, Any]] = []
+        for job_id in job_ids:
+            try:
+                probed = self.auth_tools.probe_server_instance(cookie, normalized_place_id, job_id)
+                region = resolver.resolve(probed.get("address"))
+                latency_ms: int | None = None
+                if probed.get("port"):
+                    started = time.monotonic()
+                    try:
+                        with socket.create_connection(
+                            (str(probed["address"]), int(probed["port"])), timeout=0.4
+                        ):
+                            latency_ms = max(0, int((time.monotonic() - started) * 1000))
+                    except OSError:
+                        latency_ms = None
+                rows.append({"job_id": job_id, "region": region, "ping": latency_ms, "resolved": region is not None})
+            except RobloxServiceError as exc:
+                rows.append({"job_id": job_id, "region": None, "ping": None, "resolved": False, "reason": str(exc)})
+        self._activity(
+            "server_region",
+            f"Region probe completed for {len(rows)} public server(s)",
+            account_id=account.id,
+            metadata={"place_id": normalized_place_id},
+        )
+        return {
+            "place_id": normalized_place_id,
+            "account_id": account.id,
+            "servers": rows,
+            "resolved": sum(1 for row in rows if row["resolved"]),
+        }
+
     def launch_account(
         self,
         account_id: str,
@@ -739,15 +887,76 @@ class ApplicationService:
                     "Multi Roblox is enabled but Astro could not acquire its mutex. "
                     "Close every Roblox client, restart Astro, then launch the accounts from Astro."
                 )
+            if multi_instance_enabled:
+                prepare_for_launch = getattr(self.multi_instance, "prepare_for_launch", None)
+                preparation = prepare_for_launch() if callable(prepare_for_launch) else {}
+                if preparation.get("error"):
+                    self.logger.warning(
+                        "Multi Roblox could not detach the modern singleton event: %s",
+                        preparation["error"],
+                    )
+                    self._notice(
+                        "warning",
+                        "Multi Roblox compatibility warning",
+                        "Astro kept the historic mutex, but Windows refused the modern event detachment. "
+                        "A previous Roblox window may close when the next account starts.",
+                    )
 
             # Apply per-account or per-launch FPS Cap & Potato Graphics settings
             launch_opts = account.metadata.get("launch_options", {}) if isinstance(account.metadata, dict) else {}
-            fps_target = target_data.get("fps") or target_data.get("fps_cap") or launch_opts.get("max_fps") or self.client_settings.get_fps_cap()
-            potato_mode = target_data.get("potato") if "potato" in target_data else (target_data.get("potato_graphics") if "potato_graphics" in target_data else launch_opts.get("potato_graphics", categories.get("performance", {}).get("potato_graphics", False)))
+            performance = categories.get("performance", {}) if isinstance(categories, Mapping) else {}
+
+            # Resolution order, most specific first: an explicit launch target,
+            # then the account's own launch options, then the global
+            # performance preference.  The value currently written in
+            # ClientAppSettings.json is only a last resort so a launch never
+            # silently drops a cap the user already asked for.
+            fps_target = None
+            for candidate in (
+                target_data.get("fps"),
+                target_data.get("fps_cap"),
+                launch_opts.get("max_fps"),
+                performance.get("global_max_fps"),
+            ):
+                if candidate not in (None, "", 0, "0"):
+                    fps_target = candidate
+                    break
+            if fps_target is None:
+                fps_target = self.client_settings.get_fps_cap()
+
+            if "potato" in target_data:
+                potato_mode = target_data.get("potato")
+            elif "potato_graphics" in target_data:
+                potato_mode = target_data.get("potato_graphics")
+            elif "potato_graphics" in launch_opts:
+                potato_mode = launch_opts.get("potato_graphics")
+            else:
+                potato_mode = performance.get("potato_graphics", False)
+
             try:
-                self.client_settings.patch_launch_settings(fps=int(fps_target) if fps_target else 0, potato_graphics=bool(potato_mode))
+                patched = self.client_settings.patch_launch_settings(
+                    fps=int(fps_target) if fps_target else 0,
+                    potato_graphics=bool(potato_mode),
+                )
+                if not patched:
+                    raise ValidationError(
+                        "Roblox ClientSettings could not be written. Check the installation path and file permissions."
+                    )
             except Exception as patch_exc:
+                # A silent warning hid a completely non-working FPS unlocker.
+                # Surface it where the user can see it, without aborting the
+                # launch the user explicitly asked for.
                 self.logger.warning(f"Could not apply launch ClientSettings: {patch_exc}")
+                self._activity(
+                    "performance",
+                    "FPS cap and graphics flags could not be applied for this launch",
+                    account_id=account.id,
+                )
+                self._notice(
+                    "warning",
+                    "FPS unlocker not applied",
+                    str(getattr(patch_exc, "message", None) or patch_exc),
+                )
 
             try:
                 # A stored account session must select that account in the
@@ -876,6 +1085,35 @@ class ApplicationService:
         self._notice("success", "UWP Launch Requested", "Windows is launching the selected Roblox app.")
         return result.to_dict()
 
+    def create_uwp_account_clone(
+        self,
+        account_id: str,
+        *,
+        confirm: bool = False,
+        supports_multiple_instances: bool = True,
+    ) -> dict[str, Any]:
+        if confirm is not True:
+            raise SecurityError("Creating a Windows UWP clone requires explicit confirmation.")
+        account = self._get_account(account_id)
+        result = self.uwp_manager.create_account_clone(
+            account.username,
+            supports_multiple_instances=bool(supports_multiple_instances),
+        )
+        self._activity("uwp", f"UWP clone created for {account.username}", account_id=account.id)
+        self._notice("success", "UWP Clone Registered", f"Windows registered Roblox {account.username}.")
+        return result
+
+    def unregister_uwp_account_clone(
+        self, account_id: str, *, confirm: bool = False
+    ) -> dict[str, Any]:
+        if confirm is not True:
+            raise SecurityError("Unregistering a Windows UWP clone requires explicit confirmation.")
+        account = self._get_account(account_id)
+        result = self.uwp_manager.unregister_account_clone(account.username)
+        self._activity("uwp", f"UWP clone unregistered for {account.username}", account_id=account.id)
+        self._notice("success", "UWP Clone Unregistered", "The clone files were preserved locally.")
+        return result
+
     # Process monitor -------------------------------------------------------
     def list_instances(self) -> list[dict[str, Any]]:
         return [self._instance_payload(item) for item in self.monitor.current_instances()]
@@ -974,7 +1212,12 @@ class ApplicationService:
             account_id=saved.id,
             metadata={"auto_relaunch": normalized["auto_relaunch"]},
         )
-        return {"account_id": saved.id, **normalized}
+        try:
+            watcher_settings = self.get_settings()["categories"].get("watcher", {})
+        except (KeyError, TypeError, RepositoryError):
+            watcher_settings = {}
+        effective = self._relaunch_arming_state(saved, watcher_settings, normalized)
+        return {"account_id": saved.id, **normalized, "effective": effective}
 
     # Official Roblox OAuth identity linking --------------------------------
     def start_oauth_login(self) -> dict[str, Any]:
@@ -1088,6 +1331,8 @@ class ApplicationService:
             "launch_behavior": nested["general"].get("launch_behavior", "confirm"),
             "close_when_empty": nested["instances"].get("close_when_empty", False),
             "allow_multiple_launches": nested["instances"].get("allow_multiple_launches", False),
+            "global_max_fps": nested.get("performance", {}).get("global_max_fps", 0),
+            "potato_graphics": nested.get("performance", {}).get("potato_graphics", False),
             "categories": nested,
         }
         return flat
@@ -1104,6 +1349,15 @@ class ApplicationService:
                 self._set_path(nested_updates, path, value)
         if not nested_updates:
             raise ValidationError("No recognized settings parameters provided.")
+        performance_updates = nested_updates.get("performance")
+        if isinstance(performance_updates, dict) and "global_max_fps" in performance_updates:
+            raw_fps = performance_updates["global_max_fps"]
+            if isinstance(raw_fps, bool):
+                raise ValidationError("Global FPS target must be a whole number.")
+            try:
+                performance_updates["global_max_fps"] = int(raw_fps)
+            except (TypeError, ValueError) as exc:
+                raise ValidationError("Global FPS target must be a whole number.") from exc
         general_updates = nested_updates.get("general")
         if isinstance(general_updates, Mapping) and "start_with_windows" in general_updates:
             raise ValidationError(
@@ -1111,9 +1365,40 @@ class ApplicationService:
             )
         candidate = merge_settings(self.get_settings()["categories"], nested_updates)
         self._validate_settings(candidate)
-        for path, value in _flatten_settings(nested_updates).items():
-            self.repository.set_setting(path, value)
-        if "general.max_recent_games" in _flatten_settings(nested_updates):
+        flattened_updates = _flatten_settings(nested_updates)
+        previous_performance = self.get_settings()["categories"].get("performance", {})
+        next_performance = candidate.get("performance", {})
+        performance_changed = bool(
+            {"performance.global_max_fps", "performance.potato_graphics"}
+            & set(flattened_updates)
+        )
+        performance_applied = False
+        if performance_changed:
+            try:
+                performance_applied = bool(
+                    self.client_settings.patch_launch_settings(
+                        fps=int(next_performance.get("global_max_fps") or 0),
+                        potato_graphics=bool(next_performance.get("potato_graphics", False)),
+                    )
+                )
+            except Exception as exc:
+                raise StorageError("Roblox FPS and graphics settings could not be applied.") from exc
+            if not performance_applied:
+                raise StorageError("Roblox FPS and graphics settings could not be applied.")
+        try:
+            for path, value in flattened_updates.items():
+                self.repository.set_setting(path, value)
+        except RepositoryError as exc:
+            if performance_applied:
+                try:
+                    self.client_settings.patch_launch_settings(
+                        fps=int(previous_performance.get("global_max_fps") or 0),
+                        potato_graphics=bool(previous_performance.get("potato_graphics", False)),
+                    )
+                except Exception:
+                    self.logger.error("Could not restore ClientSettings after a settings write failure.")
+            raise StorageError("Settings could not be saved.") from exc
+        if "general.max_recent_games" in flattened_updates:
             try:
                 self.repository.prune_recent_games(self._max_recent_games())
             except RepositoryError as exc:
@@ -1124,6 +1409,47 @@ class ApplicationService:
             self._configure_multi_instance_from_settings()
         self._activity("settings", "Settings updated")
         return self.get_settings()
+
+    def reset_settings(
+        self, category: str | None = None, confirm: bool = False
+    ) -> dict[str, Any]:
+        """Restore one canonical category, or every category, to defaults."""
+
+        if confirm is not True:
+            raise ValidationError("Confirm the settings reset.")
+        normalized = str(category or "").strip().lower()
+        if normalized and normalized not in DEFAULT_SETTINGS:
+            raise ValidationError("Choose a valid settings category.")
+
+        current = self.get_settings()["categories"]
+        if not normalized or normalized == "general":
+            startup_enabled = bool(current.get("general", {}).get("start_with_windows"))
+            if startup_enabled:
+                self.set_windows_startup(False, confirm=True)
+
+        defaults = (
+            {normalized: deepcopy(DEFAULT_SETTINGS[normalized])}
+            if normalized
+            else deepcopy(DEFAULT_SETTINGS)
+        )
+        # The registry-backed startup flag is owned by its dedicated confirmed
+        # action above, never by the generic settings writer.
+        general = defaults.get("general")
+        if isinstance(general, dict):
+            general.pop("start_with_windows", None)
+
+        output = self.update_settings({"categories": defaults})
+        expected_paths = set(_flatten_settings(defaults))
+        prefix = f"{normalized}." if normalized else None
+        for path in tuple(self.repository.list_settings(prefix=prefix)):
+            if path == "general.start_with_windows":
+                continue
+            if path not in expected_paths:
+                self.repository.delete_setting(path)
+
+        scope = normalized or "all categories"
+        self._activity("settings", f"Settings reset: {scope}")
+        return self.get_settings() if output is not None else output
 
     def get_windows_startup_status(self) -> dict[str, Any]:
         """Return the real current-user Run capability without exposing a path.
@@ -1727,6 +2053,7 @@ class ApplicationService:
 
     def _watcher_tick(self) -> Any:
         scan = self._scan_instances(allow_restarts=True)
+        self._refresh_discord_for_scan(scan)
         # RAM's Beta Home cleaner ran automatically after a short grace
         # period.  Only a verified Roblox process with one of the exact Home
         # titles can receive WM_CLOSE; normal game windows are untouched.
@@ -1734,6 +2061,31 @@ class ApplicationService:
         if closed:
             self._activity("watcher", f"{closed} Beta Home window(s) closed automatically")
         return scan
+
+    def _refresh_discord_for_scan(self, scan: Any) -> None:
+        instances = tuple(getattr(scan, "instances", ()) or ())
+        signature = tuple(
+            sorted(
+                (
+                    getattr(item, "pid", None),
+                    getattr(item, "account_id", None),
+                    getattr(item, "place_id", None),
+                    getattr(item, "status", None),
+                )
+                for item in instances
+            )
+        )
+        if signature == self._discord_instance_signature:
+            return
+        self._discord_instance_signature = signature
+        try:
+            settings = self.get_settings()["categories"].get("discord", {})
+            if bool(settings.get("enabled")):
+                self.refresh_discord_presence()
+            else:
+                self.discord_presence.close()
+        except (AppError, DiscordRpcError, RepositoryError):
+            self.logger.info("Discord Rich Presence could not be refreshed.")
 
     def _watcher_interval(self) -> float:
         try:
@@ -1811,6 +2163,12 @@ class ApplicationService:
             if isinstance((account_id := getattr(instance, "account_id", None)), str)
             and account_id
         }
+        live_pids = {
+            pid
+            for instance in (getattr(scan, "instances", ()) or ())
+            if isinstance((pid := getattr(instance, "pid", None)), int) and pid > 0
+        }
+        self._log_disconnected_pids.intersection_update(live_pids)
         duplicate_check = getattr(self.monitor, "has_active_or_pending_account", None)
         try:
             accounts = self.repository.list_accounts()
@@ -1820,8 +2178,17 @@ class ApplicationService:
         for account in accounts:
             if account.status not in {"launching", "in_game"}:
                 continue
+            matching_instances = tuple(
+                instance
+                for instance in (getattr(scan, "instances", ()) or ())
+                if getattr(instance, "account_id", None) == account.id
+            )
+            disconnected = any(
+                getattr(instance, "pid", None) in self._log_disconnected_pids
+                for instance in matching_instances
+            )
             if account.id in live_account_ids:
-                desired = "in_game"
+                desired = "ready" if disconnected else "in_game"
             else:
                 pending = False
                 if callable(duplicate_check):
@@ -2009,10 +2376,52 @@ class ApplicationService:
             return
         try:
             poll(instances, process_scan_complete=process_scan_complete)
+            self._apply_log_runtime_account_states(instances)
         except (OSError, TypeError, ValueError, ValidationError):
             # Keep this deliberately free of exception text: it may otherwise
             # contain a local path that has no place in application logs/UI.
             self.logger.warning("Roblox Player log observation failed; process monitoring remains unchanged.")
+
+    def _apply_log_runtime_account_states(self, instances: Any) -> None:
+        """Refine bound account labels from new, typed Player-log events only.
+
+        This never closes or relaunches a process. A process can remain alive
+        on Roblox's Error 267/279 dialog; the process watcher alone therefore
+        cannot truthfully decide whether the account is still in a game.
+        """
+
+        history_method = getattr(self._log_runtime, "history", None)
+        history = tuple(history_method() or ()) if callable(history_method) else ()
+        account_by_pid = {
+            getattr(instance, "pid", None): getattr(instance, "account_id", None)
+            for instance in (instances or ())
+        }
+        current_keys: set[tuple[Any, ...]] = set()
+        for event in history:
+            kind = getattr(event, "kind", None)
+            kind_value = getattr(kind, "value", kind)
+            pid = getattr(event, "pid", None)
+            key = (
+                kind_value,
+                getattr(event, "occurred_at", None),
+                pid,
+                getattr(event, "place_id", None),
+                getattr(event, "job_id", None),
+                getattr(event, "disconnect_code", None),
+            )
+            current_keys.add(key)
+            if key in self._seen_log_event_keys:
+                continue
+            account_id = account_by_pid.get(pid)
+            if not isinstance(pid, int) or not isinstance(account_id, str) or not account_id:
+                continue
+            if kind_value in {"disconnected", "returned_to_app", "data_model_stopped"}:
+                self._log_disconnected_pids.add(pid)
+                self._set_account_runtime_status(account_id, "ready")
+            elif kind_value in {"game_joined", "data_model_started"}:
+                self._log_disconnected_pids.discard(pid)
+                self._set_account_runtime_status(account_id, "in_game")
+        self._seen_log_event_keys = current_keys
 
     def _log_watcher_payload(self) -> dict[str, Any]:
         """Return a fixed, path-free observer state for the desktop bridge."""
@@ -2169,6 +2578,31 @@ class ApplicationService:
                     except (TypeError, ValueError, ValidationError):
                         self.logger.warning("The watcher could not record a relaunch result.")
 
+    @staticmethod
+    def _relaunch_arming_state(
+        account: Account, watcher: Mapping[str, Any], rule: Mapping[str, Any]
+    ) -> dict[str, Any]:
+        """Explain, in one place, whether an automatic relaunch is really armed.
+
+        The watchdog is deliberately gated by several explicit switches.  When
+        any of them is off the relaunch must stay inactive, but the caller has
+        to be able to say *which* one is off instead of failing silently.
+        """
+
+        if not bool(watcher.get("enabled", True)):
+            return {"armed": False, "reason": "the local process monitor is disabled"}
+        if not bool(rule.get("enabled", True)):
+            return {"armed": False, "reason": "this account is not watched"}
+        if not bool(rule.get("auto_relaunch", False)):
+            return {"armed": False, "reason": "automatic relaunch is off for this account"}
+        if not bool(watcher.get("auto_relaunch_enabled", False)):
+            return {"armed": False, "reason": "account relaunch rules are disabled globally"}
+        if not (bool(rule.get("relaunch_on_crash", True)) or bool(rule.get("relaunch_on_exit", False))):
+            return {"armed": False, "reason": "no relaunch trigger is selected"}
+        if int(rule.get("relaunch_max_attempts", 0) or 0) <= 0:
+            return {"armed": False, "reason": "the maximum relaunch attempts is zero"}
+        return {"armed": True, "reason": "armed"}
+
     def _restart_policy_for(self, account: Account) -> RestartPolicy:
         watcher = self.get_settings()["categories"].get("watcher", {})
         fallback = {
@@ -2185,7 +2619,7 @@ class ApplicationService:
         except ValidationError:
             rule = fallback
         return RestartPolicy(
-            enabled=bool(watcher.get("auto_relaunch_enabled", False)) and rule["auto_relaunch"],
+            enabled=self._relaunch_arming_state(account, watcher, rule)["armed"],
             delay_seconds=rule["relaunch_delay_seconds"],
             max_attempts=rule["relaunch_max_attempts"],
             restart_on_crash=rule["relaunch_on_crash"],
@@ -2199,6 +2633,7 @@ class ApplicationService:
         if not isinstance(value, Mapping):
             raise ValidationError("Account watcher rule is invalid.")
         baseline = {
+            "enabled": True,
             "auto_relaunch": False,
             "relaunch_delay_seconds": 15,
             "relaunch_max_attempts": 2,
@@ -2213,6 +2648,8 @@ class ApplicationService:
         if unknown:
             raise ValidationError("Account watcher rule contains an unknown field.")
         baseline.update(dict(value))
+        if not isinstance(baseline["enabled"], bool):
+            raise ValidationError("Account watcher enablement is invalid.")
         if not isinstance(baseline["auto_relaunch"], bool):
             raise ValidationError("Account relaunch option is invalid.")
         if not isinstance(baseline["relaunch_on_crash"], bool) or not isinstance(baseline["relaunch_on_exit"], bool):
@@ -2224,6 +2661,7 @@ class ApplicationService:
         if isinstance(attempts, bool) or not isinstance(attempts, int) or not 0 <= attempts <= 20:
             raise ValidationError("Account relaunch attempt count must be between 0 and 20.")
         return {
+            "enabled": baseline["enabled"],
             "auto_relaunch": baseline["auto_relaunch"],
             "relaunch_delay_seconds": float(delay),
             "relaunch_max_attempts": attempts,
@@ -2372,6 +2810,8 @@ class ApplicationService:
             raise ValidationError("Recent games limit must be between 1 and 1000.")
         if not isinstance(general.get("start_with_windows"), bool):
             raise ValidationError("Windows startup state is invalid.")
+        if not isinstance(general.get("warn_if_roblox_running"), bool):
+            raise ValidationError("Roblox background warning preference is invalid.")
         appearance = values.get("appearance", {})
         if appearance.get("theme") not in {"dark", "light", "system"}:
             raise ValidationError("Theme is invalid.")
@@ -2421,6 +2861,26 @@ class ApplicationService:
             raise ValidationError("Window position preference is invalid.")
         if not isinstance(instances.get("allow_multiple_launches"), bool):
             raise ValidationError("Multi-instance preference is invalid.")
+        macros = values.get("macros", {})
+        if not isinstance(macros, Mapping) or not all(
+            isinstance(macros.get(key), bool) for key in ("enabled", "allow_background_delivery")
+        ):
+            raise ValidationError("Macro preferences are invalid.")
+        discord = values.get("discord", {})
+        if not isinstance(discord, Mapping) or not isinstance(discord.get("enabled"), bool):
+            raise ValidationError("Discord Rich Presence preference is invalid.")
+        discord_id = discord.get("client_id")
+        if not isinstance(discord_id, str) or len(discord_id) > 32 or (discord_id and not discord_id.isdigit()):
+            raise ValidationError("Discord Application ID is invalid.")
+        if discord.get("strategy") not in {"latest", "aggregate"} or not isinstance(discord.get("show_account"), bool):
+            raise ValidationError("Discord Rich Presence strategy is invalid.")
+        if discord.get("enabled") and len(discord_id) < 5:
+            raise ValidationError("A Discord Application ID is required when Rich Presence is enabled.")
+        updates = values.get("updates", {})
+        if not isinstance(updates, Mapping) or not all(
+            isinstance(updates.get(key), bool) for key in ("auto_check", "auto_download", "install_on_exit")
+        ):
+            raise ValidationError("Update preferences are invalid.")
         oauth = values.get("oauth", {})
         if not isinstance(oauth, Mapping) or not isinstance(oauth.get("enabled"), bool):
             raise ValidationError("OAuth connection state is invalid.")
@@ -2464,8 +2924,11 @@ class ApplicationService:
         api = values.get("api", {})
         if not isinstance(api.get("enabled"), bool):
             raise ValidationError("Local API state is invalid.")
-        if api.get("host") != "127.0.0.1":
-            raise ValidationError("Local API must be bound to 127.0.0.1.")
+        if not isinstance(api.get("allow_external"), bool):
+            raise ValidationError("External API access state is invalid.")
+        expected_api_host = "0.0.0.0" if api.get("allow_external") else "127.0.0.1"
+        if api.get("host") != expected_api_host:
+            raise ValidationError("Local API host does not match its external access setting.")
         port = api.get("port")
         if isinstance(port, bool) or not isinstance(port, int) or not 1 <= port <= 65535:
             raise ValidationError("Local API port is invalid.")
@@ -2480,8 +2943,7 @@ class ApplicationService:
             if not isinstance(api.get(permission), bool):
                 raise ValidationError(f"Local API permission {permission} is invalid.")
 
-    @staticmethod
-    def _account_payload(account: Account) -> dict[str, Any]:
+    def _account_payload(self, account: Account) -> dict[str, Any]:
         payload = account.to_dict()
         oauth = account.metadata.get("oauth") if isinstance(account.metadata, Mapping) else None
         oauth_connected = bool(oauth.get("connected")) if isinstance(oauth, Mapping) else False
@@ -2491,6 +2953,7 @@ class ApplicationService:
             {
                 key: watcher[key]
                 for key in (
+                    "enabled",
                     "auto_relaunch",
                     "relaunch_delay_seconds",
                     "relaunch_max_attempts",
@@ -2511,6 +2974,9 @@ class ApplicationService:
                 "oauth_connected": oauth_connected,
                 "oauth_expires_at": oauth_expires_at if isinstance(oauth_expires_at, str) else None,
                 "watcher": watcher_rule,
+                "has_saved_password": self.repository.has_protected_secret(
+                    account.id, "saved_password"
+                ),
             }
         )
         return payload
@@ -2747,7 +3213,12 @@ class ApplicationService:
     def get_fps_cap(self) -> dict[str, Any]:
         fps = self.client_settings.get_fps_cap()
         status = self.client_settings.status()
-        return {"fps": fps, "file": str(self.client_settings.settings_file), **status}
+        return {
+            "fps": fps,
+            "file": str(self.client_settings.settings_file),
+            "verified": self.client_settings.verify_fps_targets(),
+            **status,
+        }
 
     def set_fps_cap(self, fps: int) -> dict[str, Any]:
         success = self.client_settings.set_fps_cap(fps)
@@ -2939,8 +3410,40 @@ class ApplicationService:
         return self._account_payload(saved)
 
     def start_manual_browser_login(self, group_id: str | None = None) -> dict[str, Any]:
-        """Opens a browser window for manual Roblox login and intercepts the cookie."""
+        """Open an isolated browser for a manually entered Roblox login."""
+
+        return self._start_browser_login(group_id=group_id)
+
+    def start_saved_password_browser_login(self, account_id: str) -> dict[str, Any]:
+        """Use one imported DPAPI password only inside the isolated browser."""
+
+        account = self._get_account(account_id)
+        protected = self.repository.load_protected_secret(account.id, "saved_password")
+        if protected is None:
+            raise ValidationError("This account has no imported password in the local vault.")
+        try:
+            password = self.vault.unprotect(protected).decode("utf-8")
+        except Exception as exc:
+            raise SecurityError("The imported password could not be opened for this Windows user.") from exc
+        if not password:
+            raise SecurityError("The imported password is empty.")
+        return self._start_browser_login(
+            group_id=account.group_id,
+            expected_username=account.username,
+            prefill_password=password,
+        )
+
+    def _start_browser_login(
+        self,
+        *,
+        group_id: str | None = None,
+        expected_username: str | None = None,
+        prefill_password: str | None = None,
+    ) -> dict[str, Any]:
+        """Start the shared browser capture flow with optional vault input."""
+
         from app.backend.roblox.browser_login import BrowserLoginService, EdgeCDPLoginService
+        from app.backend.roblox.client import SessionRobloxClient
 
         with self._browser_login_lock:
             if any(result.get("status") == "waiting" for result in self._browser_login_results.values()):
@@ -2954,6 +3457,13 @@ class ApplicationService:
 
         def _on_captured(cookie_str: str) -> None:
             try:
+                if expected_username:
+                    with SessionRobloxClient(cookie_str) as validation_client:
+                        identity = validation_client.authenticated_user()
+                    if identity.username.casefold() != expected_username.casefold():
+                        raise SecurityError(
+                            "The browser signed into a different Roblox account than the selected profile."
+                        )
                 account = self.add_account_from_cookie(cookie_str, group_id=group_id)
             except Exception:
                 self.logger.exception("Captured Roblox session could not be saved")
@@ -2986,7 +3496,17 @@ class ApplicationService:
         # reported only after Roblox validates the captured session.
         try:
             edge_service = EdgeCDPLoginService()
-            if edge_service.start_login(_on_captured, _on_finished):
+            if prefill_password is not None:
+                started = edge_service.start_login(
+                    _on_captured,
+                    _on_finished,
+                    prefill_username=expected_username,
+                    prefill_password=prefill_password,
+                    auto_submit=True,
+                )
+            else:
+                started = edge_service.start_login(_on_captured, _on_finished)
+            if started:
                 return {**self._browser_login_results[operation_id], "started": True, "engine": "edge_cdp"}
         except Exception:
             self.logger.debug("Edge CDP login unavailable; falling back to pywebview", exc_info=True)
@@ -2995,6 +3515,15 @@ class ApplicationService:
         if not hasattr(self, "_browser_login_service") or self._browser_login_service is None:
             self._browser_login_service = BrowserLoginService()
 
+        if prefill_password is not None:
+            with self._browser_login_lock:
+                self._browser_login_results[operation_id]["status"] = "failed"
+                self._browser_login_results[operation_id]["message"] = (
+                    "Saved-password sign-in requires Microsoft Edge or Google Chrome."
+                )
+            raise ExternalServiceError(
+                "Saved-password sign-in requires Microsoft Edge or Google Chrome."
+            )
         started = self._browser_login_service.start_manual_login(_on_captured, _on_finished)
         if not started:
             with self._browser_login_lock:
@@ -3210,6 +3739,55 @@ class ApplicationService:
         self._activity("account_utils", "Avatar outfit updated", account_id=account_id)
         return {"account_id": account_id, "asset_ids": normalized, "success": success}
 
+    def list_universe_places(self, universe_id: int | str) -> list[dict[str, Any]]:
+        try:
+            return list(self.roblox.list_universe_places(self._positive_int(universe_id, "Universe ID")))
+        except RobloxServiceError as exc:
+            raise ExternalServiceError(str(exc), retryable=True) from exc
+
+    def list_user_outfits(self, user_id: int | str) -> list[dict[str, Any]]:
+        return self._account_utility_call(
+            self.account_utils.list_outfits, self._positive_int(user_id, "Roblox User ID")
+        )
+
+    def wear_account_outfit(self, account_id: str, outfit_id: int | str) -> dict[str, Any]:
+        cookie = self._get_account_cookie_raw(account_id)
+        details = self._account_utility_call(
+            self.account_utils.wear_outfit, cookie, self._positive_int(outfit_id, "Outfit ID")
+        )
+        self._activity("account_utils", f"Outfit applied: {details.get('name', 'Outfit')}", account_id=account_id)
+        return {"account_id": account_id, **details, "success": True}
+
+    def join_account_group(self, account_id: str, group: int | str) -> dict[str, Any]:
+        raw = str(group or "").strip()
+        match = re.search(r"(?:groups/|gid=)(\d+)", raw, flags=re.IGNORECASE)
+        group_id = self._positive_int(match.group(1) if match else raw, "Group ID")
+        cookie = self._get_account_cookie_raw(account_id)
+        success = self._account_utility_call(self.account_utils.join_group, cookie, group_id)
+        self._activity("account_utils", f"Joined Roblox group {group_id}", account_id=account_id)
+        return {"account_id": account_id, "group_id": group_id, "success": success}
+
+    def open_account_browser(self, account_id: str, url: str = "https://www.roblox.com/home") -> dict[str, Any]:
+        cookie = self._get_account_cookie_raw(account_id)
+        try:
+            result = self.authenticated_browser.open(cookie, url)
+        except RobloxLaunchError as exc:
+            raise ExternalServiceError(str(exc), retryable=False) from exc
+        self._activity("account_utils", "Authenticated Roblox browser opened", account_id=account_id)
+        return {"account_id": account_id, **result}
+
+    def get_account_saved_password(self, account_id: str) -> dict[str, Any]:
+        account = self._get_account(account_id)
+        protected = self.repository.load_protected_secret(account.id, "saved_password")
+        if protected is None:
+            raise NotFoundError("This account has no saved password in the local vault.")
+        try:
+            password = self.vault.unprotect(protected).decode("utf-8")
+        except Exception as exc:
+            raise SecurityError("The saved password could not be opened for this Windows user.") from exc
+        self._activity("account_utils", "Saved password extracted for copy", account_id=account.id)
+        return {"account_id": account.id, "username": account.username, "password": password}
+
     def _resolve_target_user_id(self, value: int | str) -> int:
         if not isinstance(value, bool):
             try:
@@ -3268,7 +3846,189 @@ class ApplicationService:
         return {"closed_count": closed}
 
     def check_for_updates(self) -> dict[str, Any]:
-        return UpdateChecker.check_for_updates()
+        result = UpdateChecker.check_for_updates()
+        return {**result, "status": self.get_update_status()}
+
+    # Macros, presence, updater and local launch preparation -----------------
+    def list_macros(self) -> list[dict[str, Any]]:
+        return self.repository.list_macros()
+
+    def save_macro(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        data = dict(self._require_mapping(payload, "Macro data"))
+        mode = str(data.get("mode") or "blocks").strip().lower()
+        try:
+            actions = (
+                parse_macro_dsl(str(data.get("source") or ""))
+                if mode == "dsl"
+                else validate_macro_actions(data.get("actions") or [])
+            )
+        except MacroParseError as exc:
+            raise ValidationError(str(exc)) from exc
+        data["mode"] = mode
+        data["actions"] = actions
+        try:
+            saved = self.repository.save_macro(data)
+        except RepositoryError as exc:
+            raise StorageError("Macro could not be saved.") from exc
+        self._activity("macro", f"Macro saved: {saved['name']}")
+        return saved
+
+    def delete_macro(self, macro_id: str, *, confirm: bool = False) -> dict[str, Any]:
+        if confirm is not True:
+            raise SecurityError("Deleting a macro requires explicit confirmation.")
+        try:
+            deleted = self.repository.delete_macro(str(macro_id))
+        except RepositoryError as exc:
+            raise StorageError("Macro could not be deleted.") from exc
+        if not deleted:
+            raise NotFoundError("Macro was not found.")
+        return {"deleted": True, "id": str(macro_id)}
+
+    def start_macro(self, macro_id: str, pid: int) -> dict[str, Any]:
+        settings = self.get_settings()["categories"].get("macros", {})
+        if not bool(settings.get("enabled", True)):
+            raise ConflictError("Macros are disabled in Settings.")
+        process_id = self._positive_int(pid, "Process ID")
+        try:
+            definition = self.repository.get_macro(str(macro_id))
+        except RepositoryNotFoundError as exc:
+            raise NotFoundError("Macro was not found.") from exc
+        instance = next((item for item in self.monitor.current_instances() if item.pid == process_id), None)
+        if instance is None:
+            raise ValidationError("Select a currently verified Roblox instance.")
+        required_account = definition.get("account_id")
+        if required_account and required_account != instance.account_id:
+            raise ConflictError("This macro is assigned to a different account.")
+        started_at = None
+        if instance.started_at:
+            try:
+                started_at = datetime.fromisoformat(instance.started_at.replace("Z", "+00:00")).timestamp()
+            except ValueError:
+                started_at = None
+        try:
+            result = self.macro_engine.start(
+                definition,
+                pid=process_id,
+                expected_created_at=started_at,
+                account_id=instance.account_id,
+            )
+        except MacroParseError as exc:
+            raise ValidationError(str(exc)) from exc
+        self._activity("macro", f"Macro started: {definition['name']}", account_id=instance.account_id)
+        return result
+
+    def stop_macro(self, run_id: str) -> dict[str, Any]:
+        try:
+            return self.macro_engine.stop(str(run_id))
+        except MacroParseError as exc:
+            raise NotFoundError(str(exc)) from exc
+
+    def list_macro_runs(self) -> list[dict[str, Any]]:
+        return self.macro_engine.list_runs()
+
+    def get_discord_presence_status(self) -> dict[str, Any]:
+        settings = self.get_settings()["categories"].get("discord", {})
+        return {**self.discord_presence.status(), "enabled": bool(settings.get("enabled"))}
+
+    def refresh_discord_presence(self) -> dict[str, Any]:
+        settings = self.get_settings()["categories"].get("discord", {})
+        client_id = str(settings.get("client_id") or "").strip()
+        if not bool(settings.get("enabled")):
+            self.discord_presence.close()
+            return self.get_discord_presence_status()
+        if not client_id:
+            raise ValidationError("Configure a Discord Application ID first.")
+
+        def game_name(place_id: int) -> str | None:
+            try:
+                return self.repository.get_game(place_id).name
+            except RepositoryError:
+                return None
+
+        instances = [self._instance_payload(item) for item in self.monitor.current_instances()]
+        activity = self.discord_presence.activity_for_instances(
+            instances,
+            strategy=str(settings.get("strategy") or "latest"),
+            show_account=bool(settings.get("show_account")),
+            game_lookup=game_name,
+        )
+        try:
+            return self.discord_presence.publish(client_id, activity)
+        except DiscordRpcError as exc:
+            raise ExternalServiceError(str(exc), retryable=True) from exc
+
+    def get_update_status(self) -> dict[str, Any]:
+        return self.update_manager.status()
+
+    def download_update(self, *, confirm: bool = False) -> dict[str, Any]:
+        try:
+            result = self.update_manager.download_latest(confirm=confirm)
+        except UpdateError as exc:
+            raise ExternalServiceError(str(exc), retryable=True) from exc
+        self._activity("update", f"Update {result.get('version') or ''} downloaded")
+        return result
+
+    def schedule_update_install(self, *, confirm: bool = False) -> dict[str, Any]:
+        try:
+            result = self.update_manager.install_on_exit(confirm=confirm)
+        except UpdateError as exc:
+            raise ValidationError(str(exc)) from exc
+        self._activity("update", "Update scheduled for application exit")
+        return result
+
+    def cancel_update(self, *, confirm: bool = False) -> dict[str, Any]:
+        try:
+            return self.update_manager.cancel_staged(confirm=confirm)
+        except UpdateError as exc:
+            raise ValidationError(str(exc)) from exc
+
+    def auto_update_tick(self) -> dict[str, Any]:
+        settings = self.get_settings()["categories"].get("updates", {})
+        if not bool(settings.get("auto_check", True)):
+            return {"checked": False, "reason": "disabled"}
+        result = self.check_for_updates()
+        if result.get("update_available") and bool(settings.get("auto_download", False)):
+            try:
+                staged = self.update_manager.download_latest(confirm=True)
+                result["staged"] = staged
+                if bool(settings.get("install_on_exit", False)) and self.update_manager.status().get("frozen"):
+                    result["install"] = self.update_manager.install_on_exit(confirm=True)
+            except UpdateError as exc:
+                result["stage_error"] = str(exc)
+        return result
+
+    def get_roblox_background_status(self) -> dict[str, Any]:
+        processes = self.background_manager.list_running()
+        return {
+            "running": bool(processes),
+            "count": len(processes),
+            "processes": [{"pid": item.pid, "created_at": item.created_at} for item in processes],
+        }
+
+    def close_running_roblox(self, *, confirm: bool = False) -> dict[str, Any]:
+        try:
+            result = self.background_manager.close_running(confirm=confirm)
+        except ValidationError:
+            raise
+        self._activity("instances", "Existing Roblox clients were closed by explicit request")
+        return result
+
+    def launch_account_from_private_link(self, account_id: str, link: str) -> dict[str, Any]:
+        parsed = PrivateServerHelper.parse_vip_link(str(link or "").strip())
+        if parsed is None:
+            raise ValidationError("Enter a valid roblox.com private server link.")
+        return self.launch_account(account_id, {
+            "place_id": parsed["place_id"],
+            "private_server_link_code": parsed["link_code"],
+        })
+
+    def export_support_bundle(self) -> dict[str, Any]:
+        result = self.support_bundle_builder.create(
+            diagnostics=self.get_diagnostics(include_logs=False),
+            settings=self.get_settings()["categories"],
+        )
+        self._activity("diagnostics", "Redacted support bundle created")
+        return result
 
 
 def _flatten_settings(values: Mapping[str, Any], prefix: str = "") -> dict[str, Any]:

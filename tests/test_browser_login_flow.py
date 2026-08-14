@@ -1,7 +1,11 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
+import pytest
+
+from app.backend.core.errors import ValidationError
 from app.backend.core.config import AppPaths
 from app.backend.roblox.browser_login import EdgeCDPLoginService
 from app.backend.services.application_service import ApplicationService
@@ -94,3 +98,116 @@ def test_edge_login_ignores_an_invalid_solver_extension(tmp_path: Path) -> None:
     )
 
     assert not any(argument.startswith("--load-extension=") for argument in command)
+
+
+def test_saved_password_login_uses_vault_only_inside_isolated_browser(
+    monkeypatch, tmp_path: Path
+) -> None:
+    service = ApplicationService(paths=_paths(tmp_path))
+    try:
+        account = service.create_account({"username": "ImportedUser"})
+        protected = service.vault.protect(b"vault-only-password")
+        service.repository.save_protected_secret(account["id"], "saved_password", protected)
+        monkeypatch.setattr(
+            service,
+            "add_account_from_cookie",
+            lambda cookie, group_id=None: account,
+        )
+
+        class _Session:
+            def __init__(self, _cookie):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return None
+
+            def authenticated_user(self):
+                return SimpleNamespace(username="ImportedUser")
+
+        monkeypatch.setattr("app.backend.roblox.client.SessionRobloxClient", _Session)
+
+        def capture(_edge, callback, on_finished, **options):
+            assert options == {
+                "prefill_username": "ImportedUser",
+                "prefill_password": "vault-only-password",
+                "auto_submit": True,
+            }
+            callback("captured-cookie")
+            on_finished(True)
+            return True
+
+        monkeypatch.setattr(
+            "app.backend.roblox.browser_login.EdgeCDPLoginService.start_login",
+            capture,
+        )
+
+        started = service.start_saved_password_browser_login(account["id"])
+        status = service.poll_manual_browser_login(started["operation_id"])
+
+        assert status["status"] == "completed"
+        assert "vault-only-password" not in str(started)
+        assert "vault-only-password" not in str(status)
+        assert service.list_accounts()[0]["has_saved_password"] is True
+    finally:
+        service.close()
+
+
+def test_saved_password_login_refuses_missing_vault_secret(tmp_path: Path) -> None:
+    service = ApplicationService(paths=_paths(tmp_path))
+    try:
+        account = service.create_account({"username": "NoSavedPassword"})
+        with pytest.raises(ValidationError):
+            service.start_saved_password_browser_login(account["id"])
+    finally:
+        service.close()
+
+
+def test_saved_password_login_rejects_captured_identity_mismatch(
+    monkeypatch, tmp_path: Path
+) -> None:
+    service = ApplicationService(paths=_paths(tmp_path))
+    try:
+        account = service.create_account({"username": "ExpectedUser"})
+        protected = service.vault.protect(b"vault-only-password")
+        service.repository.save_protected_secret(account["id"], "saved_password", protected)
+
+        class _WrongSession:
+            def __init__(self, _cookie):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return None
+
+            def authenticated_user(self):
+                return SimpleNamespace(username="DifferentUser")
+
+        monkeypatch.setattr("app.backend.roblox.client.SessionRobloxClient", _WrongSession)
+        saved = []
+        monkeypatch.setattr(
+            service,
+            "add_account_from_cookie",
+            lambda *_args, **_kwargs: saved.append(True),
+        )
+
+        def capture(_edge, callback, on_finished, **_options):
+            callback("captured-cookie")
+            on_finished(True)
+            return True
+
+        monkeypatch.setattr(
+            "app.backend.roblox.browser_login.EdgeCDPLoginService.start_login",
+            capture,
+        )
+        started = service.start_saved_password_browser_login(account["id"])
+        status = service.poll_manual_browser_login(started["operation_id"])
+
+        assert status["status"] == "failed"
+        assert saved == []
+    finally:
+        service.close()

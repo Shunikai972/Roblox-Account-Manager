@@ -74,11 +74,34 @@ class _LaunchAwareLauncher:
 
 
 class _ClientSettings:
+    def __init__(self) -> None:
+        self.patch_calls: list[tuple[int, bool]] = []
+
     def get_fps_cap(self) -> int:
         return 0
 
     def patch_launch_settings(self, *, fps: int, potato_graphics: bool) -> bool:
+        self.patch_calls.append((fps, potato_graphics))
         return True
+
+
+class _MutableLogRuntime:
+    def __init__(self) -> None:
+        self.events: list[SimpleNamespace] = []
+
+    def poll(self, instances: object, *, process_scan_complete: bool = True) -> None:
+        return None
+
+    def history(self) -> tuple[SimpleNamespace, ...]:
+        return tuple(self.events)
+
+    def snapshot(self) -> SimpleNamespace:
+        return SimpleNamespace()
+
+class _FailingClientSettings(_ClientSettings):
+    def patch_launch_settings(self, *, fps: int, potato_graphics: bool) -> bool:
+        self.patch_calls.append((fps, potato_graphics))
+        return False
 
 
 class _Roblox:
@@ -256,6 +279,25 @@ def test_launch_registers_before_handoff_preserves_default_and_avoids_fixed_dela
         service.close()
 
 
+def test_failed_fps_patch_is_visible_but_does_not_block_an_explicit_launch(tmp_path: Path) -> None:
+    monitor = _LaunchAwareMonitor()
+    service = ApplicationService(
+        paths=_paths(tmp_path),
+        roblox=_Roblox(),  # type: ignore[arg-type]
+        launcher=_LaunchAwareLauncher(monitor),  # type: ignore[arg-type]
+        monitor=monitor,  # type: ignore[arg-type]
+        client_settings=_FailingClientSettings(),  # type: ignore[arg-type]
+    )
+    try:
+        account = service.create_account({"username": "VisibleFpsFailure", "saved_place_id": 222})
+        result = service.launch_account(account["id"])
+        assert result["accepted"] is True
+        notices = service.get_notifications()
+        assert any(item["title"] == "FPS unlocker not applied" for item in notices)
+    finally:
+        service.close()
+
+
 def test_complete_scan_repairs_stale_runtime_status_but_partial_scan_preserves_it(tmp_path: Path) -> None:
     monitor = _LaunchAwareMonitor(complete=True)
     service = ApplicationService(
@@ -271,15 +313,63 @@ def test_complete_scan_repairs_stale_runtime_status_but_partial_scan_preserves_i
         stored.status = "in_game"
         service.repository.save_account(stored)
 
-        service.refresh_instances()
+        service._scan_instances(allow_restarts=False)
         assert service.list_accounts()[0]["status"] == "ready"
 
         stored = service.repository.get_account(created["id"])
         stored.status = "in_game"
         service.repository.save_account(stored)
         monitor.complete = False
-        service.refresh_instances()
+        service._scan_instances(allow_restarts=False)
         assert service.list_accounts()[0]["status"] == "in_game"
+    finally:
+        service.close()
+
+
+def test_bound_log_disconnect_repairs_false_in_game_while_process_stays_open(tmp_path: Path) -> None:
+    monitor = _LaunchAwareMonitor()
+    runtime = _MutableLogRuntime()
+    service = ApplicationService(
+        paths=_paths(tmp_path),
+        roblox=_Roblox(),  # type: ignore[arg-type]
+        launcher=_Launcher([]),  # type: ignore[arg-type]
+        monitor=monitor,  # type: ignore[arg-type]
+        log_runtime=runtime,
+        client_settings=_ClientSettings(),  # type: ignore[arg-type]
+    )
+    try:
+        created = service.create_account({"username": "KickedButOpen", "saved_place_id": 333})
+        monitor.observed_account_id = created["id"]
+        runtime.events = [
+            SimpleNamespace(
+                kind="game_joined",
+                occurred_at=1.0,
+                pid=42001,
+                place_id=333,
+                job_id="job-a",
+                disconnect_code=None,
+            )
+        ]
+        service._scan_instances(allow_restarts=False)
+        assert service.list_accounts()[0]["status"] == "in_game"
+
+        runtime.events.append(
+            SimpleNamespace(
+                kind="disconnected",
+                occurred_at=2.0,
+                pid=42001,
+                place_id=None,
+                job_id=None,
+                disconnect_code=267,
+            )
+        )
+        service._scan_instances(allow_restarts=False)
+        assert service.list_accounts()[0]["status"] == "ready"
+
+        # A subsequent complete process scan must not turn the unchanged error
+        # dialog back into a false in-game label.
+        service._scan_instances(allow_restarts=False)
+        assert service.list_accounts()[0]["status"] == "ready"
     finally:
         service.close()
 
@@ -320,6 +410,68 @@ def test_flat_frontend_settings_are_mapped_to_central_categories(tmp_path: Path)
         assert settings["theme"] == "light"
         assert settings["accent"] == "#2367d1"
         assert settings["watcher_enabled"] is False
+    finally:
+        service.close()
+
+
+def test_settings_can_be_reset_by_category_or_globally_with_confirmation(tmp_path: Path) -> None:
+    client_settings = _ClientSettings()
+    service = ApplicationService(
+        paths=_paths(tmp_path),
+        roblox=_Roblox(),  # type: ignore[arg-type]
+        launcher=_Launcher([]),  # type: ignore[arg-type]
+        monitor=_Monitor(),  # type: ignore[arg-type]
+        client_settings=client_settings,  # type: ignore[arg-type]
+    )
+    try:
+        service.update_settings({"theme": "light", "global_max_fps": 144})
+        with pytest.raises(ValidationError, match="Confirm"):
+            service.reset_settings("appearance")
+        with pytest.raises(ValidationError, match="valid settings category"):
+            service.reset_settings("unknown", confirm=True)
+
+        appearance = service.reset_settings("appearance", confirm=True)
+        assert appearance["theme"] == "dark"
+        assert appearance["global_max_fps"] == 144
+
+        everything = service.reset_settings(confirm=True)
+        assert everything["theme"] == "dark"
+        assert everything["global_max_fps"] == 0
+        assert client_settings.patch_calls[-1] == (0, False)
+    finally:
+        service.close()
+
+
+def test_performance_setting_is_applied_to_real_client_settings_immediately(tmp_path: Path) -> None:
+    client_settings = _ClientSettings()
+    service = ApplicationService(
+        paths=_paths(tmp_path),
+        roblox=_Roblox(),  # type: ignore[arg-type]
+        launcher=_Launcher([]),  # type: ignore[arg-type]
+        monitor=_Monitor(),  # type: ignore[arg-type]
+        client_settings=client_settings,  # type: ignore[arg-type]
+    )
+    try:
+        output = service.update_settings({"global_max_fps": "360"})
+        assert output["global_max_fps"] == 360
+        assert client_settings.patch_calls == [(360, False)]
+    finally:
+        service.close()
+
+
+def test_failed_performance_patch_does_not_persist_a_false_ui_value(tmp_path: Path) -> None:
+    client_settings = _FailingClientSettings()
+    service = ApplicationService(
+        paths=_paths(tmp_path),
+        roblox=_Roblox(),  # type: ignore[arg-type]
+        launcher=_Launcher([]),  # type: ignore[arg-type]
+        monitor=_Monitor(),  # type: ignore[arg-type]
+        client_settings=client_settings,  # type: ignore[arg-type]
+    )
+    try:
+        with pytest.raises(Exception, match="FPS and graphics settings could not be applied"):
+            service.update_settings({"global_max_fps": 360})
+        assert service.get_settings()["global_max_fps"] == 0
     finally:
         service.close()
 

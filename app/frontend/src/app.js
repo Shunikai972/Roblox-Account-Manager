@@ -154,13 +154,16 @@ class OrbitApp {
     this.state = {
       route: 'dashboard', accounts: [], groups: [], games: [], instances: [], activity: [], notifications: [],
       diagnostics: { services: [], logs: [], status: 'healthy' }, settings: {},
+      macros: [], macroRuns: [], macroEditorMode: 'blocks',
+      macroDraftBlocks: [{ type: 'wait', milliseconds: 1000 }, { type: 'key_press', key: 'W', milliseconds: 80 }],
+      discordPresence: { enabled: false, connected: false }, updater: {}, robloxBackground: { running: false, count: 0, processes: [] },
       instanceMonitor: { instances: [], events: [], pending_restarts: [], last_scan_complete: null, termination_enabled: false },
       multiInstance: { supported: false, enabled: false, configured: false, restart_required: false },
       windowsStartup: { loaded: false, error: false, available: false, supported: null, accessible: null, registered: false, enabled: false, needs_repair: false, configured: false, reason: '' },
       accountView: 'cards', accountQuery: '', accountStatus: 'all', selected: new Set(),
       publicRefreshErrors: {}, draggedAccountId: null,
       launchingAccounts: new Set(), batchPollTimer: null, runtimePollTimer: null, runtimePollInFlight: false,
-      gameQuery: '', gameId: null, gameDetail: null, servers: [], serversLoading: false,
+      gameQuery: '', gameId: null, gameDetail: null, servers: [], serversLoading: false, gamesLoading: false,
       settingsTab: 'general', modal: null, notificationsOpen: false, paletteOpen: false, paletteQuery: '',
       nexusExecutorCode: "-- Write your Lua script here\nprint('Hello from Nexus!')\n",
       nexusExecutorTarget: 'all', nexusExecutorLog: [],
@@ -193,6 +196,7 @@ class OrbitApp {
       this.applyTheme();
       this.render();
       this.startRuntimePolling();
+      this.maybeWarnRunningRoblox();
     } catch (error) {
       this.state.loading = false;
       this.render();
@@ -223,6 +227,11 @@ class OrbitApp {
       termination_enabled: Boolean(settings.watcher_termination_enabled)
     };
     this.state.diagnostics = unwrap(boot.diagnostics) || this.state.diagnostics;
+    this.state.macros = asArray(boot.macros);
+    this.state.macroRuns = asArray(boot.macro_runs);
+    this.state.discordPresence = unwrap(boot.discord_presence) || this.state.discordPresence;
+    this.state.updater = unwrap(boot.updater) || this.state.updater;
+    this.state.robloxBackground = unwrap(boot.roblox_background) || this.state.robloxBackground;
     this.state.nexus = unwrap(boot.nexus) || { running: false, host: '127.0.0.1', port: 5242, url: 'ws://127.0.0.1:5242/Nexus', accounts: [] };
     if (!this.state.gameId && this.state.games[0]) this.state.gameId = String(this.state.games[0].place_id);
   }
@@ -557,6 +566,7 @@ class OrbitApp {
       games: ['Games & servers', 'Browse a game and choose where to join'],
       instances: ['Instances', 'Live Roblox process monitoring'],
       nexus: ['Nexus Executor', nexusAccts.length + ' connected client' + (nexusAccts.length === 1 ? '' : 's')],
+      macros: ['Macros', 'Independent block or DSL automations for verified Roblox instances'],
       diagnostics: ['Diagnostics', 'Service health and recent events'],
       settings: ['Settings', 'Make Astro Account Manager feel like your workspace']
     };
@@ -575,6 +585,7 @@ class OrbitApp {
       this.navItem('games', 'Games & servers', 'gamepad') +
       this.navItem('instances', 'Instances', 'monitor', this.state.instances.length) +
       this.navItem('nexus', 'Nexus', 'command', asArray((this.state.nexus || {}).accounts).length) +
+      this.navItem('macros', 'Macros', 'zap', this.state.macros.length) +
       '<p class="nav-label">System</p>' +
       this.navItem('diagnostics', 'Diagnostics', 'activity') +
       this.navItem('settings', 'Settings', 'settings') +
@@ -602,6 +613,7 @@ class OrbitApp {
     if (this.state.route === 'games') return this.renderGames();
     if (this.state.route === 'instances') return this.renderInstances();
     if (this.state.route === 'nexus') return this.renderNexusExecutor();
+    if (this.state.route === 'macros') return this.renderMacros();
     if (this.state.route === 'diagnostics') return this.renderDiagnostics();
     if (this.state.route === 'settings') return this.renderSettings();
     return this.renderDashboard();
@@ -658,6 +670,7 @@ class OrbitApp {
       '<button class="button button-sm" type="button" data-action="save-place-id" title="Save Place ID & Job ID">💾</button>' +
       '</div>' +
       '<button class="button button-primary" style="width: 100%; margin-top: 4px;" type="button" data-action="ram-join-server">' + icon('play') + ' Join Server</button>' +
+      '<button class="button" style="width: 100%;" type="button" data-action="open-private-link">' + icon('link') + ' Join private server link</button>' +
       '</div>' +
       '<div style="display: flex; gap: 6px; margin-top: 2px;">' +
       '<button class="button button-secondary" style="flex: 1; font-size: 0.8rem; padding: 6px;" type="button" data-action="open-account-utilities">⚙️ Utilities</button>' +
@@ -765,8 +778,11 @@ class OrbitApp {
 
   renderGames() {
     const games = this.state.games.filter(function (game) { return !this.state.gameQuery || [game.title, game.creator, game.category].join(' ').toLowerCase().includes(this.state.gameQuery.toLowerCase()); }.bind(this));
-    const selectedGame = this.state.gameDetail || this.state.games.find(function (game) { return String(game.place_id) === String(this.state.gameId); });
-    return '<section class="page-heading"><div class="page-heading-copy"><h2>Find the room, not just the game.</h2><p>Keep your recent worlds close, then choose a server by region, capacity, and latency before launching an account.</p></div><div class="page-heading-actions"><button class="button" type="button" data-action="refresh-servers">' + icon('refresh') + ' Refresh servers</button></div></section><section class="toolbar"><label class="input-shell">' + icon('search') + '<input id="game-filter" type="search" autocomplete="off" placeholder="Search games" value="' + escapeHtml(this.state.gameQuery) + '" /></label><span class="toolbar-spacer"></span><span class="offline-note">' + icon(this.state.mode === 'desktop' ? 'shield' : 'info') + (this.state.mode === 'desktop' ? ' Live bridge connected' : ' Preview data') + '</span></section><section class="games-layout"><div><div class="section-header"><h3>Recent & favorites</h3><span class="section-line"></span><span>' + games.length + ' games</span></div><div class="game-list">' + (games.length ? games.map(this.renderGameCard.bind(this)).join('') : this.emptyState('search', 'No matching games', 'Change your search to see saved games.', 'Clear search', 'clear-game-filter')) + '</div></div><aside class="panel game-detail">' + this.renderGameDetail(selectedGame) + '</aside></section>';
+    // This callback must keep the OrbitApp instance. Without the binding, one
+    // saved game raised before innerHTML was assigned and the page appeared to
+    // ignore the Games & servers navigation entirely.
+    const selectedGame = this.state.gameDetail || this.state.games.find(function (game) { return String(game.place_id) === String(this.state.gameId); }.bind(this));
+    return '<section class="page-heading"><div class="page-heading-copy"><h2>Find the room, not just the game.</h2><p>Keep your recent worlds close, then choose a server by region, capacity, and latency before launching an account.</p></div><div class="page-heading-actions"><button class="button" type="button" data-action="refresh-servers">' + icon('refresh') + ' Refresh servers</button></div></section><section class="toolbar"><label class="input-shell">' + icon('search') + '<input id="game-filter" type="search" autocomplete="off" placeholder="Search games" value="' + escapeHtml(this.state.gameQuery) + '" /></label><span class="toolbar-spacer"></span><span class="offline-note">' + icon(this.state.mode === 'desktop' ? 'shield' : 'info') + (this.state.mode === 'desktop' ? ' Live bridge connected' : ' Preview data') + '</span></section><section class="games-layout"><div><div class="section-header"><h3>Recent & favorites</h3><span class="section-line"></span><span>' + games.length + ' games</span></div><div class="game-list">' + (games.length ? games.map(this.renderGameCard.bind(this)).join('') : this.emptyState('search', this.state.gamesLoading ? 'Searching Roblox...' : 'No games yet', this.state.gamesLoading ? 'Looking for experiences that match your search.' : 'Type a game name in the search box to look it up on Roblox, or launch an account to build your saved list.', 'Clear search', 'clear-game-filter')) + '</div></div><aside class="panel game-detail">' + this.renderGameDetail(selectedGame) + '</aside></section>';
   }
 
   renderGameCard(game) {
@@ -778,7 +794,7 @@ class OrbitApp {
     const servers = this.state.servers;
     const placeId = escapeHtml(game.place_id);
     const favorite = Boolean(game.favorite);
-    return '<div class="game-detail-hero"><span class="badge accent">' + escapeHtml(game.category || 'Game') + '</span><h3>' + escapeHtml(game.title) + '</h3><p>' + escapeHtml(game.creator || 'Unknown creator') + '</p></div><div class="detail-meta"><div><small>Place ID</small><strong title="' + placeId + '">' + placeId + '</strong></div><div><small>Playing now</small><strong>' + formatNumber(game.players) + '</strong></div><button class="icon-button" type="button" data-action="copy-place" data-value="' + placeId + '" aria-label="Copy Place ID">' + icon('copy') + '</button><button class="favorite-star ' + (favorite ? 'is-favorite' : '') + '" type="button" data-action="toggle-game-favorite" data-id="' + placeId + '" aria-label="' + (favorite ? 'Remove game from favorites' : 'Add game to favorites') + '" title="' + (favorite ? 'Remove from favorites' : 'Add to favorites') + '">' + icon('star') + '</button><button class="icon-button" type="button" data-action="open-remove-game" data-id="' + placeId + '" aria-label="Remove ' + escapeHtml(game.title) + ' from local games" title="Remove local game">' + icon('trash') + '</button></div><div class="panel-head"><h3>' + icon('monitor') + ' Public servers</h3><span>' + (this.state.serversLoading ? 'Refreshing...' : servers.length + ' visible') + '</span></div><div class="server-list">' + (this.state.serversLoading ? '<div class="empty-notices">' + icon('refresh') + '<p>Checking available servers...</p></div>' : servers.length ? servers.slice(0, 7).map(this.renderServer.bind(this)).join('') : '<div class="empty-notices">' + icon('monitor') + '<p>No server list yet.</p></div>') + '</div>';
+    return '<div class="game-detail-hero"><span class="badge accent">' + escapeHtml(game.category || 'Game') + '</span><h3>' + escapeHtml(game.title) + '</h3><p>' + escapeHtml(game.creator || 'Unknown creator') + '</p></div><div class="detail-meta"><div><small>Place ID</small><strong title="' + placeId + '">' + placeId + '</strong></div><div><small>Playing now</small><strong>' + formatNumber(game.players) + '</strong></div><button class="icon-button" type="button" data-action="copy-place" data-value="' + placeId + '" aria-label="Copy Place ID">' + icon('copy') + '</button><button class="favorite-star ' + (favorite ? 'is-favorite' : '') + '" type="button" data-action="toggle-game-favorite" data-id="' + placeId + '" aria-label="' + (favorite ? 'Remove game from favorites' : 'Add game to favorites') + '" title="' + (favorite ? 'Remove from favorites' : 'Add to favorites') + '">' + icon('star') + '</button><button class="icon-button" type="button" data-action="open-remove-game" data-id="' + placeId + '" aria-label="Remove ' + escapeHtml(game.title) + ' from local games" title="Remove local game">' + icon('trash') + '</button></div><div class="panel-head"><h3>' + icon('monitor') + ' Public servers</h3><span>' + (this.state.serversLoading ? 'Refreshing...' : servers.length + ' visible') + '</span><button class="button button-sm" type="button" data-action="open-region-probe"' + (servers.length ? '' : ' disabled') + '>' + icon('globe') + ' Load regions</button></div><div class="server-list">' + (this.state.serversLoading ? '<div class="empty-notices">' + icon('refresh') + '<p>Checking available servers...</p></div>' : servers.length ? servers.slice(0, 7).map(this.renderServer.bind(this)).join('') : '<div class="empty-notices">' + icon('monitor') + '<p>No server list yet.</p></div>') + '</div>';
   }
 
   renderGameDetailSnapshot(game) {
@@ -914,14 +930,14 @@ class OrbitApp {
           '</div>' +
           '<div class="nexus-editor-toolbar-right">' +
             '<label class="nexus-target-label">Target:</label>' +
-            '<select class="nexus-target-select" id="nexus-exec-target" data-action="nexus-change-target">' + targetOptions + '</select>' +
+            '<select class="nexus-target-select" id="nexus-exec-target">' + targetOptions + '</select>' +
             '<button class="button button-primary button-sm nexus-exec-btn" type="button" data-action="nexus-execute"' + (!running ? ' disabled title="Start Nexus server first"' : '') + '>' + icon('play') + ' Execute</button>' +
             '<button class="button button-sm" type="button" data-action="nexus-clear-editor" title="Clear editor">' + icon('trash') + '</button>' +
           '</div>' +
         '</div>' +
         '<div class="nexus-editor-wrap">' +
           '<div class="nexus-line-numbers" id="nexus-line-numbers"></div>' +
-          '<textarea class="nexus-code-editor" id="nexus-code-editor" spellcheck="false" autocomplete="off" autocorrect="off" autocapitalize="off" wrap="off" data-action="nexus-code-input">' + codeValue + '</textarea>' +
+          '<textarea class="nexus-code-editor" id="nexus-code-editor" spellcheck="false" autocomplete="off" autocorrect="off" autocapitalize="off" wrap="off">' + codeValue + '</textarea>' +
         '</div>' +
       '</div>';
 
@@ -1003,14 +1019,40 @@ class OrbitApp {
     }.bind(this)).join('') + '</tbody></table></div>';
   }
 
+  renderMacroBlock(block, index) {
+    const kind = String(block.type || 'wait');
+    let fields = '';
+    if (kind === 'wait') fields = '<label>Milliseconds<input data-block-field="milliseconds" type="number" min="0" max="60000" value="' + escapeHtml(block.milliseconds || 0) + '" /></label>';
+    if (kind === 'key_press') fields = '<label>Key<input data-block-field="key" maxlength="24" value="' + escapeHtml(block.key || 'W') + '" /></label><label>Hold ms<input data-block-field="milliseconds" type="number" min="1" max="10000" value="' + escapeHtml(block.milliseconds || 80) + '" /></label>';
+    if (kind === 'mouse_click') fields = '<label>X (0–1)<input data-block-field="x" type="number" min="0" max="1" step="0.01" value="' + escapeHtml(block.x === undefined ? 0.5 : block.x) + '" /></label><label>Y (0–1)<input data-block-field="y" type="number" min="0" max="1" step="0.01" value="' + escapeHtml(block.y === undefined ? 0.5 : block.y) + '" /></label>';
+    if (kind === 'text') fields = '<label>Text<input data-block-field="value" maxlength="500" value="' + escapeHtml(block.value || '') + '" /></label>';
+    return '<div class="macro-block" data-block-index="' + index + '" data-block-type="' + escapeHtml(kind) + '"><span class="macro-block-grip">⋮⋮</span><strong>' + escapeHtml({ wait: 'Wait', key_press: 'Press key', mouse_click: 'Click window', text: 'Type text' }[kind] || kind) + '</strong>' + fields + '<button class="icon-button" type="button" data-action="remove-macro-block" data-index="' + index + '" aria-label="Remove block">' + icon('x') + '</button></div>';
+  }
+
+  renderMacros() {
+    const accountOptions = '<option value="">Any matched account</option>' + this.state.accounts.map(function (account) { return '<option value="' + escapeHtml(account.id) + '">' + escapeHtml(account.display_name || account.username) + '</option>'; }).join('');
+    const instanceOptions = this.state.instances.map(function (instance) { const account = this.findAccount(instance.account_id); return '<option value="' + escapeHtml(instance.pid) + '">PID ' + escapeHtml(instance.pid) + ' · ' + escapeHtml(account ? account.display_name || account.username : 'Unassigned Roblox') + '</option>'; }.bind(this)).join('');
+    const runs = this.state.macroRuns.length ? this.state.macroRuns.map(function (run) { return '<div class="activity-row"><div class="activity-copy"><strong>' + escapeHtml(run.macro_name) + '</strong><small>PID ' + escapeHtml(run.pid) + ' · ' + escapeHtml(run.state) + ' · step ' + escapeHtml(run.current_step || 0) + '</small></div>' + (['running', 'starting'].includes(run.state) ? '<button class="button button-sm button-danger" type="button" data-action="stop-macro" data-id="' + escapeHtml(run.run_id) + '">Stop</button>' : '') + '</div>'; }).join('') : '<div class="empty-notices">' + icon('activity') + '<p>No macro is running.</p></div>';
+    const cards = this.state.macros.length ? this.state.macros.map(function (macro) { const account = this.findAccount(macro.account_id); return '<article class="panel macro-card"><div><span class="badge accent">' + escapeHtml(macro.mode === 'dsl' ? 'Direct DSL' : 'Blocks') + '</span><h3>' + escapeHtml(macro.name) + '</h3><p>' + escapeHtml(macro.description || 'No description') + '</p><small>' + escapeHtml(account ? 'Assigned to ' + (account.display_name || account.username) : 'Usable on any matched account') + '</small></div><div class="macro-card-actions"><select id="macro-target-' + escapeHtml(macro.id) + '" aria-label="Target Roblox instance"><option value="">Choose an instance…</option>' + instanceOptions + '</select><button class="button button-sm button-primary" type="button" data-action="start-macro" data-id="' + escapeHtml(macro.id) + '"' + (instanceOptions ? '' : ' disabled') + '>' + icon('play') + ' Run</button><button class="icon-button" type="button" data-action="delete-macro" data-id="' + escapeHtml(macro.id) + '" aria-label="Delete macro">' + icon('trash') + '</button></div></article>'; }.bind(this)).join('') : this.emptyInline('zap', 'No saved macros', 'Create one with visual blocks or the direct Astro DSL.');
+    const blockEditor = this.state.macroEditorMode === 'blocks' ? '<div class="macro-toolbox"><button type="button" class="button button-sm" data-action="add-macro-block" data-kind="wait">+ Wait</button><button type="button" class="button button-sm" data-action="add-macro-block" data-kind="key_press">+ Key</button><button type="button" class="button button-sm" data-action="add-macro-block" data-kind="mouse_click">+ Click</button><button type="button" class="button button-sm" data-action="add-macro-block" data-kind="text">+ Text</button></div><div class="macro-block-list">' + this.state.macroDraftBlocks.map(this.renderMacroBlock.bind(this)).join('') + '</div>' : '<div class="field full"><label for="macro-source">Direct Astro DSL</label><textarea id="macro-source" name="source" rows="12" spellcheck="false" placeholder="PRESS W 120&#10;WAIT 1000&#10;CLICK 0.5 0.5&#10;TEXT &quot;hello&quot;"></textarea><span class="mono">Commands: WAIT, PRESS, DOWN, UP, CLICK, TEXT, REPEAT/END, STOP. No eval or arbitrary process execution.</span></div>';
+    return '<section class="page-heading"><div class="page-heading-copy"><h2>Automate each instance independently.</h2><p>Every run is pinned to one verified PID and creation time. Window messages can continue while a client is minimized; Roblox may reject some controls in specific input modes.</p></div><div class="page-heading-actions"><button class="button" type="button" data-action="refresh-macros">' + icon('refresh') + ' Refresh</button></div></section><section class="macro-layout"><div><section class="panel settings-section"><header class="settings-section-head"><div><h3>Macro maker</h3><p>Visual blocks and direct coding compile to the same bounded action tree.</p></div></header><form data-form="macro"><div class="modal-body"><p class="form-error" hidden></p><div class="form-grid"><div class="field"><label>Name</label><input name="name" required maxlength="120" /></div><div class="field"><label>Assigned account</label><select name="account_id">' + accountOptions + '</select></div><div class="field full"><label>Description</label><input name="description" maxlength="500" /></div><div class="field"><label>Editor</label><select id="macro-editor-mode" name="mode"><option value="blocks"' + (this.state.macroEditorMode === 'blocks' ? ' selected' : '') + '>Scratch-like blocks</option><option value="dsl"' + (this.state.macroEditorMode === 'dsl' ? ' selected' : '') + '>Direct DSL</option></select></div></div>' + blockEditor + '</div><footer class="modal-foot"><button class="button button-primary" type="submit">' + icon('check') + ' Save macro</button></footer></form></section><section class="section-header"><h3>Saved macros</h3><span class="section-line"></span></section><div class="macro-cards">' + cards + '</div></div><aside class="panel macro-runs"><div class="panel-head"><h3>' + icon('activity') + ' Concurrent runs</h3></div><div class="activity-list">' + runs + '</div></aside></section>';
+  }
+
+  maybeWarnRunningRoblox() {
+    const general = (((this.state.settings || {}).categories || {}).general || {});
+    if (this.state.mode === 'desktop' && general.warn_if_roblox_running !== false && this.state.robloxBackground && this.state.robloxBackground.running) {
+      this.openModal({ kind: 'roblox-background', status: this.state.robloxBackground });
+    }
+  }
+
   renderDiagnostics() {
     const diagnostics = this.state.diagnostics || { services: [], logs: [] };
     return '<section class="page-heading"><div class="page-heading-copy"><h2>Quietly verify the machinery.</h2><p>Health signals are written for people first, with recent technical context available when you need to investigate an issue.</p></div><div class="page-heading-actions"><button class="button" type="button" data-action="refresh-diagnostics">' + icon('refresh') + ' Refresh status</button><button class="button" type="button" data-action="export-metadata">' + icon('upload') + ' Export metadata</button><button class="button" type="button" data-action="open-import-metadata">' + icon('download') + ' Import metadata</button><button class="button" type="button" data-action="open-restore">' + icon('upload') + ' Restore backup</button><button class="button button-primary" type="button" data-action="backup">' + icon('database') + ' Back up data</button></div></section><section class="stats-grid"><article class="stat-card"><span class="stat-card-label">' + icon('shield') + ' Overall health</span><strong>' + escapeHtml(diagnostics.status === 'healthy' ? 'Good' : diagnostics.status || 'Check') + '</strong><small><em>Checked ' + relativeTime(diagnostics.checked_at) + '</em></small></article><article class="stat-card"><span class="stat-card-label">' + icon('monitor') + ' Active instances</span><strong>' + this.state.instances.length + '</strong><small>Processes matched to accounts</small></article><article class="stat-card"><span class="stat-card-label">' + icon('database') + ' Account vault</span><strong>Ready</strong><small>Secure data service available</small></article><article class="stat-card"><span class="stat-card-label">' + icon('activity') + ' Event history</span><strong>' + this.state.activity.length + '</strong><small>Recent workspace events</small></article></section><section class="section-header"><h3>Service checks</h3><span class="section-line"></span></section><section class="data-table-wrap"><table class="data-table"><thead><tr><th>Service</th><th>Status</th><th>Detail</th></tr></thead><tbody>' + (diagnostics.services || []).map(function (service) { return '<tr><td><strong>' + escapeHtml(service.name) + '</strong></td><td><span class="status ' + escapeHtml(service.status || 'healthy') + '">' + statusText(service.status || 'healthy') + '</span></td><td><span class="mono">' + escapeHtml(service.detail || '') + '</span></td></tr>'; }).join('') + '</tbody></table></section><section class="section-header"><h3>Recent diagnostics</h3><p>Technical entries are local to this device.</p><span class="section-line"></span></section><section class="panel"><div class="diagnostic-box"><pre>' + escapeHtml((diagnostics.logs || []).map(function (row) { return '[' + new Date(row.at || Date.now()).toLocaleTimeString() + '] ' + (row.level || 'INFO') + '  ' + (row.message || ''); }).join('\n') || 'No diagnostic entries available.') + '</pre></div></section>';
   }
 
   renderSettings() {
-    const tabs = [['general', 'General'], ['performance', 'Performance & FPS'], ['appearance', 'Appearance'], ['accounts', 'Accounts'], ['oauth', 'Roblox sign-in'], ['instances', 'Instances'], ['network', 'Network'], ['notifications', 'Notifications'], ['advanced', 'Advanced']];
-    return '<section class="page-heading"><div class="page-heading-copy"><h2>Make the workspace yours.</h2><p>Settings are applied immediately and stay deliberately compact. The desktop bridge persists them securely when it is available.</p></div><div class="page-heading-actions"><button class="button" type="button" data-action="backup">' + icon('database') + ' Create backup</button></div></section><section class="settings-layout"><nav class="panel settings-nav" aria-label="Settings categories">' + tabs.map(function (tab) { return '<button type="button" data-action="settings-tab" data-tab="' + tab[0] + '" class="' + (this.state.settingsTab === tab[0] ? 'is-active' : '') + '">' + tab[1] + '</button>'; }.bind(this)).join('') + '</nav><div class="settings-content">' + this.renderSettingsPanel() + '</div></section>';
+    const tabs = [['general', 'General'], ['performance', 'Performance & FPS'], ['appearance', 'Appearance'], ['accounts', 'Accounts'], ['oauth', 'Roblox sign-in'], ['instances', 'Instances'], ['network', 'Network'], ['integrations', 'Discord & updates'], ['notifications', 'Notifications'], ['advanced', 'Advanced']];
+    return '<section class="page-heading"><div class="page-heading-copy"><h2>Make the workspace yours.</h2><p>Settings are applied immediately and stay deliberately compact. The desktop bridge persists them securely when it is available.</p></div><div class="page-heading-actions"><button class="button" type="button" data-action="open-settings-reset">' + icon('refresh') + ' Reset settings</button><button class="button" type="button" data-action="backup">' + icon('database') + ' Create backup</button></div></section><section class="settings-layout"><nav class="panel settings-nav" aria-label="Settings categories">' + tabs.map(function (tab) { return '<button type="button" data-action="settings-tab" data-tab="' + tab[0] + '" class="' + (this.state.settingsTab === tab[0] ? 'is-active' : '') + '">' + tab[1] + '</button>'; }.bind(this)).join('') + '</nav><div class="settings-content">' + this.renderSettingsPanel() + '</div></section>';
   }
 
   settingRow(title, body, control) {
@@ -1027,7 +1069,7 @@ class OrbitApp {
     const watcher = categories.watcher || {};
     const network = categories.network || { region_lookup_enabled: false, region_lookup_provider: '', region_lookup_format: '{city}, {country}', region_lookup_timeout_seconds: 4, region_cache_ttl_seconds: 900 };
     if (this.state.settingsTab === 'performance') return '<section class="panel settings-section"><header class="settings-section-head"><div><h3>Performance & FPS</h3><p>FPS Frame Unlocker cap and Potato Graphics mode for low-end hardware.</p></div></header>' +
-      this.settingRow('Frame Unlocker (FPS Target)', 'Frame rate cap target for Roblox clients (DFIntTaskSchedulerTargetFps).', '<select class="setting-select" data-setting="global_max_fps"><option value="0"' + (s.global_max_fps == 0 ? ' selected' : '') + '>Roblox Default</option><option value="60"' + (s.global_max_fps == 60 ? ' selected' : '') + '>60 FPS</option><option value="120"' + (s.global_max_fps == 120 ? ' selected' : '') + '>120 FPS</option><option value="144"' + (s.global_max_fps == 144 ? ' selected' : '') + '>144 FPS</option><option value="240"' + (s.global_max_fps == 240 || !s.global_max_fps ? ' selected' : '') + '>240 FPS (Recommended)</option><option value="360"' + (s.global_max_fps == 360 ? ' selected' : '') + '>360 FPS</option></select>') +
+      this.settingRow('Frame Unlocker (FPS Target)', 'Frame rate cap target for Roblox clients (DFIntTaskSchedulerTargetFps).', '<select class="setting-select" data-setting="global_max_fps"><option value="0"' + (s.global_max_fps == 0 ? ' selected' : '') + '>Roblox Default</option><option value="60"' + (s.global_max_fps == 60 ? ' selected' : '') + '>60 FPS</option><option value="120"' + (s.global_max_fps == 120 ? ' selected' : '') + '>120 FPS</option><option value="144"' + (s.global_max_fps == 144 ? ' selected' : '') + '>144 FPS</option><option value="240"' + (s.global_max_fps == 240 ? ' selected' : '') + '>240 FPS (Recommended)</option><option value="360"' + (s.global_max_fps == 360 ? ' selected' : '') + '>360 FPS</option></select>') +
       this.settingRow('Potato Graphics Mode 🥔', 'Extreme graphics reduction (textures, shadows, post-fx, materials) via FastFlags for maximum accounts on low-end hardware.', this.toggleSetting('potato_graphics', s.potato_graphics)) + '</section>';
     if (this.state.settingsTab === 'appearance') return '<section class="panel settings-section"><header class="settings-section-head"><div><h3>Appearance</h3><p>Theme, color and comfortable visual density.</p></div></header>' +
       this.settingRow('Color theme', 'Switch between the premium dark and bright light canvas.', '<select class="setting-select" data-setting="theme"><option value="dark"' + (s.theme !== 'light' ? ' selected' : '') + '>Dark</option><option value="light"' + (s.theme === 'light' ? ' selected' : '') + '>Light</option></select>') +
@@ -1066,16 +1108,23 @@ class OrbitApp {
     if (this.state.settingsTab === 'notifications') return '<section class="panel settings-section"><header class="settings-section-head"><div><h3>Notifications</h3><p>Control in-app status messages.</p></div></header>' +
       this.settingRow('In-app notifications', 'Surface launch results, backup outcomes, and watcher events.', this.toggleSetting('notifications', s.notifications)) +
       this.settingRow('Notification center', 'Review and dismiss messages from the top bar.', '<button class="button button-sm" type="button" data-action="toggle-notifications">' + icon('bell') + ' Open notifications</button>') + '</section>';
+    if (this.state.settingsTab === 'integrations') {
+      const discord = categories.discord || { enabled: false, client_id: '', strategy: 'latest', show_account: false };
+      const updates = categories.updates || { auto_check: true, auto_download: false, install_on_exit: false };
+      const updateStatus = this.state.updater || {};
+      return '<section class="panel settings-section"><header class="settings-section-head"><div><h3>Discord Rich Presence</h3><p>Publish one redacted activity for the latest game or an aggregate of active instances.</p></div><span class="badge ' + (this.state.discordPresence.connected ? 'success' : 'warning') + '">' + (this.state.discordPresence.connected ? 'Connected' : 'Idle') + '</span></header><form data-form="discord-settings"><div class="modal-body"><p class="form-error" hidden></p><div class="form-grid"><label class="form-check field full"><input type="checkbox" name="enabled"' + (discord.enabled ? ' checked' : '') + ' /> Enable Discord Rich Presence</label><div class="field"><label>Discord Application ID</label><input name="client_id" inputmode="numeric" maxlength="32" value="' + escapeHtml(discord.client_id || '') + '" placeholder="Numeric application ID" /></div><div class="field"><label>Multiple instances</label><select name="strategy"><option value="latest"' + (discord.strategy !== 'aggregate' ? ' selected' : '') + '>Latest active game</option><option value="aggregate"' + (discord.strategy === 'aggregate' ? ' selected' : '') + '>Aggregate count</option></select></div><label class="form-check field full"><input type="checkbox" name="show_account"' + (discord.show_account ? ' checked' : '') + ' /> Show the local account alias in Discord status</label></div></div><footer class="modal-foot"><button class="button button-primary" type="submit">' + icon('check') + ' Save & refresh presence</button></footer></form></section><section class="panel settings-section"><header class="settings-section-head"><div><h3>Application updates</h3><p>Only the fixed GitHub release asset is downloaded, size-checked, PE-validated and hashed before staging.</p></div><span class="badge">' + escapeHtml(updateStatus.pending_install ? 'Install pending' : updateStatus.staged ? 'Downloaded' : 'Current') + '</span></header>' + this.settingRow('Check automatically', 'Check the official releases endpoint in the background at startup.', this.toggleSetting('updates_auto_check', updates.auto_check !== false)) + this.settingRow('Download automatically', 'Stage a newer verified release asset when one exists.', this.toggleSetting('updates_auto_download', Boolean(updates.auto_download))) + this.settingRow('Install on exit', 'Replace only the packaged EXE after Astro has closed; the previous EXE is kept beside it.', this.toggleSetting('updates_install_on_exit', Boolean(updates.install_on_exit))) + this.settingRow('Updater actions', 'Check, download, schedule, or remove the staged update.', '<div class="setting-buttons"><button class="button button-sm" type="button" data-action="check-updates">Check</button><button class="button button-sm" type="button" data-action="download-update">Download</button><button class="button button-sm button-primary" type="button" data-action="install-update">Install on exit</button><button class="button button-sm button-danger" type="button" data-action="cancel-update">Cancel staged</button></div>') + this.settingRow('Support report', 'Create a redacted ZIP with logs, diagnostics and public settings. Vault sessions, database and macro contents are excluded.', '<button class="button button-sm" type="button" data-action="export-support-bundle">' + icon('download') + ' Create support ZIP</button>') + '</section>';
+    }
     if (this.state.settingsTab === 'advanced') {
-      const api = (s.categories && s.categories.api) || { enabled: false, port: 7963, allow_get_cookie: false, allow_launch_account: false, allow_account_editing: false, allow_import_cookie: false, allow_get_accounts: false, legacy_password_auth_enabled: false };
+      const api = (s.categories && s.categories.api) || { enabled: false, port: 7963, allow_external: false, allow_get_cookie: false, allow_launch_account: false, allow_account_editing: false, allow_import_cookie: false, allow_get_accounts: false, legacy_password_auth_enabled: false };
       return '<section class="panel settings-section"><header class="settings-section-head"><div><h3>Data tools</h3><p>Use portable backups before importing data from legacy versions.</p></div></header>' +
       this.settingRow('Create backup', 'Request a verified backup from the local data service.', '<button class="button button-sm" type="button" data-action="backup">' + icon('database') + ' Back up now</button>') +
       this.settingRow('Migrate legacy data', 'Inspect an existing Roblox Account Manager data location.', '<button class="button button-sm" type="button" data-action="migrate">' + icon('upload') + ' Start migration</button>') +
       this.settingRow('Developer diagnostics', 'Show extra technical state inside Diagnostics.', this.toggleSetting('diagnostics', s.diagnostics)) + '</section>' +
-      '<section class="panel settings-section"><header class="settings-section-head"><div><h3>Authenticated local API</h3><p>RAM-compatible loopback routes with independent permissions. Changes apply after restarting Astro.</p></div><span class="badge warning">Token required</span></header><form data-form="api-settings"><div class="modal-body"><p class="form-error" hidden></p><p class="oauth-help">The listener is always bound to 127.0.0.1 and every request requires ASTRO_LOCAL_API_TOKEN (32+ characters). Optional RAM password compatibility reads ASTRO_LOCAL_API_PASSWORD only at runtime; neither secret is stored.</p><div class="form-grid"><label class="form-check field full"><input type="checkbox" name="enabled"' + (api.enabled ? ' checked' : '') + ' /> Enable the local API after restart</label><div class="field"><label for="api-port">Loopback port</label><input id="api-port" name="port" type="number" min="1" max="65535" required value="' + escapeHtml(api.port || 7963) + '" /></div><label class="form-check field full"><input type="checkbox" name="allow_launch_account"' + (api.allow_launch_account ? ' checked' : '') + ' /> Allow LaunchAccount and FollowUser</label><label class="form-check field full"><input type="checkbox" name="allow_account_editing"' + (api.allow_account_editing ? ' checked' : '') + ' /> Allow account editing routes</label><label class="form-check field full"><input type="checkbox" name="allow_get_cookie"' + (api.allow_get_cookie ? ' checked' : '') + ' /> Allow raw cookie and CSRF retrieval</label><label class="form-check field full"><input type="checkbox" name="allow_import_cookie"' + (api.allow_import_cookie ? ' checked' : '') + ' /> Allow cookie import</label><label class="form-check field full"><input type="checkbox" name="allow_get_accounts"' + (api.allow_get_accounts ? ' checked' : '') + ' /> Allow GetAccounts and GetAccountsJson</label><label class="form-check field full"><input type="checkbox" name="legacy_password_auth_enabled"' + (api.legacy_password_auth_enabled ? ' checked' : '') + ' /> Accept the historical RAM password scheme after restart</label></div></div><footer class="modal-foot"><button class="button button-primary" type="submit">' + icon('check') + ' Save local API settings</button></footer></form></section>';
+      '<section class="panel settings-section"><header class="settings-section-head"><div><h3>Authenticated local API</h3><p>RAM-compatible routes plus REST v1 with independent permissions. Changes apply after restarting Astro.</p></div><span class="badge warning">Token required</span></header><form data-form="api-settings"><div class="modal-body"><p class="form-error" hidden></p><p class="oauth-help">Every request requires ASTRO_LOCAL_API_TOKEN (32+ characters). Root routes return RAM 3.7.2 text, /v2 wraps historical responses, and /api/v1 remains structured JSON. The listener stays local unless LAN access is explicitly enabled.</p><div class="form-grid"><label class="form-check field full"><input type="checkbox" name="enabled"' + (api.enabled ? ' checked' : '') + ' /> Enable the API after restart</label><div class="field"><label for="api-port">API port</label><input id="api-port" name="port" type="number" min="1" max="65535" required value="' + escapeHtml(api.port || 7963) + '" /></div><label class="form-check field full"><input type="checkbox" name="allow_external"' + (api.allow_external ? ' checked' : '') + ' /> Allow authenticated LAN connections (bind 0.0.0.0 after restart)</label><label class="form-check field full"><input type="checkbox" name="allow_launch_account"' + (api.allow_launch_account ? ' checked' : '') + ' /> Allow LaunchAccount and FollowUser</label><label class="form-check field full"><input type="checkbox" name="allow_account_editing"' + (api.allow_account_editing ? ' checked' : '') + ' /> Allow account editing routes</label><label class="form-check field full"><input type="checkbox" name="allow_get_cookie"' + (api.allow_get_cookie ? ' checked' : '') + ' /> Allow raw cookie and CSRF retrieval</label><label class="form-check field full"><input type="checkbox" name="allow_import_cookie"' + (api.allow_import_cookie ? ' checked' : '') + ' /> Allow cookie import</label><label class="form-check field full"><input type="checkbox" name="allow_get_accounts"' + (api.allow_get_accounts ? ' checked' : '') + ' /> Allow GetAccounts and GetAccountsJson</label><label class="form-check field full"><input type="checkbox" name="legacy_password_auth_enabled"' + (api.legacy_password_auth_enabled ? ' checked' : '') + ' /> Accept the historical RAM password scheme after restart</label></div></div><footer class="modal-foot"><button class="button button-primary" type="submit">' + icon('check') + ' Save API settings</button></footer></form></section>';
     }
     return '<section class="panel settings-section"><header class="settings-section-head"><div><h3>General</h3><p>Small choices that make daily use feel smoother.</p></div></header>' +
       this.settingRow('Workspace mode', this.state.mode === 'desktop' ? 'Connected to the local pywebview desktop bridge.' : 'Preview mode runs entirely in your browser with sample data.', '<span class="badge ' + (this.state.mode === 'desktop' ? 'success' : 'warning') + '">' + (this.state.mode === 'desktop' ? 'Connected' : 'Preview') + '</span>') +
+      this.settingRow('Warn when Roblox is already running', 'Before enabling Multi Roblox, show detected background clients and offer an explicit close.', this.toggleSetting('warn_if_roblox_running', (((s.categories || {}).general || {}).warn_if_roblox_running !== false))) +
       this.renderWindowsStartupSetting() +
       this.settingRow('Command palette', 'Use Ctrl + K to search accounts, games, settings and quick actions.', '<button class="button button-sm" type="button" data-action="open-palette">' + icon('command') + ' Open palette</button>') +
       this.settingRow('Refresh services', 'Update process state and service health now.', '<button class="button button-sm" type="button" data-action="refresh-diagnostics">' + icon('refresh') + ' Refresh</button>') + '</section>';
@@ -1102,7 +1151,21 @@ class OrbitApp {
     let body = '';
     let title = '';
     let sub = '';
-    if (modal.kind === 'windows-startup') {
+    if (modal.kind === 'roblox-background') {
+      const status = modal.status || { count: 0, processes: [] };
+      title = 'Roblox is already running';
+      sub = status.count + ' client' + (status.count === 1 ? ' was' : 's were') + ' detected before Multi Roblox setup.';
+      body = '<form data-form="roblox-background"><div class="modal-body"><p class="restore-warning">An already-running Roblox client may own the singleton state before Astro can enable Multi Roblox. You may keep playing and close this notice, or explicitly close the listed Roblox clients first.</p><p class="form-error" hidden></p><div class="activity-list">' + asArray(status.processes).map(function (item) { return '<div class="activity-row"><div class="activity-copy"><strong>Roblox PID ' + escapeHtml(item.pid) + '</strong><small>Detected local client</small></div></div>'; }).join('') + '</div><label class="form-check restore-confirm-check"><input type="checkbox" name="confirm" required /> I confirm Astro may gracefully close these exact Roblox clients.</label></div><footer class="modal-foot"><button class="button" type="button" data-action="close-modal">Keep Roblox open</button><button class="button button-danger" type="submit">' + icon('x') + ' Close Roblox clients</button></footer></form>';
+    } else if (modal.kind === 'private-link') {
+      const accountOptions = this.state.accounts.map(function (account) { return '<option value="' + escapeHtml(account.id) + '">' + escapeHtml(account.display_name || account.username) + ' (@' + escapeHtml(account.username) + ')</option>'; }).join('');
+      title = 'Join a private server link';
+      sub = 'Launch the selected stored account into one Roblox private server.';
+      body = '<form data-form="private-link"><div class="modal-body"><p class="form-error" hidden></p><div class="form-grid"><div class="field full"><label>Account</label><select name="account_id" required><option value="">Choose an account…</option>' + accountOptions + '</select></div><div class="field full"><label>Roblox private server link</label><input name="link" type="url" required autocomplete="off" placeholder="https://www.roblox.com/games/…?privateServerLinkCode=…" /></div></div><p class="oauth-help">The link code is used only for this launch. The selected account session remains encrypted in the local vault.</p></div><footer class="modal-foot"><button class="button" type="button" data-action="close-modal">Cancel</button><button class="button button-primary" type="submit">' + icon('play') + ' Join private server</button></footer></form>';
+    } else if (modal.kind === 'settings-reset') {
+      title = 'Reset settings?';
+      sub = 'Restore one canonical category or the entire workspace configuration.';
+      body = '<form data-form="settings-reset"><div class="modal-body"><p class="restore-warning">This changes local preferences only. Accounts, sessions, groups, games and backups are preserved. Resetting General also disables Astro Windows startup if it is enabled.</p><p class="form-error" hidden></p><div class="field full"><label for="settings-reset-scope">Scope</label><select id="settings-reset-scope" name="category"><option value="">All settings</option><option value="general">General</option><option value="appearance">Appearance</option><option value="accounts">Accounts</option><option value="instances">Instances</option><option value="watcher">Watcher</option><option value="performance">Performance & FPS</option><option value="network">Network</option><option value="oauth">OAuth</option><option value="api">Local API</option><option value="nexus">Nexus</option><option value="notifications">Notifications</option><option value="developer">Developer</option></select></div><label class="form-check restore-confirm-check"><input type="checkbox" name="confirm" required /> I confirm these local preferences should return to their defaults.</label></div><footer class="modal-foot"><button class="button" type="button" data-action="close-modal">Cancel</button><button class="button button-danger" type="submit">' + icon('refresh') + ' Reset selected settings</button></footer></form>';
+    } else if (modal.kind === 'windows-startup') {
       const enabled = Boolean(modal.enabled);
       title = enabled ? 'Enable Windows startup?' : 'Disable Windows startup?';
       sub = enabled ? 'Register the packaged Astro Account Manager application for the current Windows user.' : 'Remove only Astro Account Manager\'s current-user Windows startup entry.';
@@ -1120,6 +1183,10 @@ class OrbitApp {
       const launchOpts = (account.metadata && account.metadata.launch_options) || {};
       const maxFps = Number(launchOpts.max_fps || 0);
       const potatoChecked = Boolean(launchOpts.potato_graphics);
+      const accountWatcher = Object.assign({ enabled: true, auto_relaunch: false, relaunch_delay_seconds: 15, relaunch_max_attempts: 2, relaunch_on_crash: true, relaunch_on_exit: false }, (account.metadata && account.metadata.watcher) || {}, account.watcher || {});
+      const watcherChecked = accountWatcher.enabled === undefined ? true : Boolean(accountWatcher.enabled);
+      const relaunchChecked = Boolean(accountWatcher.auto_relaunch);
+      const relaunchOnExit = Boolean(accountWatcher.relaunch_on_exit);
       
       if (account.id) {
         body = '<form data-form="account" data-id="' + escapeHtml(account.id || '') + '"><div class="modal-body"><p class="form-error" hidden></p><div class="form-grid">' +
@@ -1131,8 +1198,14 @@ class OrbitApp {
           '<div class="field"><label for="account-fps">Instance FPS Cap</label><select id="account-fps" name="max_fps"><option value="0"' + (maxFps === 0 ? ' selected' : '') + '>Default (App Setting)</option><option value="30"' + (maxFps === 30 ? ' selected' : '') + '>30 FPS</option><option value="60"' + (maxFps === 60 ? ' selected' : '') + '>60 FPS</option><option value="120"' + (maxFps === 120 ? ' selected' : '') + '>120 FPS</option><option value="144"' + (maxFps === 144 ? ' selected' : '') + '>144 FPS</option><option value="240"' + (maxFps === 240 ? ' selected' : '') + '>240 FPS</option><option value="360"' + (maxFps === 360 ? ' selected' : '') + '>360 FPS</option></select></div>' +
           '<div class="field"><label for="account-color">Avatar color</label><select id="account-color" name="avatar_color"><option value="violet"' + (account.avatar_color === 'violet' ? ' selected' : '') + '>Violet</option><option value="mint"' + (account.avatar_color === 'mint' ? ' selected' : '') + '>Mint</option><option value="coral"' + (account.avatar_color === 'coral' ? ' selected' : '') + '>Coral</option><option value="blue"' + (account.avatar_color === 'blue' ? ' selected' : '') + '>Blue</option><option value="amber"' + (account.avatar_color === 'amber' ? ' selected' : '') + '>Amber</option></select></div>' +
           '<label class="form-check field"><input type="checkbox" name="potato_graphics"' + (potatoChecked ? ' checked' : '') + ' /> Enable Potato Mode (Minimum Graphics FastFlags)</label>' +
+          '<label class="form-check field"><input type="checkbox" name="watcher_enabled"' + (watcherChecked ? ' checked' : '') + ' /> Watch this account (local Roblox process monitoring)</label>' +
+          '<label class="form-check field"><input type="checkbox" name="watcher_auto_relaunch"' + (relaunchChecked ? ' checked' : '') + ' /> Auto-relaunch this account if it stops (arms the global watchdog too)</label>' +
+          '<div class="field"><label for="account-relaunch-delay">Relaunch delay (seconds)</label><input id="account-relaunch-delay" name="watcher_relaunch_delay_seconds" type="number" min="1" max="3600" step="1" value="' + escapeHtml(accountWatcher.relaunch_delay_seconds) + '" /></div>' +
+          '<div class="field"><label for="account-relaunch-attempts">Maximum relaunch attempts</label><input id="account-relaunch-attempts" name="watcher_relaunch_max_attempts" type="number" min="0" max="20" step="1" value="' + escapeHtml(accountWatcher.relaunch_max_attempts) + '" /></div>' +
+          '<label class="form-check field full"><input type="checkbox" name="watcher_relaunch_on_exit"' + (relaunchOnExit ? ' checked' : '') + ' /> Relaunch even when the client closes without crashing (Windows never tells Astro why a client stopped)</label>' +
           '<div class="field full"><label for="account-notes">Private note</label><textarea id="account-notes" name="notes" maxlength="280" placeholder="Notes about this account">' + escapeHtml(account.notes || '') + '</textarea></div>' +
-          '<label class="form-check field full"><input type="checkbox" name="favorite"' + (account.favorite ? ' checked' : '') + ' /> Keep in favorites</label></div></div>' +
+          '<label class="form-check field full"><input type="checkbox" name="favorite"' + (account.favorite ? ' checked' : '') + ' /> Keep in favorites</label></div>' +
+          (account.has_saved_password ? '<div class="quick-login-banner"><div><strong>Imported password available</strong><p>The credential stays in DPAPI and is sent only to the isolated Roblox login page.</p></div><button class="button" type="button" data-action="start-saved-password-login" data-id="' + escapeHtml(account.id) + '">' + icon('key') + ' Sign in with saved password</button></div>' : '') + '</div>' +
           '<footer class="modal-foot"><button class="button" type="button" data-action="close-modal">Cancel</button><button class="button button-primary" type="submit">' + icon('check') + ' Save changes</button></footer></form>';
       } else {
         body = '<div class="modal-body">' +
@@ -1162,6 +1235,42 @@ class OrbitApp {
           '</form>' +
         '</div>';
       }
+    } else if (modal.kind === 'server-launch') {
+      const server = modal.server || {};
+      const candidates = this.state.accounts.filter(function (account) { return account.has_session && account.status !== 'launching'; });
+      const options = candidates.map(function (account) {
+        const active = ['in_game', 'running'].includes(account.status);
+        const label = (account.display_name || account.username) + ' (@' + account.username + ')' + (active ? ' - already running' : '');
+        return '<option value="' + escapeHtml(account.id) + '"' + (active ? ' disabled' : '') + '>' + escapeHtml(label) + '</option>';
+      }).join('');
+      title = 'Choose the account to join';
+      sub = 'This public server launch uses exactly the account selected below.';
+      body = '<form data-form="server-launch" data-server="' + escapeHtml(server.id || '') + '"><div class="modal-body"><p class="form-error" hidden></p><p class="oauth-help">Place <strong>' + escapeHtml(this.state.gameId || '') + '</strong> · Job <span class="mono">' + escapeHtml(server.job_id || '') + '</span></p><div class="field full"><label for="server-launch-account">Roblox account</label><select id="server-launch-account" name="account_id" required' + (candidates.length ? '' : ' disabled') + '><option value="">Choose an account…</option>' + options + '</select><span class="mono">Astro will not silently choose the first account anymore.</span></div></div><footer class="modal-foot"><button class="button" type="button" data-action="close-modal">Cancel</button><button class="button button-primary" type="submit"' + (candidates.some(function (account) { return !['in_game', 'running'].includes(account.status); }) ? '' : ' disabled') + '>' + icon('play') + ' Join with this account</button></footer></form>';
+    } else if (modal.kind === 'region-probe') {
+      const candidates = this.state.accounts.filter(function (account) { return account.has_session; });
+      const options = candidates.map(function (account) { return '<option value="' + escapeHtml(account.id) + '">' + escapeHtml(account.display_name || account.username) + ' (@' + escapeHtml(account.username) + ')</option>'; }).join('');
+      const serverCount = Math.min(16, this.state.servers.length);
+      title = 'Load authenticated server regions';
+      sub = 'RAM-compatible lookup for the first ' + serverCount + ' visible public servers.';
+      body = '<form data-form="region-probe"><div class="modal-body"><p class="restore-warning">Roblox does not publish machine addresses in the normal server list. This sends the historical authenticated join-game-instance probe for each selected Job ID, then sends only public IPs to your configured region provider. It does not launch the Roblox client.</p><p class="form-error" hidden></p><div class="field full"><label for="region-account">Roblox account session</label><select id="region-account" name="account_id" required' + (options ? '' : ' disabled') + '><option value="">Choose a signed-in account…</option>' + options + '</select></div><label class="form-check restore-confirm-check"><input type="checkbox" name="confirm" required /> I confirm these authenticated Roblox and configured geolocation requests.</label></div><footer class="modal-foot"><button class="button" type="button" data-action="close-modal">Cancel</button><button class="button button-primary" type="submit"' + (serverCount && options ? '' : ' disabled') + '>' + icon('globe') + ' Load up to 16 regions</button></footer></form>';
+    } else if (modal.kind === 'uwp-manager') {
+      const inventory = modal.inventory || { available: false, packages: [] };
+      const packages = inventory.packages || [];
+      const accountOptions = this.state.accounts.map(function (account) { return '<option value="' + escapeHtml(account.id) + '">' + escapeHtml(account.display_name || account.username) + ' (@' + escapeHtml(account.username) + ')</option>'; }).join('');
+      const packageRows = packages.length ? packages.map(function (pkg) {
+        const account = this.state.accounts.find(function (candidate) {
+          return String(pkg.package_name || '').toLowerCase() === ('robloxcorporation.roblox.' + String(candidate.username || '').replace(/_/g, '-')).toLowerCase();
+        });
+        return '<div class="activity-row"><div class="activity-copy"><strong>' + escapeHtml(pkg.display_name || pkg.package_name) + '</strong><small>' + escapeHtml(pkg.status || 'Unknown') + (pkg.launchable ? ' · launchable' : ' · no launch point') + '</small></div><button class="button button-sm" type="button" data-action="launch-uwp-package" data-package="' + escapeHtml(pkg.package_full_name || '') + '"' + (pkg.launchable ? '' : ' disabled') + '>' + icon('play') + ' Launch</button>' + (account ? '<button class="button button-sm button-danger" type="button" data-action="open-uwp-unregister" data-id="' + escapeHtml(account.id) + '">' + icon('trash') + ' Unregister</button>' : '') + '</div>';
+      }, this).join('') : '<div class="empty-notices">' + icon('monitor') + '<p>No registered Roblox UWP package was found for this Windows user.</p></div>';
+      title = 'Roblox UWP Instance Manager';
+      sub = inventory.available ? 'Discover, launch, create, or unregister per-account Microsoft Store clones.' : escapeHtml(inventory.reason || 'Windows UWP support is unavailable.');
+      body = '<div class="modal-body"><p class="restore-warning">Clone creation copies the installed Store package, removes only its copied signature, edits the copied manifest, and registers it for the current user. Windows Developer Mode and the Store version of Roblox are required.</p><div class="activity-list">' + packageRows + '</div><form data-form="uwp-clone"><p class="form-error" hidden></p><div class="form-grid"><div class="field full"><label for="uwp-account">Account clone</label><select id="uwp-account" name="account_id" required' + (accountOptions ? '' : ' disabled') + '><option value="">Choose an account…</option>' + accountOptions + '</select></div><label class="form-check field full"><input type="checkbox" name="supports_multiple_instances" checked /> Write the historical SupportsMultipleInstances manifest flag</label><label class="form-check field full restore-confirm-check"><input type="checkbox" name="confirm" required /> I confirm this copies and registers a Windows AppX package for this account.</label></div><footer class="modal-foot"><button class="button" type="button" data-action="close-modal">Close</button><button class="button button-primary" type="submit"' + (inventory.available && accountOptions ? '' : ' disabled') + '>' + icon('plus') + ' Create / update clone</button></footer></form></div>';
+    } else if (modal.kind === 'uwp-unregister') {
+      const account = modal.account || {};
+      title = 'Unregister UWP clone?';
+      sub = 'Remove the current-user AppX registration for ' + escapeHtml(account.display_name || account.username || 'this account') + '.';
+      body = '<form data-form="uwp-unregister" data-id="' + escapeHtml(account.id || '') + '"><div class="modal-body"><p class="restore-warning">The registered clone stops appearing in Windows, while its copied files stay in Astro\'s UWP_Instances folder for recovery.</p><p class="form-error" hidden></p><label class="form-check restore-confirm-check"><input type="checkbox" name="confirm" required /> I confirm the exact per-account UWP clone should be unregistered.</label></div><footer class="modal-foot"><button class="button" type="button" data-action="close-modal">Cancel</button><button class="button button-danger" type="submit">' + icon('trash') + ' Unregister clone</button></footer></form>';
     } else if (modal.kind === 'cookie-login') {
       title = 'Add via .ROBLOSECURITY Cookie';
       sub = 'Paste your Roblox session cookie directly to authenticate.';
@@ -1191,11 +1300,11 @@ class OrbitApp {
       body = '<form data-form="oauth-disconnect" data-id="' + escapeHtml(account.id || '') + '"><div class="modal-body"><p class="restore-warning">This removes the locally protected OAuth grant for <strong>' + escapeHtml(account.display_name || account.username || 'this account') + '</strong>. It does not sign out a Roblox browser or game client.</p><p class="form-error" hidden></p><label class="form-check restore-confirm-check"><input type="checkbox" name="confirm" required /> I understand this removes the local Open Cloud OAuth link.</label></div><footer class="modal-foot"><button class="button" type="button" data-action="close-modal">Cancel</button><button class="button button-danger" type="submit">' + icon('logout') + ' Disconnect OAuth</button></footer></form>';
     } else if (modal.kind === 'watcher-rule') {
       const account = modal.account || {};
-      const watcher = Object.assign({ auto_relaunch: false, relaunch_delay_seconds: 15, relaunch_max_attempts: 2, relaunch_on_crash: true, relaunch_on_exit: false }, account.watcher || {});
+      const watcher = Object.assign({ enabled: true, auto_relaunch: false, relaunch_delay_seconds: 15, relaunch_max_attempts: 2, relaunch_on_crash: true, relaunch_on_exit: false }, account.watcher || {});
       const globalEnabled = Boolean(this.state.settings.watcher_auto_relaunch_enabled);
       title = 'Watcher rule for ' + (account.display_name || account.username || 'account');
       sub = globalEnabled ? 'This rule is opt-in and bounded for this one account.' : 'Save the rule here, then enable account relaunch rules in Settings > Instances before it can run.';
-      body = '<form data-form="watcher-rule" data-id="' + escapeHtml(account.id || '') + '"><div class="modal-body"><p class="form-error" hidden></p><p class="oauth-help">A relaunch rule observes local process exits only. It does not authenticate an account, read browser data, or run remote scripts.</p><div class="form-grid"><label class="form-check field full"><input type="checkbox" name="auto_relaunch"' + (watcher.auto_relaunch ? ' checked' : '') + ' /> Enable a bounded automatic relaunch for this account</label><div class="field"><label for="watcher-delay">Delay before relaunch (seconds)</label><input id="watcher-delay" name="relaunch_delay_seconds" type="number" min="1" max="3600" step="1" required value="' + escapeHtml(watcher.relaunch_delay_seconds) + '" /></div><div class="field"><label for="watcher-attempts">Maximum attempts</label><input id="watcher-attempts" name="relaunch_max_attempts" type="number" min="0" max="20" step="1" required value="' + escapeHtml(watcher.relaunch_max_attempts) + '" /></div><label class="form-check field"><input type="checkbox" name="relaunch_on_crash"' + (watcher.relaunch_on_crash ? ' checked' : '') + ' /> Relaunch after a crash</label><label class="form-check field"><input type="checkbox" name="relaunch_on_exit"' + (watcher.relaunch_on_exit ? ' checked' : '') + ' /> Relaunch after a normal exit</label></div></div><footer class="modal-foot"><button class="button" type="button" data-action="close-modal">Cancel</button><button class="button button-primary" type="submit">' + icon('check') + ' Save watcher rule</button></footer></form>';
+      body = '<form data-form="watcher-rule" data-id="' + escapeHtml(account.id || '') + '"><div class="modal-body"><p class="form-error" hidden></p><p class="oauth-help">A relaunch rule observes local process exits only. It does not authenticate an account, read browser data, or run remote scripts.</p><div class="form-grid"><label class="form-check field full"><input type="checkbox" name="watcher_enabled"' + (watcher.enabled === false ? '' : ' checked') + ' /> Watch this account with the local process monitor</label><label class="form-check field full"><input type="checkbox" name="auto_relaunch"' + (watcher.auto_relaunch ? ' checked' : '') + ' /> Enable a bounded automatic relaunch for this account</label><div class="field"><label for="watcher-delay">Delay before relaunch (seconds)</label><input id="watcher-delay" name="relaunch_delay_seconds" type="number" min="1" max="3600" step="1" required value="' + escapeHtml(watcher.relaunch_delay_seconds) + '" /></div><div class="field"><label for="watcher-attempts">Maximum attempts</label><input id="watcher-attempts" name="relaunch_max_attempts" type="number" min="0" max="20" step="1" required value="' + escapeHtml(watcher.relaunch_max_attempts) + '" /></div><label class="form-check field"><input type="checkbox" name="relaunch_on_crash"' + (watcher.relaunch_on_crash ? ' checked' : '') + ' /> Relaunch after a crash</label><label class="form-check field"><input type="checkbox" name="relaunch_on_exit"' + (watcher.relaunch_on_exit ? ' checked' : '') + ' /> Relaunch after a normal exit</label></div></div><footer class="modal-foot"><button class="button" type="button" data-action="close-modal">Cancel</button><button class="button button-primary" type="submit">' + icon('check') + ' Save watcher rule</button></footer></form>';
     } else if (modal.kind === 'bind-instance') {
       const instance = modal.instance || {};
       const accounts = this.state.accounts;
@@ -1296,6 +1405,12 @@ class OrbitApp {
         '<option value="privacy">Follow privacy (All / Followers / Following / Friends / NoOne)</option>' +
         '<option value="unlock_pin">Unlock account PIN (4 digits)</option>' +
         '<option value="avatar">Wear avatar assets (comma-separated IDs)</option>' +
+        '<option value="outfits">List user outfits (User ID)</option>' +
+        '<option value="wear_outfit">Wear saved outfit (Outfit ID)</option>' +
+        '<option value="universe">List universe places (Universe ID)</option>' +
+        '<option value="open_browser">Open authenticated Roblox browser (URL optional)</option>' +
+        '<option value="join_group">Join Roblox group (ID or link)</option>' +
+        '<option value="saved_password">Copy saved password from vault</option>' +
         '<option value="password">Change password</option>' +
         '<option value="email">Change email address</option>' +
         '</select></div>' +
@@ -1345,17 +1460,41 @@ class OrbitApp {
     if (action === 'open-palette') { this.openPalette(); return; }
     if (action === 'close-modal') { await this.dismissOAuthModal(); return; }
     if (action === 'open-windows-startup') { this.openWindowsStartupModal(button.dataset.enabled === 'true'); return; }
+    if (action === 'open-settings-reset') { this.openModal({ kind: 'settings-reset' }); return; }
     if (action === 'refresh-windows-startup') { await this.loadWindowsStartupStatus(true); return; }
     if (action === 'toggle-notifications') { this.state.notificationsOpen = !this.state.notificationsOpen; this.renderOverlays(); return; }
     if (action === 'toggle-theme') { await this.updateSettings({ theme: this.state.settings.theme === 'light' ? 'dark' : 'light' }, false); return; }
     if (action === 'set-accent') { await this.updateSettings({ accent: button.dataset.accent }, false); return; }
     if (action === 'create-account') { this.openModal({ kind: 'account', account: {} }); return; }
+    if (action === 'open-private-link') { this.openModal({ kind: 'private-link' }); return; }
+    if (action === 'add-macro-block') {
+      const defaults = { wait: { type: 'wait', milliseconds: 1000 }, key_press: { type: 'key_press', key: 'W', milliseconds: 80 }, mouse_click: { type: 'mouse_click', x: 0.5, y: 0.5, button: 'left' }, text: { type: 'text', value: 'hello' } };
+      this.state.macroDraftBlocks.push(defaults[button.dataset.kind] || defaults.wait); this.render(); return;
+    }
+    if (action === 'remove-macro-block') { this.state.macroDraftBlocks.splice(Number(button.dataset.index), 1); this.render(); return; }
+    if (action === 'refresh-macros') { this.state.macros = asArray(await this.bridge.call('list_macros')); this.state.macroRuns = asArray(await this.bridge.call('list_macro_runs')); this.render(); return; }
+    if (action === 'start-macro') {
+      const input = document.getElementById('macro-target-' + button.dataset.id);
+      if (!input || !input.value) { this.toast('warning', 'Choose an instance', 'Select a verified Roblox PID for this macro.'); return; }
+      try { await this.bridge.call('start_macro', button.dataset.id, Number(input.value)); this.state.macroRuns = asArray(await this.bridge.call('list_macro_runs')); this.render(); this.toast('success', 'Macro started', 'The macro is pinned to PID ' + input.value + '.'); } catch (error) { this.toast('error', 'Macro failed', error.message); }
+      return;
+    }
+    if (action === 'stop-macro') { try { await this.bridge.call('stop_macro', button.dataset.id); this.state.macroRuns = asArray(await this.bridge.call('list_macro_runs')); this.render(); } catch (error) { this.toast('error', 'Could not stop macro', error.message); } return; }
+    if (action === 'delete-macro') { if (!window.confirm('Delete this local macro?')) return; try { await this.bridge.call('delete_macro', button.dataset.id, true); this.state.macros = asArray(await this.bridge.call('list_macros')); this.render(); } catch (error) { this.toast('error', 'Could not delete macro', error.message); } return; }
+    if (action === 'export-support-bundle') { try { const result = unwrap(await this.bridge.call('export_support_bundle')) || {}; this.toast('success', 'Support ZIP created', result.filename || result.path || 'The redacted support bundle is ready.'); } catch (error) { this.toast('error', 'Support ZIP failed', error.message); } return; }
+    if (action === 'check-updates') { try { const result = unwrap(await this.bridge.call('check_for_updates')) || {}; this.toast('info', result.update_available ? 'Update available' : 'Astro is current', result.update_available ? ('Version ' + result.latest_version + ' is available.') : ('Current version ' + result.current_version + '.')); } catch (error) { this.toast('error', 'Update check failed', error.message); } return; }
+    if (action === 'download-update') { try { const result = unwrap(await this.bridge.call('download_update', true)) || {}; this.state.updater = unwrap(await this.bridge.call('get_update_status')) || {}; this.render(); this.toast('success', 'Update downloaded', result.filename || 'Validated update staged.'); } catch (error) { this.toast('error', 'Update download failed', error.message); } return; }
+    if (action === 'install-update') { try { await this.bridge.call('schedule_update_install', true); this.state.updater = unwrap(await this.bridge.call('get_update_status')) || {}; this.render(); this.toast('success', 'Install scheduled', 'The validated EXE will replace Astro after exit.'); } catch (error) { this.toast('error', 'Install scheduling failed', error.message); } return; }
+    if (action === 'cancel-update') { try { this.state.updater = unwrap(await this.bridge.call('cancel_update', true)) || {}; this.render(); this.toast('info', 'Staged update removed'); } catch (error) { this.toast('error', 'Could not cancel update', error.message); } return; }
     if (action === 'open-bulk-import') { this.openModal({ kind: 'bulk-import' }); return; }
     if (action === 'open-add-cookie') { this.openModal({ kind: 'cookie-add' }); return; }
-    if (action === 'start-manual-browser-login' || action === 'start-browser-login') {
+    if (action === 'start-manual-browser-login' || action === 'start-browser-login' || action === 'start-saved-password-login') {
       try {
-        const res = await this.bridge.call('start_manual_browser_login');
-        this.toast('info', 'Roblox Login Browser Opened', 'Sign in on Roblox in the dedicated browser window. Your session cookie will be captured automatically!');
+        const usingSavedPassword = action === 'start-saved-password-login';
+        const res = usingSavedPassword
+          ? await this.bridge.call('start_saved_password_browser_login', button.dataset.id)
+          : await this.bridge.call('start_manual_browser_login');
+        this.toast('info', 'Roblox Login Browser Opened', usingSavedPassword ? 'Astro filled the imported credential in the isolated browser. Complete any verification Roblox requests.' : 'Sign in on Roblox in the dedicated browser window. Your session cookie will be captured automatically!');
         const operationId = res && res.operation_id;
         if (!operationId) throw new Error('The desktop bridge did not return a browser sign-in operation.');
         // Keep the rest of the account interface usable while the isolated
@@ -1382,8 +1521,34 @@ class OrbitApp {
       }
       return;
     }
+    if (action === 'open-region-probe') {
+      this.openModal({ kind: 'region-probe' });
+      return;
+    }
     if (action === 'toggle-hide-usernames') { this.state.hideUsernames = !this.state.hideUsernames; this.render(); return; }
-    if (action === 'toggle-uwp') { this.state.uwpMode = !this.state.uwpMode; this.toast('info', 'UWP Mode', this.state.uwpMode ? 'UWP Mode Enabled' : 'Standard Web Mode Enabled'); this.render(); return; }
+    if (action === 'toggle-uwp') {
+      try {
+        const inventory = unwrap(await this.bridge.call('list_uwp_packages')) || { available: false, packages: [] };
+        this.openModal({ kind: 'uwp-manager', inventory: inventory });
+      } catch (error) {
+        this.toast('error', 'UWP Manager', error.message || 'Could not inspect Windows UWP packages.');
+      }
+      return;
+    }
+    if (action === 'launch-uwp-package') {
+      try {
+        await this.bridge.call('launch_uwp_package', button.dataset.package);
+        this.toast('success', 'UWP Launch Requested', 'Windows is opening the selected registered Roblox package.');
+      } catch (error) {
+        this.toast('error', 'UWP Launch Failed', error.message);
+      }
+      return;
+    }
+    if (action === 'open-uwp-unregister') {
+      const account = this.findAccount(button.dataset.id);
+      if (account) this.openModal({ kind: 'uwp-unregister', account: account });
+      return;
+    }
     if (action === 'shuffle-job-id') {
       const placeInput = $('#ram-place-id');
       const placeId = placeInput ? Number(placeInput.value) : null;
@@ -1591,7 +1756,7 @@ class OrbitApp {
     if (action === 'copy-place') { await this.copyText(button.dataset.value); return; }
     if (action === 'dismiss-notification') { await this.dismissNotification(button.dataset.id); return; }
     if (action === 'clear-account-filter') { this.state.accountQuery = ''; this.state.accountStatus = 'all'; this.render(); return; }
-    if (action === 'clear-game-filter') { this.state.gameQuery = ''; this.render(); return; }
+    if (action === 'clear-game-filter') { this.state.gameQuery = ''; this.render(); void this.loadGames(); return; }
     if (action === 'palette-item') { await this.executePalette(button.dataset); return; }
   }
 
@@ -1661,6 +1826,31 @@ class OrbitApp {
           if (!assetIds.length || assetIds.length > 100 || assetIds.some(function (value) { return !/^[1-9][0-9]*$/.test(value); })) throw new Error('Provide 1 to 100 positive asset IDs separated by commas.');
           await this.bridge.call('set_account_avatar', accountId, assetIds.map(Number));
           this.toast('success', 'Avatar', 'Avatar assets updated successfully!');
+        } else if (actionKind === 'outfits') {
+          if (!/^[1-9][0-9]*$/.test(payload)) throw new Error('Enter a positive Roblox User ID.');
+          const rows = await this.bridge.call('list_user_outfits', payload);
+          await this.copyText(JSON.stringify(rows, null, 2));
+          this.toast('success', 'Outfits copied', asArray(rows).length + ' outfit record(s) copied as JSON.');
+        } else if (actionKind === 'wear_outfit') {
+          if (!/^[1-9][0-9]*$/.test(payload)) throw new Error('Enter a positive Outfit ID.');
+          await this.bridge.call('wear_account_outfit', accountId, payload);
+          this.toast('success', 'Outfit applied', 'The historical outfit assets were applied to this account.');
+        } else if (actionKind === 'universe') {
+          if (!/^[1-9][0-9]*$/.test(payload)) throw new Error('Enter a positive Universe ID.');
+          const rows = await this.bridge.call('list_universe_places', payload);
+          await this.copyText(JSON.stringify(rows, null, 2));
+          this.toast('success', 'Universe places copied', asArray(rows).length + ' place record(s) copied as JSON.');
+        } else if (actionKind === 'open_browser') {
+          await this.bridge.call('open_account_browser', accountId, payload || 'https://www.roblox.com/home');
+          this.toast('success', 'Authenticated browser opened', 'The isolated browser received this account session and opened Roblox.');
+        } else if (actionKind === 'join_group') {
+          if (!payload) throw new Error('Enter a Roblox Group ID or group link.');
+          await this.bridge.call('join_account_group', accountId, payload);
+          this.toast('success', 'Group joined', 'Roblox accepted the join request.');
+        } else if (actionKind === 'saved_password') {
+          const result = await this.bridge.call('get_account_saved_password', accountId);
+          await this.copyText(result.password || '');
+          this.toast('warning', 'Saved password copied', 'The plaintext value is now in the Windows clipboard.');
         } else if (actionKind === 'get_cookie') {
           const res = await this.bridge.call('get_account_cookie', accountId);
           await this.copyText(res.cookie || '');
@@ -1687,6 +1877,84 @@ class OrbitApp {
         }
         this.closeModal();
         this.render();
+      } else if (form.dataset.form === 'macro') {
+        const mode = String(values.mode || 'blocks');
+        const actions = [];
+        if (mode === 'blocks') {
+          $$('.macro-block', form).forEach(function (row) {
+            const block = { type: row.dataset.blockType };
+            $$('[data-block-field]', row).forEach(function (input) {
+              const key = input.dataset.blockField;
+              block[key] = input.type === 'number' ? Number(input.value) : input.value;
+            });
+            if (block.type === 'mouse_click') block.button = 'left';
+            actions.push(block);
+          });
+          if (!actions.length) throw new Error('Add at least one macro block.');
+        }
+        await this.bridge.call('save_macro', { name: values.name, description: values.description || '', account_id: values.account_id || null, mode: mode, source: values.source || '', actions: actions });
+        this.state.macros = asArray(await this.bridge.call('list_macros'));
+        this.render(); this.toast('success', 'Macro saved', values.name + ' is ready for a verified instance.');
+      } else if (form.dataset.form === 'discord-settings') {
+        const payload = { categories: { discord: { enabled: new FormData(form).get('enabled') === 'on', client_id: String(values.client_id || '').trim(), strategy: values.strategy || 'latest', show_account: new FormData(form).get('show_account') === 'on' } } };
+        const result = unwrap(await this.bridge.call('update_settings', payload)) || {};
+        this.state.settings = Object.assign({}, this.state.settings, result);
+        if (payload.categories.discord.enabled) this.state.discordPresence = unwrap(await this.bridge.call('refresh_discord_presence')) || {};
+        this.render(); this.toast('success', 'Discord settings saved', payload.categories.discord.enabled ? 'Rich Presence was refreshed.' : 'Rich Presence is disabled.');
+      } else if (form.dataset.form === 'private-link') {
+        await this.bridge.call('launch_account_from_private_link', values.account_id, values.link);
+        this.closeModal(); await this.resync(); this.render(); this.toast('success', 'Private server launch requested', 'Windows is opening Roblox with the selected stored account.');
+      } else if (form.dataset.form === 'roblox-background') {
+        if (values.confirm !== 'on') throw new Error('Explicit confirmation is required.');
+        const result = unwrap(await this.bridge.call('close_running_roblox', true)) || {};
+        this.closeModal(); this.state.robloxBackground = unwrap(await this.bridge.call('get_roblox_background_status')) || {};
+        this.render(); this.toast('success', 'Roblox close requested', Number(result.closed || 0) + ' client(s) closed. Multi Roblox can now acquire its state before the next launch.');
+      } else if (form.dataset.form === 'region-probe') {
+        if (values.confirm !== 'on') throw new Error('Confirm the authenticated region probe before continuing.');
+        const account = this.findAccount(values.account_id);
+        if (!account || !account.has_session) throw new Error('Choose a signed-in Roblox account.');
+        const jobIds = this.state.servers.slice(0, 16).map(function (server) { return server.job_id; }).filter(Boolean);
+        if (!this.state.gameId || !jobIds.length) throw new Error('Select a game with visible public servers first.');
+        const result = unwrap(await this.bridge.call('probe_server_regions', account.id, Number(this.state.gameId), jobIds)) || {};
+        const byJob = new Map(asArray(result.servers).map(function (server) { return [String(server.job_id), server]; }));
+        this.state.servers = this.state.servers.map(function (server) {
+          const probed = byJob.get(String(server.job_id));
+          return probed ? Object.assign({}, server, { region: probed.region || server.region, ping: probed.ping === null || probed.ping === undefined ? server.ping : probed.ping, region_probe_reason: probed.reason || null }) : server;
+        });
+        this.closeModal();
+        this.render();
+        this.toast(result.resolved ? 'success' : 'warning', 'Server region probe finished', (result.resolved || 0) + ' of ' + jobIds.length + ' region(s) resolved.');
+      } else if (form.dataset.form === 'server-launch') {
+        const modal = this.state.modal;
+        const server = modal && modal.kind === 'server-launch' ? modal.server : null;
+        const account = this.findAccount(values.account_id);
+        if (!server) throw new Error('The selected public server is no longer available.');
+        if (!account || !account.has_session) throw new Error('Choose an available signed-in account.');
+        if (['in_game', 'running', 'launching'].includes(account.status)) throw new Error('This account already has an active or pending Roblox launch.');
+        this.closeModal();
+        await this.launch(account.id, { place_id: this.state.gameId, job_id: server.job_id, region: server.region });
+      } else if (form.dataset.form === 'uwp-clone') {
+        const formData = new FormData(form);
+        if (values.confirm !== 'on') throw new Error('Confirm the Windows AppX clone registration before continuing.');
+        const account = this.findAccount(values.account_id);
+        if (!account) throw new Error('Choose the local account for this UWP clone.');
+        await this.bridge.call(
+          'create_uwp_account_clone',
+          account.id,
+          true,
+          formData.get('supports_multiple_instances') === 'on'
+        );
+        const inventory = unwrap(await this.bridge.call('list_uwp_packages')) || { available: false, packages: [] };
+        this.openModal({ kind: 'uwp-manager', inventory: inventory });
+        this.toast('success', 'UWP Clone Registered', 'Windows registered the per-account clone for ' + (account.display_name || account.username) + '.');
+      } else if (form.dataset.form === 'uwp-unregister') {
+        if (values.confirm !== 'on') throw new Error('Confirm the exact UWP clone unregister operation.');
+        const account = this.findAccount(form.dataset.id) || (this.state.modal && this.state.modal.account);
+        if (!account) throw new Error('The local account for this UWP clone no longer exists.');
+        await this.bridge.call('unregister_uwp_account_clone', account.id, true);
+        const inventory = unwrap(await this.bridge.call('list_uwp_packages')) || { available: false, packages: [] };
+        this.openModal({ kind: 'uwp-manager', inventory: inventory });
+        this.toast('success', 'UWP Clone Unregistered', 'The registration was removed and Astro preserved the copied files.');
       } else if (form.dataset.form === 'cookie-add') {
         const rawCookie = (values.cookie || '').trim();
         if (!rawCookie) throw new Error('Please paste a valid .ROBLOSECURITY cookie.');
@@ -1719,6 +1987,16 @@ class OrbitApp {
         this.render();
         this.toast(res.failed ? 'warning' : 'success', 'Bulk Import Completed', res.imported + ' account(s) imported out of ' + res.total_parsed + (res.failed ? '; ' + res.failed + ' failed.' : '.'));
         (res.warnings || []).slice(0, 3).forEach(function (message) { this.toast('warning', 'Bulk import warning', message); }, this);
+      } else if (form.dataset.form === 'settings-reset') {
+        if (values.confirm !== 'on') throw new Error('Confirm the settings reset before continuing.');
+        const output = unwrap(await this.bridge.call('reset_settings', values.category || null, true)) || {};
+        this.state.settings = Object.assign({}, this.state.settings, output);
+        this.state.settings.accent_raw = this.state.settings.accent;
+        this.state.settings.accent = accentToken(this.state.settings.accent);
+        this.closeModal();
+        this.applyTheme();
+        this.render();
+        this.toast('success', 'Settings reset', values.category ? 'The selected category now uses its defaults.' : 'All local preferences now use their defaults.');
       } else if (form.dataset.form === 'windows-startup') {
         if (values.confirm !== 'on') throw new Error('Confirm the Windows startup change before continuing.');
         if (form.dataset.enabled !== 'true' && form.dataset.enabled !== 'false') throw new Error('The requested Windows startup state is invalid.');
@@ -1754,8 +2032,9 @@ class OrbitApp {
         if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('The local API port must be between 1 and 65535.');
         const api = {
           enabled: formData.get('enabled') === 'on',
-          host: '127.0.0.1',
+          host: formData.get('allow_external') === 'on' ? '0.0.0.0' : '127.0.0.1',
           port: port,
+          allow_external: formData.get('allow_external') === 'on',
           allow_get_cookie: formData.get('allow_get_cookie') === 'on',
           allow_launch_account: formData.get('allow_launch_account') === 'on',
           allow_account_editing: formData.get('allow_account_editing') === 'on',
@@ -1797,7 +2076,25 @@ class OrbitApp {
         metadata.launch_options = launchOpts;
         values.metadata = metadata;
 
-        if (form.dataset.id) await this.bridge.call('update_account', form.dataset.id, values);
+        if (form.dataset.id) {
+          await this.bridge.call('update_account', form.dataset.id, values);
+          const watcherForm = new FormData(form);
+          const existingRule = Object.assign({}, (existingAccount && existingAccount.metadata && existingAccount.metadata.watcher) || {}, (existingAccount && existingAccount.watcher) || {});
+          const rawAttempts = values.watcher_relaunch_max_attempts;
+          const watcherRule = {
+            enabled: watcherForm.get('watcher_enabled') === 'on',
+            auto_relaunch: watcherForm.get('watcher_auto_relaunch') === 'on',
+            relaunch_delay_seconds: Number(values.watcher_relaunch_delay_seconds || existingRule.relaunch_delay_seconds || 15),
+            relaunch_max_attempts: Number(rawAttempts === undefined || rawAttempts === '' ? (existingRule.relaunch_max_attempts === undefined ? 2 : existingRule.relaunch_max_attempts) : rawAttempts),
+            relaunch_on_crash: existingRule.relaunch_on_crash === undefined ? true : Boolean(existingRule.relaunch_on_crash),
+            relaunch_on_exit: watcherForm.get('watcher_relaunch_on_exit') === 'on'
+          };
+          if (!Number.isFinite(watcherRule.relaunch_delay_seconds) || watcherRule.relaunch_delay_seconds < 1 || watcherRule.relaunch_delay_seconds > 3600) throw new Error('The relaunch delay must be between 1 and 3600 seconds.');
+          if (!Number.isInteger(watcherRule.relaunch_max_attempts) || watcherRule.relaunch_max_attempts < 0 || watcherRule.relaunch_max_attempts > 20) throw new Error('Maximum relaunch attempts must be between 0 and 20.');
+          if (watcherRule.auto_relaunch && !(this.state.settings.watcher_enabled && this.state.settings.watcher_auto_relaunch_enabled)) await this.bridge.call('update_settings', { categories: { watcher: { enabled: true, auto_relaunch_enabled: true } } });
+          const savedWatcherRule = await this.bridge.call('configure_account_watcher', form.dataset.id, watcherRule);
+          if (watcherRule.auto_relaunch && savedWatcherRule && savedWatcherRule.effective && !savedWatcherRule.effective.armed) this.toast('warning', 'Watchdog saved but not armed', 'Astro stored the rule, but the relaunch stays inactive because ' + savedWatcherRule.effective.reason + '.');
+        }
         else if (String(values.session || '').trim()) await this.bridge.call('add_account_from_cookie', String(values.session).trim(), values.group_id || null);
         else await this.bridge.call('create_account', values);
         await this.resync(); this.closeModal(); this.toast('success', form.dataset.id ? 'Account updated' : 'Account added', values.username + ' is ready in your workspace.'); this.render();
@@ -1822,6 +2119,7 @@ class OrbitApp {
         const account = this.findAccount(form.dataset.id) || (this.state.modal && this.state.modal.account);
         if (!account || !account.id) throw new Error('The account for this watcher rule is no longer available.');
         const rule = {
+          enabled: new FormData(form).get('watcher_enabled') === 'on',
           auto_relaunch: new FormData(form).get('auto_relaunch') === 'on',
           relaunch_delay_seconds: Number(values.relaunch_delay_seconds),
           relaunch_max_attempts: Number(values.relaunch_max_attempts),
@@ -1958,15 +2256,21 @@ class OrbitApp {
   handleInput(event) {
     const input = event.target;
     if (input.id === 'account-filter') { this.state.accountQuery = input.value; this.filterAccountRows(); return; }
-    if (input.id === 'game-filter') { this.state.gameQuery = input.value; this.filterGameRows(); return; }
+    if (input.id === 'game-filter') { this.state.gameQuery = input.value; this.filterGameRows(); this.scheduleGameSearch(); return; }
     if (input.id === 'palette-input') { this.state.paletteQuery = input.value; this.renderOverlays(); const next = $('#palette-input'); if (next) { next.focus(); next.setSelectionRange(next.value.length, next.value.length); } }
     if (input.id === 'nexus-code-editor') { this.state.nexusExecutorCode = input.value; this.nexusSyncLineNumbers(); }
+    const macroBlock = input.closest && input.closest('.macro-block');
+    if (macroBlock && input.dataset.blockField) {
+      const index = Number(macroBlock.dataset.blockIndex);
+      if (this.state.macroDraftBlocks[index]) this.state.macroDraftBlocks[index][input.dataset.blockField] = input.type === 'number' ? Number(input.value) : input.value;
+    }
   }
 
   async handleChange(event) {
     const target = event.target;
     if (target.id === 'account-status') { this.state.accountStatus = target.value; this.render(); return; }
     if (target.id === 'nexus-exec-target') { this.state.nexusExecutorTarget = target.value; return; }
+    if (target.id === 'macro-editor-mode') { this.state.macroEditorMode = target.value === 'dsl' ? 'dsl' : 'blocks'; this.render(); return; }
     if (target.dataset.setting) {
       const value = target.type === 'checkbox' ? target.checked : target.value;
       if (target.dataset.setting === 'allow_multiple_launches') {
@@ -2100,6 +2404,50 @@ class OrbitApp {
     }.bind(this));
   }
 
+  scheduleGameSearch() {
+    if (this.gameSearchTimer) window.clearTimeout(this.gameSearchTimer);
+    const phrase = this.state.gameQuery;
+    this.gameSearchTimer = window.setTimeout(function () { void this.searchGames(phrase); }.bind(this), 350);
+  }
+
+  restoreGameFilterFocus() {
+    const input = $('#game-filter');
+    if (!input) return;
+    input.focus();
+    const end = input.value.length;
+    try { input.setSelectionRange(end, end); } catch (error) { /* search inputs may refuse a caret */ }
+  }
+
+  async searchGames(phrase) {
+    const query = String(phrase === undefined ? this.state.gameQuery : phrase).trim();
+    // A slower response for an abandoned phrase must never replace the list.
+    if (String(this.state.gameQuery).trim() !== query) return;
+    this.state.gamesLoading = true;
+    if (this.state.route === 'games') { this.render(); this.restoreGameFilterFocus(); }
+    try {
+      const rows = asArray(await this.bridge.call('search_games', query, 20));
+      if (String(this.state.gameQuery).trim() !== query) return;
+      this.state.games = rows;
+      this.state.gamesLoading = false;
+      if (this.state.route === 'games') { this.render(); this.restoreGameFilterFocus(); }
+    } catch (error) {
+      if (String(this.state.gameQuery).trim() !== query) return;
+      this.state.gamesLoading = false;
+      if (this.state.route === 'games') { this.render(); this.restoreGameFilterFocus(); }
+      this.toast('error', 'Could not search games', error.message);
+    }
+  }
+
+  async loadGames() {
+    try {
+      const rows = asArray(await this.bridge.call('list_games'));
+      this.state.games = rows;
+      if (this.state.route === 'games') this.render();
+    } catch (error) {
+      // Keep whatever the bootstrap already provided.
+    }
+  }
+
   filterGameRows() {
     const phrase = this.state.gameQuery.trim().toLowerCase();
     $$('.game-card').forEach(function (element) {
@@ -2115,7 +2463,14 @@ class OrbitApp {
     this.state.selected.clear();
     this.render();
     if (route === 'instances') void this.loadInstanceMonitor(false);
-    if (route === 'games' && this.state.gameId && !this.state.gameDetail) void this.loadGame(this.state.gameId, false);
+    if (route === 'games') {
+      // The page used to render an empty list forever: nothing ever asked the
+      // backend for the saved games, and the search box only filtered that
+      // empty array locally.
+      if (String(this.state.gameQuery).trim()) void this.searchGames(this.state.gameQuery);
+      else void this.loadGames();
+      if (this.state.gameId && !this.state.gameDetail) void this.loadGame(this.state.gameId, false);
+    }
     if (route === 'settings' && this.state.settingsTab === 'general') void this.loadWindowsStartupStatus(false);
   }
 
@@ -2490,10 +2845,10 @@ class OrbitApp {
 
   async joinServer(id) {
     const server = this.state.servers.find(function (item) { return String(item.id) === String(id); });
-    const account = this.state.accounts.find(function (item) { return item.status === 'ready'; }) || this.state.accounts[0];
     if (!server) return;
-    if (!account) { this.toast('error', 'No account available', 'Add an account before joining a server.'); return; }
-    await this.launch(account.id, { place_id: this.state.gameId, job_id: server.job_id, region: server.region });
+    const available = this.state.accounts.filter(function (item) { return item.has_session && !['in_game', 'running', 'launching'].includes(item.status); });
+    if (!available.length) { this.toast('error', 'No available signed-in account', 'Add a session or wait for an active account to become ready.'); return; }
+    this.openModal({ kind: 'server-launch', server: server });
   }
 
   async refreshInstances() {

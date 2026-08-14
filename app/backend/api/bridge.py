@@ -89,6 +89,9 @@ class DesktopBridge:
     def list_games(self) -> list[dict[str, Any]]:
         return self._invoke(self._service.list_games)
 
+    def search_games(self, query: str, limit: int = 20) -> list[dict[str, Any]]:
+        return self._invoke(self._service.search_games, query, limit)
+
     def list_recent_games(self) -> list[dict[str, Any]]:
         return self._invoke(self._service.list_recent_games)
 
@@ -110,6 +113,13 @@ class DesktopBridge:
     def resolve_server_region(self, address: str) -> dict[str, Any]:
         return self._invoke(self._service.resolve_server_region, address)
 
+    def probe_server_regions(
+        self, account_id: str, place_id: int, job_ids: list[str]
+    ) -> dict[str, Any]:
+        return self._invoke(
+            self._service.probe_server_regions, account_id, place_id, job_ids
+        )
+
     def launch_account(self, account_id: str, target: Mapping[str, Any] | None = None) -> dict[str, Any]:
         return self._invoke(self._service.launch_account, account_id, target)
 
@@ -120,6 +130,28 @@ class DesktopBridge:
 
     def launch_uwp_package(self, package_full_name: str) -> dict[str, Any]:
         return self._invoke(self._service.launch_uwp_package, package_full_name)
+
+    def create_uwp_account_clone(
+        self,
+        account_id: str,
+        confirm: bool = False,
+        supports_multiple_instances: bool = True,
+    ) -> dict[str, Any]:
+        return self._invoke(
+            self._service.create_uwp_account_clone,
+            account_id,
+            confirm=confirm,
+            supports_multiple_instances=supports_multiple_instances,
+        )
+
+    def unregister_uwp_account_clone(
+        self, account_id: str, confirm: bool = False
+    ) -> dict[str, Any]:
+        return self._invoke(
+            self._service.unregister_uwp_account_clone,
+            account_id,
+            confirm=confirm,
+        )
 
     def list_instances(self) -> list[dict[str, Any]]:
         return self._invoke(self._service.list_instances)
@@ -150,6 +182,9 @@ class DesktopBridge:
 
     def update_settings(self, values: Mapping[str, Any]) -> dict[str, Any]:
         return self._invoke(self._service.update_settings, values)
+
+    def reset_settings(self, category: str | None = None, confirm: bool = False) -> dict[str, Any]:
+        return self._invoke(self._service.reset_settings, category, confirm=confirm)
 
     def get_windows_startup_status(self) -> dict[str, Any]:
         return self._invoke(self._service.get_windows_startup_status)
@@ -292,6 +327,9 @@ class DesktopBridge:
     def start_manual_browser_login(self, group_id: str | None = None) -> dict[str, Any]:
         return self._invoke(self._service.start_manual_browser_login, group_id)
 
+    def start_saved_password_browser_login(self, account_id: str) -> dict[str, Any]:
+        return self._invoke(self._service.start_saved_password_browser_login, account_id)
+
     def poll_manual_browser_login(self, operation_id: str) -> dict[str, Any]:
         return self._invoke(self._service.poll_manual_browser_login, operation_id)
 
@@ -303,6 +341,24 @@ class DesktopBridge:
 
     def set_account_avatar(self, account_id: str, asset_ids: list[int]) -> dict[str, Any]:
         return self._invoke(self._service.set_account_avatar, account_id, asset_ids)
+
+    def list_universe_places(self, universe_id: int | str) -> list[dict[str, Any]]:
+        return self._invoke(self._service.list_universe_places, universe_id)
+
+    def list_user_outfits(self, user_id: int | str) -> list[dict[str, Any]]:
+        return self._invoke(self._service.list_user_outfits, user_id)
+
+    def wear_account_outfit(self, account_id: str, outfit_id: int | str) -> dict[str, Any]:
+        return self._invoke(self._service.wear_account_outfit, account_id, outfit_id)
+
+    def join_account_group(self, account_id: str, group: int | str) -> dict[str, Any]:
+        return self._invoke(self._service.join_account_group, account_id, group)
+
+    def open_account_browser(self, account_id: str, url: str = "https://www.roblox.com/home") -> dict[str, Any]:
+        return self._invoke(self._service.open_account_browser, account_id, url)
+
+    def get_account_saved_password(self, account_id: str) -> dict[str, Any]:
+        return self._invoke(self._service.get_account_saved_password, account_id)
 
     def parse_vip_link(self, link: str) -> dict[str, Any] | None:
         return self._invoke(self._service.parse_vip_link, link)
@@ -325,21 +381,53 @@ class DesktopBridge:
     def check_for_updates(self) -> dict[str, Any]:
         return self._invoke(self._service.check_for_updates)
 
-    # Nexus Account Control ---------------------------------------------------
-    def start_nexus_server(self, host: str | None = None, port: int | None = None) -> dict[str, Any]:
-        return self._invoke(self._service.start_nexus_server, host, port)
+    def list_macros(self) -> list[dict[str, Any]]:
+        return self._invoke(self._service.list_macros)
 
-    def stop_nexus_server(self) -> dict[str, Any]:
-        return self._invoke(self._service.stop_nexus_server)
+    def save_macro(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        return self._invoke(self._service.save_macro, payload)
 
-    def get_nexus_status(self) -> dict[str, Any]:
-        return self._invoke(self._service.get_nexus_status)
+    def delete_macro(self, macro_id: str, confirm: bool = False) -> dict[str, Any]:
+        return self._invoke(self._service.delete_macro, macro_id, confirm=confirm)
 
-    def send_nexus_command(self, target_account: str, command_name: str, payload: Any = None) -> bool:
-        return self._invoke(self._service.send_nexus_command, target_account, command_name, payload)
+    def start_macro(self, macro_id: str, pid: int) -> dict[str, Any]:
+        return self._invoke(self._service.start_macro, macro_id, pid)
 
-    def get_nexus_lua_script(self, host: str = "127.0.0.1", port: int = 5242) -> str:
-        return self._invoke(self._service.get_nexus_lua_script, host, port)
+    def stop_macro(self, run_id: str) -> dict[str, Any]:
+        return self._invoke(self._service.stop_macro, run_id)
+
+    def list_macro_runs(self) -> list[dict[str, Any]]:
+        return self._invoke(self._service.list_macro_runs)
+
+    def get_discord_presence_status(self) -> dict[str, Any]:
+        return self._invoke(self._service.get_discord_presence_status)
+
+    def refresh_discord_presence(self) -> dict[str, Any]:
+        return self._invoke(self._service.refresh_discord_presence)
+
+    def get_update_status(self) -> dict[str, Any]:
+        return self._invoke(self._service.get_update_status)
+
+    def download_update(self, confirm: bool = False) -> dict[str, Any]:
+        return self._invoke(self._service.download_update, confirm=confirm)
+
+    def schedule_update_install(self, confirm: bool = False) -> dict[str, Any]:
+        return self._invoke(self._service.schedule_update_install, confirm=confirm)
+
+    def cancel_update(self, confirm: bool = False) -> dict[str, Any]:
+        return self._invoke(self._service.cancel_update, confirm=confirm)
+
+    def get_roblox_background_status(self) -> dict[str, Any]:
+        return self._invoke(self._service.get_roblox_background_status)
+
+    def close_running_roblox(self, confirm: bool = False) -> dict[str, Any]:
+        return self._invoke(self._service.close_running_roblox, confirm=confirm)
+
+    def launch_account_from_private_link(self, account_id: str, link: str) -> dict[str, Any]:
+        return self._invoke(self._service.launch_account_from_private_link, account_id, link)
+
+    def export_support_bundle(self) -> dict[str, Any]:
+        return self._invoke(self._service.export_support_bundle)
 
     def _invoke(self, action: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
         try:

@@ -173,6 +173,73 @@ class AccountUtils:
             return True
         raise RobloxServiceError(f"Failed to update avatar outfit (HTTP {res.status_code}).")
 
+    def list_outfits(self, user_id: int) -> list[dict[str, Any]]:
+        if isinstance(user_id, bool) or not isinstance(user_id, int) or user_id <= 0:
+            raise RobloxServiceError("UserId must be a positive integer.")
+        session = requests.Session()
+        try:
+            res = session.get(
+                f"https://avatar.roblox.com/v1/users/{user_id}/outfits",
+                params={"page": 1, "itemsPerPage": 50},
+                headers={"User-Agent": "AstroAccountManager/4"},
+                timeout=15.0,
+            )
+            if res.status_code != 200:
+                raise RobloxServiceError(f"Failed to list avatar outfits (HTTP {res.status_code}).")
+            payload = res.json()
+            values = payload.get("data") if isinstance(payload, dict) else None
+            if not isinstance(values, list):
+                raise RobloxServiceError("Roblox returned an invalid outfit list.")
+            return [
+                {"id": int(item["id"]), "name": str(item.get("name") or "Outfit")[:120]}
+                for item in values[:50]
+                if isinstance(item, dict) and isinstance(item.get("id"), int) and item["id"] > 0
+            ]
+        except requests.RequestException as exc:
+            raise RobloxServiceError("Could not fetch Roblox avatar outfits.") from exc
+        finally:
+            session.close()
+
+    def get_outfit_details(self, outfit_id: int) -> dict[str, Any]:
+        if isinstance(outfit_id, bool) or not isinstance(outfit_id, int) or outfit_id <= 0:
+            raise RobloxServiceError("Outfit ID must be a positive integer.")
+        session = requests.Session()
+        try:
+            res = session.get(
+                f"https://avatar.roblox.com/v1/outfits/{outfit_id}/details",
+                headers={"User-Agent": "AstroAccountManager/4"}, timeout=15.0
+            )
+            if res.status_code != 200:
+                raise RobloxServiceError(f"Failed to read outfit details (HTTP {res.status_code}).")
+            payload = res.json()
+            if not isinstance(payload, dict):
+                raise RobloxServiceError("Roblox returned invalid outfit details.")
+            assets = payload.get("assets")
+            asset_ids = [
+                int(item["id"]) for item in assets or []
+                if isinstance(item, dict) and isinstance(item.get("id"), int) and item["id"] > 0
+            ]
+            if not asset_ids:
+                raise RobloxServiceError("The selected outfit has no wearable assets.")
+            return {"id": outfit_id, "name": str(payload.get("name") or "Outfit")[:120], "asset_ids": asset_ids[:100]}
+        except requests.RequestException as exc:
+            raise RobloxServiceError("Could not fetch Roblox outfit details.") from exc
+        finally:
+            session.close()
+
+    def wear_outfit(self, cookie: str, outfit_id: int) -> dict[str, Any]:
+        details = self.get_outfit_details(outfit_id)
+        self.set_avatar(cookie, details["asset_ids"])
+        return details
+
+    def join_group(self, cookie: str, group_id: int) -> bool:
+        if isinstance(group_id, bool) or not isinstance(group_id, int) or group_id <= 0:
+            raise RobloxServiceError("Group ID must be a positive integer.")
+        res = self._session_post(cookie, f"https://groups.roblox.com/v1/groups/{group_id}/users")
+        if res.status_code in (200, 201):
+            return True
+        raise RobloxServiceError(f"Failed to join Roblox group (HTTP {res.status_code}).")
+
     def set_follow_privacy(self, cookie: str, privacy: str) -> bool:
         choices = {
             "all": "All",

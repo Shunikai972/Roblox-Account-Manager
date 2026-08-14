@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import xml.etree.ElementTree as ET
 
 import pytest
 
@@ -117,6 +118,8 @@ class _UwpManager:
             app_user_model_id="ROBLOXCORPORATION.ROBLOX.Astro_55nm5eh3cm0pr!App",
         )
         self.launched: list[str] = []
+        self.created: list[tuple[str, bool]] = []
+        self.unregistered: list[str] = []
 
     def list_packages(self) -> tuple[UwpRobloxPackage, ...]:
         return (self.package,)
@@ -129,6 +132,14 @@ class _UwpManager:
             app_user_model_id=self.package.app_user_model_id or "",
             launched=True,
         )
+
+    def create_account_clone(self, username: str, *, supports_multiple_instances: bool):
+        self.created.append((username, supports_multiple_instances))
+        return {"created": True, "username": username}
+
+    def unregister_account_clone(self, username: str):
+        self.unregistered.append(username)
+        return {"unregistered": True, "username": username, "files_preserved": True}
 
 
 class _Roblox:
@@ -161,5 +172,138 @@ def test_uwp_capability_is_exposed_through_service_and_pywebview_bridge(tmp_path
         launched = bridge.launch_uwp_package(uwp.package.package_full_name)
         assert launched["launched"] is True
         assert uwp.launched == [uwp.package.package_full_name]
+        account = service.create_account({"username": "UwpAccount"})
+        with pytest.raises(Exception):
+            bridge.create_uwp_account_clone(account["id"], False, True)
+        created = bridge.create_uwp_account_clone(account["id"], True, True)
+        assert created["created"] is True
+        assert uwp.created == [("UwpAccount", True)]
+        removed = bridge.unregister_uwp_account_clone(account["id"], True)
+        assert removed["unregistered"] is True
+        assert uwp.unregistered == ["UwpAccount"]
     finally:
         service.close()
+
+
+def _write_source_package(root: Path) -> None:
+    (root / "Assets").mkdir(parents=True)
+    (root / "Windows10Universal.exe").write_bytes(b"uwp-player")
+    (root / "AppxSignature.p7x").write_bytes(b"signature")
+    (root / "Assets" / "icon.png").write_bytes(b"icon")
+    (root / "AppxManifest.xml").write_text(
+        """<?xml version="1.0" encoding="utf-8"?>
+<Package xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
+         xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10">
+  <Identity Name="ROBLOXCORPORATION.ROBLOX" Publisher="CN=Roblox" Version="1.0.0.0" />
+  <Applications><Application Id="App" Executable="Windows10Universal.exe" EntryPoint="Roblox.App">
+    <uap:VisualElements DisplayName="Roblox"><uap:DefaultTile ShortName="Roblox" /></uap:VisualElements>
+  </Application></Applications>
+</Package>""",
+        encoding="utf-8",
+    )
+
+
+def test_uwp_clone_copies_rewrites_and_registers_with_values_outside_argv(tmp_path: Path) -> None:
+    source = tmp_path / "WindowsApps" / "Roblox"
+    _write_source_package(source)
+
+    def runner(command):
+        assert "Get-AppxPackage" in command[-1]
+        return PowerShellResult(
+            0,
+            json.dumps(
+                {
+                    "developerMode": True,
+                    "packageFullName": "ROBLOXCORPORATION.ROBLOX_1.0_x64__abc",
+                    "installLocation": str(source),
+                }
+            ),
+        )
+
+    mutations = []
+
+    def mutate(command, environment):
+        mutations.append((command, dict(environment)))
+        assert "Astro_Account" not in " ".join(command)
+        return PowerShellResult(0, "")
+
+    clone_root = tmp_path / "clones"
+    manager = WindowsUwpRobloxManager(
+        runner=runner,
+        mutation_runner=mutate,
+        platform_name=lambda: "Windows",
+        instance_root=clone_root,
+    )
+
+    result = manager.create_account_clone("Astro_Account")
+
+    destination = clone_root / "Astro_Account"
+    assert result["created"] is True
+    assert (destination / "Windows10Universal.exe").read_bytes() == b"uwp-player"
+    assert not (destination / "AppxSignature.p7x").exists()
+    manifest = ET.parse(destination / "AppxManifest.xml").getroot()
+    namespace = "http://schemas.microsoft.com/appx/manifest/foundation/windows10"
+    desktop4 = "http://schemas.microsoft.com/appx/manifest/desktop/windows10/4"
+    assert manifest.find(f"{{{namespace}}}Identity").get("Name") == "ROBLOXCORPORATION.ROBLOX.Astro-Account"
+    assert manifest.find(f".//{{{namespace}}}Application").get(f"{{{desktop4}}}SupportsMultipleInstances") == "true"
+    assert mutations[0][1]["ASTRO_UWP_MANIFEST"] == str(destination / "AppxManifest.xml")
+
+
+def test_uwp_clone_rolls_back_existing_copy_when_registration_fails(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    _write_source_package(source)
+    clone_root = tmp_path / "clones"
+    previous = clone_root / "RollbackUser"
+    previous.mkdir(parents=True)
+    (previous / "old.txt").write_text("preserve", encoding="utf-8")
+    _write_source_package(previous)
+    calls = []
+
+    def runner(_command):
+        return PowerShellResult(
+            0,
+            json.dumps({"developerMode": True, "installLocation": str(source)}),
+        )
+
+    def mutate(_command, environment):
+        calls.append(dict(environment))
+        return PowerShellResult(1 if len(calls) == 1 else 0, "")
+
+    manager = WindowsUwpRobloxManager(
+        runner=runner,
+        mutation_runner=mutate,
+        platform_name=lambda: "Windows",
+        instance_root=clone_root,
+    )
+
+    with pytest.raises(RobloxUwpError, match="rejected"):
+        manager.create_account_clone("RollbackUser")
+
+    assert (previous / "old.txt").read_text(encoding="utf-8") == "preserve"
+    assert len(calls) == 2
+
+
+def test_uwp_unregister_targets_only_exact_discovered_account_clone(tmp_path: Path) -> None:
+    runner = _Runner(_package_payload())
+    mutations = []
+
+    def mutate(command, environment):
+        mutations.append((command, dict(environment)))
+        return PowerShellResult(0, "")
+
+    manager = WindowsUwpRobloxManager(
+        runner=runner,
+        mutation_runner=mutate,
+        platform_name=lambda: "Windows",
+        instance_root=tmp_path,
+    )
+
+    result = manager.unregister_account_clone("Astro")
+
+    assert result["unregistered"] is True
+    assert result["files_preserved"] is True
+    assert mutations[0][1] == {
+        "ASTRO_UWP_PACKAGE": "ROBLOXCORPORATION.ROBLOX.Astro_2.0.0.0_x64__55nm5eh3cm0pr"
+    }
+    with pytest.raises(RobloxUwpError):
+        manager.unregister_account_clone("NotThere")

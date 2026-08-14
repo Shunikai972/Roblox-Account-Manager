@@ -1,6 +1,6 @@
 # Analyse du projet — Astro Account Manager
 
-État vérifié le 11 août 2026 depuis `D:\Noam\Downloads\Code Account manager`.
+État vérifié le 14 août 2026 depuis `D:\Noam\Downloads\Code Account manager`.
 
 ## Sources de vérité
 
@@ -41,7 +41,7 @@ Un hôte pywebview détecté mais tardif n’est plus remplacé silencieusement 
 - affichage/copie/export plaintext volontaire d’une session, refresh d’identité et bulk import borné ;
 - ticket, CSRF, URI `rbx-player`, PlaceId, JobId, VIP, Follow, serveur aléatoire et file de lancement ;
 - intention enregistrée avant le handoff Windows, priorité de cible propre au compte et réconciliation des faux états `in_game` ;
-- mutex historique exact `ROBLOX_singletonMutex` pour le mode multi-instance, vérifié avec deux comptes et deux clients simultanés.
+- mutex historique et gestion de l’événement singleton moderne pour le mode multi-instance, vérifiés avec deux comptes et deux clients simultanés.
 
 ### Jeux et serveurs
 
@@ -64,22 +64,22 @@ Astro fournit l’équivalent adapté à son architecture :
 ### Nexus, API et UWP
 
 - Nexus expose le serveur WebSocket, handshake/identité, Ping/Log/Echo/Set*, execute, teleport, mute/unmute et le script `RAMAccount.lua`, avec jeton éphémère et messages bornés ;
-- l’API loopback porte les 22 routes RAM recensées, plus REST v1, bearer et permissions distinctes ;
-- UWP découvre les paquets installés et lance un AUMID validé. Les clones de paquet expérimentaux restent partiels, car aucun paquet UWP n’est présent pour une validation réelle.
+- l’API porte les 22 routes RAM en texte brut, `/v2`, REST v1, bearer, permissions distinctes et bind LAN explicitement opt-in ;
+- UWP découvre/lance les paquets et porte les clones par compte avec staging, manifeste, register/unregister exact et rollback ; aucun paquet UWP local n’est présent pour la preuve terrain.
 
 ## Sécurité conservée
 
 - les sessions, mots de passe sauvegardés et grants OAuth sont protégés par DPAPI et ne figurent pas dans les payloads ordinaires ;
 - logs, diagnostics, backups et transfert de métadonnées sont redacted/public-only ;
 - l’affichage/export brut de session existe uniquement par des actions explicites ; l’API exige en plus `allow_get_cookie` ;
-- l’API écoute seulement sur `127.0.0.1`, avec bearer 32+ fourni par environnement ;
+- l’API écoute `127.0.0.1` par défaut ; l’exposition LAN exige un opt-in séparé et conserve bearer/permissions ;
 - Nexus exige son jeton de session et n’accepte pas un client non identifié ;
 - les erreurs réseau ne reflètent ni corps distant, ni cookie, ni chemin sensible.
 
 ## État honnête
 
-La matrice canonique contient 77 fonctionnalités : 46 `VERIFIED PARITY`, 5 `PARTIAL`, 26 `TESTED BUT NOT VERIFIED`, 0 `MISSING`, 0 `BLOCKED`.
+La matrice canonique contient 85 fonctionnalités : 48 `VERIFIED PARITY`, 0 `PARTIAL`, 37 `TESTED BUT NOT VERIFIED`, 0 `MISSING`, 0 `BLOCKED`.
 
-`TESTED BUT NOT VERIFIED` signifie qu’un comportement existe et possède des tests sans preuve réelle suffisante pour cette ligne. Le 11 août 2026, deux sessions distinctes, deux PID simultanés, deux Place ID propres, le ticket Roblox, le watcher multi-log, la fermeture séparée, le crash/relaunch, les fenêtres, ClientSettings et le build ont été vérifiés réellement. Le 12 août, `AllowGetAccounts`, la coexistence bearer/password, le parser bulk et la région bornée ont été intégrés sans lancer Roblox. Les écarts partiels concernent désormais l’import username/password automatique, les clones UWP, la preuve région réelle, Lua in-game et les dernières formes de réponses API legacy.
+`TESTED BUT NOT VERIFIED` signifie qu’un comportement existe et possède des tests sans preuve réelle suffisante pour cette ligne. Les derniers portages couvrent le login par mot de passe importé via Edge CDP, les clones UWP, la sonde région historique, le client Lua Nexus et les réponses exactes de l’API legacy. Leurs preuves restantes dépendent respectivement d’un mot de passe importé, d’un paquet UWP, d’un essai réseau authentifié choisi, et d’un client Nexus en jeu ; aucune ligne portable ne reste `PARTIAL`.
 
 Voir [la matrice exhaustive](../user-guide/FEATURE_MATRIX.md), [la validation individuelle des 42 lignes](../QA_MATRIX_2026-08-11.md), [le registre de portage](../PORTING_LEDGER.md) et [l’audit final](FINAL_AUDIT.md).

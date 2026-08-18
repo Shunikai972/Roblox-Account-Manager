@@ -18,6 +18,43 @@ LEGACY_APP_SLUG = "AsteriaAccountManager"
 APP_VERSION = "4.0.3"
 
 
+# Features that stay in the source tree but are intentionally unreachable from
+# the shipped product.  Nothing is deleted: flip the matching environment
+# variable (for example ASTRO_ENABLE_NEXUS=1) to bring a surface back without
+# touching any code.  Keeping the registry here means the backend, the desktop
+# bridge and the UI all read the same single source of truth.
+HIDDEN_FEATURES: dict[str, str] = {
+    "nexus": "ASTRO_ENABLE_NEXUS",
+    # Running macros on several Roblox windows at once is set aside, not
+    # removed: pydirectinput needs the foreground, so two concurrent runs
+    # fight over it and steal each other's keystrokes.  The code path stays
+    # intact behind this flag for a later redesign.
+    "multi_window_macros": "ASTRO_ENABLE_MULTI_WINDOW_MACROS",
+}
+
+_TRUTHY = {"1", "true", "yes", "on", "enable", "enabled"}
+
+
+def feature_enabled(name: str) -> bool:
+    """Return True when a hidden feature has been explicitly re-enabled.
+
+    Unknown feature names are always enabled: only names listed in
+    ``HIDDEN_FEATURES`` are hidden, so adding a normal feature never needs a
+    flag.
+    """
+
+    variable = HIDDEN_FEATURES.get(str(name))
+    if variable is None:
+        return True
+    return str(os.environ.get(variable, "")).strip().casefold() in _TRUTHY
+
+
+def feature_flags() -> dict[str, bool]:
+    """Return the resolved state of every hideable feature for the UI."""
+
+    return {name: feature_enabled(name) for name in HIDDEN_FEATURES}
+
+
 DEFAULT_SETTINGS: dict[str, Any] = {
     "general": {
         "launch_delay_ms": 2500,
@@ -47,6 +84,9 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "macros": {
         "enabled": True,
         "allow_background_delivery": True,
+        # When a client is relaunched by the rules, the macro it was running is
+        # queued and restarted once the new process is verified.
+        "resume_after_relaunch": True,
     },
     "discord": {
         "enabled": False,
@@ -76,7 +116,60 @@ DEFAULT_SETTINGS: dict[str, Any] = {
         "memory_low_mb": 200,
         "close_if_title_mismatch": False,
         "health_grace_seconds": 30,
+        # Rejoin shaping for relaunches the process watcher already granted.
+        # Closing a live client from a log event is deliberately NOT done here:
+        # terminate_known_process() requires explicit human confirmation.
+        "rejoin_change_server_after": 2,
+        "rejoin_backoff_factor": 2.0,
+        "rejoin_max_delay_seconds": 300,
         "expected_window_title": "Roblox",
+    },
+    # IF/THEN automation rules.  Disabled by default: they act on live farms.
+    "rules": {
+        "enabled": False,
+        "macro_stuck_seconds": 60,
+        # Never name a setting with a credential-like word (session, token,
+        # secret, cookie, password): flattened keys go through
+        # SQLiteRepository.set_setting, which refuses them outright.
+        "max_runtime_hours": 6.0,
+        "cpu_pause_percent": 90,
+        "memory_pause_percent": 90,
+        "pause_priority_at_or_below": 3,
+        "restart_stuck_macros": True,
+        "group_ids": [],
+    },
+    # Smart launcher.  Ten clients booting at the same instant is what melts a
+    # machine, so launches are staggered and capped by default.
+    "launcher": {
+        "max_concurrent": 3,
+        "delay_seconds": 4.0,
+        "wait_for_wave": True,
+        # The breather between waves: what keeps 20 alts from starting at once.
+        "wave_pause_seconds": 6.0,
+        "skip_running": True,
+    },
+    # Focus, sleep and the dynamic launch gate.  Every value here is read by
+    # the comfort planner or the wave gate; none of them is a dead switch.
+    "comfort": {
+        "focus_volume": 100,
+        "background_volume": 0,
+        "focus_minimizes_others": True,
+        "sleep_after_minutes": 15,
+        "queue_cpu_percent": 80,
+        "queue_memory_percent": 85,
+        "queue_max_instances": 0,
+    },
+    # Adaptive frame rates and the memory watchdog.  Adaptive FPS stays off by
+    # default because applying it rewrites the shared Roblox client settings.
+    "resources": {
+        "adaptive_fps_enabled": False,
+        "watched_fps": 60,
+        "macro_fps": 20,
+        "idle_fps": 5,
+        "memory_warn_percent": 85,
+        "memory_critical_percent": 93,
+        "reserve_mb": 2048,
+        "average_instance_mb": 1200,
     },
     "performance": {
         "global_max_fps": 0,

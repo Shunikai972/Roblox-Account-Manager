@@ -1,0 +1,2 @@
+[console_scripts]
+astro-account-manager = main:main

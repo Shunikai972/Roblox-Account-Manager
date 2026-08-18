@@ -71,10 +71,17 @@ function formatBytes(value) {
 }
 
 function statusText(value) {
-  return { ready: 'Ready', in_game: 'In game', running: 'Running', starting: 'Launching', launching: 'Launching', offline: 'Offline', orphaned: 'Unassociated', unknown: 'Unknown', terminating: 'Closing', exited: 'Exited', crashed: 'Crashed', terminated: 'Closed', healthy: 'Healthy', degraded: 'Limited', error: 'Issue' }[value] || String(value || 'Unknown');
+  return { ready: 'Ready', in_game: 'In game', running: 'Running', starting: 'Launching', launching: 'Launching', offline: 'Offline', orphaned: 'Unassociated', unknown: 'Unknown', terminating: 'Closing', exited: 'Exited', crashed: 'Crashed', terminated: 'Closed', healthy: 'Healthy', degraded: 'Limited', error: 'Issue', farming: 'Farming', macro_paused: 'Macro paused', afk: 'In game, unattended' }[value] || String(value || 'Unknown');
 }
 
+// Icons are pure markup and one render calls this helper dozens of times.
+// Rebuilding the same SVG string on every poll was pure waste.
+const ICON_CACHE = new Map();
+
 function icon(name, title) {
+  const cacheKey = String(name) + '\u0000' + (title || '');
+  const cached = ICON_CACHE.get(cacheKey);
+  if (cached !== undefined) return cached;
   const label = title ? ' aria-label="' + escapeHtml(title) + '" role="img"' : ' aria-hidden="true"';
   const open = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"' + label + '>';
   const paths = {
@@ -123,7 +130,9 @@ function icon(name, title) {
     crosshair: '<circle cx="12" cy="12" r="8"/><path d="M12 2v4M12 18v4M2 12h4M18 12h4"/>',
     globe: '<circle cx="12" cy="12" r="8.5"/><path d="M12 3.5c-3 3-4 6-4 8.5s1 5.5 4 8.5M12 3.5c3 3 4 6 4 8.5s-1 5.5-4 8.5M3.5 12h17"/>'
   };
-  return open + (paths[name] || paths.info) + '</svg>';
+  const markup = open + (paths[name] || paths.info) + '</svg>';
+  ICON_CACHE.set(cacheKey, markup);
+  return markup;
 }
 
 function publicAvatarUrl(value) {
@@ -143,6 +152,14 @@ function avatar(account, size) {
   return '<span class="avatar ' + escapeHtml(account.avatar_color || 'neutral') + (size ? ' avatar-' + size : '') + '" aria-label="' + label + '">' + content + '</span>';
 }
 
+/* Actions belonging to the hidden Nexus surface.  They stay implemented so the
+   feature can be restored, but handleClick ignores them while it is hidden. */
+const NEXUS_ACTIONS = new Set([
+  'open-nexus-panel', 'open-send-nexus', 'start-nexus-server', 'stop-nexus-server',
+  'copy-nexus-script', 'refresh-nexus-status', 'nexus-execute', 'nexus-clear-editor',
+  'nexus-clear-log', 'nexus-target-client', 'nexus-quick'
+]);
+
 class OrbitApp {
   constructor() {
     this.root = $('#app');
@@ -155,6 +172,10 @@ class OrbitApp {
       route: 'dashboard', accounts: [], groups: [], games: [], instances: [], activity: [], notifications: [],
       diagnostics: { services: [], logs: [], status: 'healthy' }, settings: {},
       macros: [], macroRuns: [], macroEditorMode: 'blocks',
+      fleet: { groupId: '', plan: null, resources: null }, dashboard: null,
+      fleetTab: 'stats', fleetData: {}, fleetWindowDays: null,
+      fleetFilters: { query: '', tags: [], status: '', placeId: '' }, fleetStudio: { macroId: '', accountId: '' },
+      lastRenderHtml: null, lastOverlayHtml: null,
       macroDraftBlocks: [{ type: 'wait', milliseconds: 1000 }, { type: 'key_press', key: 'W', milliseconds: 80 }],
       discordPresence: { enabled: false, connected: false }, updater: {}, robloxBackground: { running: false, count: 0, processes: [] },
       instanceMonitor: { instances: [], events: [], pending_restarts: [], last_scan_complete: null, termination_enabled: false },
@@ -165,6 +186,7 @@ class OrbitApp {
       launchingAccounts: new Set(), batchPollTimer: null, runtimePollTimer: null, runtimePollInFlight: false,
       gameQuery: '', gameId: null, gameDetail: null, servers: [], serversLoading: false, gamesLoading: false,
       settingsTab: 'general', modal: null, notificationsOpen: false, paletteOpen: false, paletteQuery: '',
+      features: { nexus: false },
       nexusExecutorCode: "-- Write your Lua script here\nprint('Hello from Nexus!')\n",
       nexusExecutorTarget: 'all', nexusExecutorLog: [],
       mode: 'preview', loading: true
@@ -232,6 +254,7 @@ class OrbitApp {
     this.state.discordPresence = unwrap(boot.discord_presence) || this.state.discordPresence;
     this.state.updater = unwrap(boot.updater) || this.state.updater;
     this.state.robloxBackground = unwrap(boot.roblox_background) || this.state.robloxBackground;
+    this.state.features = Object.assign({ nexus: false }, unwrap(boot.features) || {});
     this.state.nexus = unwrap(boot.nexus) || { running: false, host: '127.0.0.1', port: 5242, url: 'ws://127.0.0.1:5242/Nexus', accounts: [] };
     if (!this.state.gameId && this.state.games[0]) this.state.gameId = String(this.state.games[0].place_id);
   }
@@ -370,6 +393,22 @@ class OrbitApp {
       last_scan_complete: typeof monitor.last_scan_complete === 'boolean' ? monitor.last_scan_complete : null,
       termination_enabled: Boolean(monitor.termination_enabled)
     };
+  }
+
+  applyDashboard(payload) {
+    const data = unwrap(payload) || {};
+    // Accounts, windows, macro runs and the resource verdict all come from the
+    // same join, so the dashboard can no longer show an offline account next
+    // to a running macro.
+    if (Object.prototype.hasOwnProperty.call(data, 'accounts')) this.state.accounts = asArray(data.accounts);
+    if (Object.prototype.hasOwnProperty.call(data, 'instances')) {
+      this.state.instances = asArray(data.instances);
+      this.state.instanceMonitor = Object.assign({}, this.state.instanceMonitor, { instances: this.state.instances });
+    }
+    if (Object.prototype.hasOwnProperty.call(data, 'groups')) this.state.groups = asArray(data.groups);
+    if (Object.prototype.hasOwnProperty.call(data, 'macro_runs')) this.state.macroRuns = asArray(data.macro_runs);
+    if (data.resources) this.state.fleet.resources = data.resources;
+    this.state.dashboard = data;
   }
 
   async loadInstanceMonitor(announce) {
@@ -552,10 +591,20 @@ class OrbitApp {
 
   renderLoading() {
     this.root.innerHTML = '<main class="loading-page"><div class="loading-card"><div class="wordmark-mark">' + icon('orbit') + '</div><strong>Opening Astro Account Manager</strong><p>Preparing your workspace</p><div class="loading-bar"><i></i></div></div></main>';
+    // This replaces the document outside render(), so the markup cache must be
+    // dropped or the next render would skip the rebuild and keep this screen.
+    this.state.lastRenderHtml = null;
   }
 
   navItem(route, label, iconName, count) {
     return '<button class="nav-item ' + (this.state.route === route ? 'is-active' : '') + '" data-action="navigate" data-route="' + route + '" type="button">' + icon(iconName) + '<span>' + label + '</span>' + (count !== undefined ? '<small class="nav-count">' + escapeHtml(count) + '</small>' : '') + '</button>';
+  }
+
+  /* Nexus is retained in this file but hidden from the product.  The backend
+     reports features.nexus, so nothing below renders or responds until the
+     ASTRO_ENABLE_NEXUS flag restores it. */
+  nexusEnabled() {
+    return Boolean((this.state.features || {}).nexus);
   }
 
   pageMeta() {
@@ -567,16 +616,45 @@ class OrbitApp {
       instances: ['Instances', 'Live Roblox process monitoring'],
       nexus: ['Nexus Executor', nexusAccts.length + ' connected client' + (nexusAccts.length === 1 ? '' : 's')],
       macros: ['Macros', 'Independent block or DSL automations for verified Roblox instances'],
+      fleet: ['Fleet', 'Statistics, schedule, account health, servers, coordination, comfort, alerts and rules'],
       diagnostics: ['Diagnostics', 'Service health and recent events'],
       settings: ['Settings', 'Make Astro Account Manager feel like your workspace']
     };
     return metas[this.state.route] || metas.dashboard;
   }
 
+  // A background poll must never steal the caret.  When the element being typed
+  // into lives inside the container we are about to rebuild, its value, its
+  // selection and its focus are carried across the swap.  Without this the 3 s
+  // runtime poll quietly destroyed whatever was half-typed in a text box.
+  swapHtml(container, html) {
+    if (!container) return;
+    const active = (typeof document !== 'undefined' && document.activeElement) ? document.activeElement : null;
+    const tag = active && active.tagName ? String(active.tagName).toLowerCase() : '';
+    const inside = active && typeof container.contains === 'function' && container.contains(active);
+    if (!inside || !['input', 'textarea', 'select'].includes(tag)) { container.innerHTML = html; return; }
+    const memo = {
+      id: active.id || '',
+      name: (typeof active.getAttribute === 'function' ? active.getAttribute('name') : '') || '',
+      value: typeof active.value === 'string' ? active.value : null,
+      start: typeof active.selectionStart === 'number' ? active.selectionStart : null,
+      end: typeof active.selectionEnd === 'number' ? active.selectionEnd : null
+    };
+    container.innerHTML = html;
+    const selector = memo.id ? '[id="' + memo.id + '"]' : (memo.name ? '[name="' + memo.name + '"]' : '');
+    const next = (selector && typeof container.querySelector === 'function') ? container.querySelector(selector) : null;
+    if (!next) return;
+    if (memo.value !== null && typeof next.value === 'string' && next.value !== memo.value) next.value = memo.value;
+    if (typeof next.focus === 'function') { try { next.focus({ preventScroll: true }); } catch (_) { next.focus(); } }
+    if (memo.start !== null && typeof next.setSelectionRange === 'function') {
+      try { next.setSelectionRange(memo.start, memo.end === null ? memo.start : memo.end); } catch (_) {}
+    }
+  }
+
   render() {
     const meta = this.pageMeta();
     const unread = this.state.notifications.filter(function (item) { return !item.read; }).length;
-    this.root.innerHTML = '<aside class="sidebar" aria-label="Main navigation">' +
+    const html = '<aside class="sidebar" aria-label="Main navigation">' +
       '<div class="wordmark"><span class="wordmark-mark">' + icon('orbit') + '</span><span class="wordmark-copy"><strong>astro</strong><small>account manager</small></span></div>' +
       '<nav class="nav">' +
       '<p class="nav-label">Workspace</p>' +
@@ -584,8 +662,9 @@ class OrbitApp {
       this.navItem('accounts', 'Accounts', 'users', this.state.accounts.length) +
       this.navItem('games', 'Games & servers', 'gamepad') +
       this.navItem('instances', 'Instances', 'monitor', this.state.instances.length) +
-      this.navItem('nexus', 'Nexus', 'command', asArray((this.state.nexus || {}).accounts).length) +
+      (this.nexusEnabled() ? this.navItem('nexus', 'Nexus', 'command', asArray((this.state.nexus || {}).accounts).length) : '') +
       this.navItem('macros', 'Macros', 'zap', this.state.macros.length) +
+      this.navItem('fleet', 'Fleet', 'shield') +
       '<p class="nav-label">System</p>' +
       this.navItem('diagnostics', 'Diagnostics', 'activity') +
       this.navItem('settings', 'Settings', 'settings') +
@@ -597,8 +676,15 @@ class OrbitApp {
       '<button class="icon-button" type="button" data-action="toggle-theme" aria-label="Toggle color theme">' + icon(this.state.settings.theme === 'light' ? 'moon' : 'sun') + '</button>' +
       '<span class="topbar-divider"></span><button class="icon-button" type="button" data-action="toggle-notifications" aria-label="Notifications">' + icon('bell') + (unread ? '<span class="notification-pip"></span>' : '') + '</button></header>' +
       '<main id="app-main" class="page" tabindex="-1">' + this.renderPage() + '</main></section>';
+    // The 3 s poll used to rebuild the entire document on every tick, which
+    // also reset scrolling, focus and any open dropdown.  Identical markup
+    // means there is nothing visible to update.
+    if (html !== this.state.lastRenderHtml) {
+      this.state.lastRenderHtml = html;
+      this.swapHtml(this.root, html);
+    }
     this.renderOverlays();
-    if (this.state.route === 'nexus') {
+    if (this.state.route === 'nexus' && this.nexusEnabled()) {
       this.nexusSyncLineNumbers();
       const editor = document.getElementById('nexus-code-editor');
       const lineNums = document.getElementById('nexus-line-numbers');
@@ -612,8 +698,9 @@ class OrbitApp {
     if (this.state.route === 'accounts') return this.renderAccounts();
     if (this.state.route === 'games') return this.renderGames();
     if (this.state.route === 'instances') return this.renderInstances();
-    if (this.state.route === 'nexus') return this.renderNexusExecutor();
+    if (this.state.route === 'nexus') return this.nexusEnabled() ? this.renderNexusExecutor() : this.renderDashboard();
     if (this.state.route === 'macros') return this.renderMacros();
+    if (this.state.route === 'fleet') return this.renderFleet();
     if (this.state.route === 'diagnostics') return this.renderDiagnostics();
     if (this.state.route === 'settings') return this.renderSettings();
     return this.renderDashboard();
@@ -631,10 +718,46 @@ class OrbitApp {
       this.statCard('Active now', active.length, 'activity', active.length ? '<em>Instances detected</em>' : 'No active sessions') +
       this.statCard('Favorites', favorites.length, 'star', favorites.length ? 'Pinned for quick launch' : 'Pin your first favorite') +
       this.statCard('Services', this.state.diagnostics.status === 'healthy' ? 'Good' : 'Check', 'shield', '<em>' + escapeHtml(this.state.diagnostics.status || 'Healthy') + '</em>') +
-      '</section><section class="section-header"><h3>Continue where you left off</h3><span class="section-line"></span><button class="section-link" type="button" data-action="navigate" data-route="accounts">All accounts</button></section>' +
+      '</section>' + this.renderFleetCard() + '<section class="section-header"><h3>Continue where you left off</h3><span class="section-line"></span><button class="section-link" type="button" data-action="navigate" data-route="accounts">All accounts</button></section>' +
       '<section class="dashboard-grid"><article class="panel launch-feature"><div class="eyebrow"><span class="live-dot"></span> Quick launch</div><h3>' + (primary ? escapeHtml(primary.display_name || primary.username) + ' is ready for the next session.' : 'Add your first account to begin.') + '</h3><p>' + (primary ? escapeHtml(primary.username) + ' can launch into your selected experience in one step.' : 'Keep sessions, groups, and launches organized in one calm workspace.') + '</p><div class="launch-feature-actions">' + (primary ? '<button class="button button-primary" type="button" data-action="launch" data-id="' + escapeHtml(primary.id) + '">' + icon('play') + ' Launch now</button><button class="button" type="button" data-action="edit-account" data-id="' + escapeHtml(primary.id) + '">' + icon('edit') + ' Details</button>' : '<button class="button button-primary" type="button" data-action="create-account">' + icon('plus') + ' Add your first account</button>') + '</div><div class="feature-meta"><span><strong>' + this.state.instances.length + '</strong> tracked instances</span><span><strong>' + this.state.games.length + '</strong> recent games</span></div></article>' +
       '<article class="panel"><div class="panel-head"><h3>' + icon('clock') + ' Recent activity</h3><button class="section-link" data-action="navigate" data-route="diagnostics" type="button">View log</button></div><div class="activity-list">' + this.renderActivity(this.state.activity.slice(0, 4)) + '</div></article></section>' +
       '<section class="section-header"><h3>Recently used accounts</h3><p>Jump right back in</p><span class="section-line"></span></section><section class="recent-accounts">' + (recent.length ? recent.map(this.renderMiniAccount.bind(this)).join('') : this.emptyInline('users', 'No accounts yet', 'Add an account to build a launch history.')) + '</section>';
+  }
+
+  renderFleetCard() {
+    const fleet = this.state.fleet || {};
+    const plan = fleet.plan || null;
+    const resources = fleet.resources || null;
+    const groups = asArray(this.state.groups);
+    const options = ['<option value="">Choose a group</option>'].concat(groups.map(function (group) {
+      const selected = fleet.groupId === group.id ? ' selected' : '';
+      return '<option value="' + escapeHtml(group.id) + '"' + selected + '>' + escapeHtml(group.name) + '</option>';
+    })).join('');
+    const lines = [];
+    if (plan) {
+      lines.push('Planned ' + escapeHtml(plan.planned || 0) + ' account(s) in ' + escapeHtml(plan.waves || 0) + ' wave(s), ' +
+        escapeHtml(plan.delay_seconds || 0) + 's apart, about ' + escapeHtml(plan.estimated_seconds || 0) + 's total.');
+      if (asArray(plan.skipped).length) lines.push('Skipped ' + escapeHtml(asArray(plan.skipped).length) + ' already running or duplicated account(s).');
+    }
+    if (resources) {
+      if (resources.applied_fps) lines.push('Frame rate target ' + escapeHtml(resources.applied_fps) + ' FPS for ' + escapeHtml(resources.instance_count || 0) + ' window(s).');
+      if (resources.message) lines.push(escapeHtml(resources.message));
+      if (resources.estimated_additional_instances !== null && resources.estimated_additional_instances !== undefined) {
+        lines.push('Room for about ' + escapeHtml(resources.estimated_additional_instances) + ' more client(s).');
+      }
+      lines.push('Roblox exposes a single global frame rate cap, so per-window rates are not applied.');
+    }
+    const detail = lines.length ? '<div class="panel-note"><small>' + lines.join('<br>') + '</small></div>' : '';
+    return '<section class="section-header"><h3>Fleet control</h3><p>Stagger launches and keep the machine breathing</p><span class="section-line"></span></section>' +
+      '<section class="dashboard-grid"><article class="panel"><div class="panel-head"><h3>' + icon('rocket') + ' Smart launch</h3></div>' +
+      '<div class="panel-body"><label class="field-label" for="fleet-group">Group</label>' +
+      '<select class="input" id="fleet-group">' + options + '</select>' +
+      '<div class="button-row">' +
+      '<button class="button button-primary" type="button" data-action="smart-launch-group">Launch group</button>' +
+      '<button class="button button-quiet" type="button" data-action="smart-launch-preview">Preview waves</button>' +
+      '<button class="button button-quiet" type="button" data-action="stop-all-macros">Stop all macros</button>' +
+      '<button class="button button-quiet" type="button" data-action="apply-resource-plan">Apply frame rates</button>' +
+      '</div>' + detail + '</div></article></section>';
   }
 
   statCard(label, value, symbol, hint) {
@@ -674,7 +797,7 @@ class OrbitApp {
       '</div>' +
       '<div style="display: flex; gap: 6px; margin-top: 2px;">' +
       '<button class="button button-secondary" style="flex: 1; font-size: 0.8rem; padding: 6px;" type="button" data-action="open-account-utilities">⚙️ Utilities</button>' +
-      '<button class="button button-secondary" style="flex: 1; font-size: 0.8rem; padding: 6px;" type="button" data-action="open-nexus-panel">🚀 Nexus Control</button>' +
+      (this.nexusEnabled() ? '<button class="button button-secondary" style="flex: 1; font-size: 0.8rem; padding: 6px;" type="button" data-action="open-nexus-panel">🚀 Nexus Control</button>' : '') +
       '</div>' +
       '<hr style="border: 0; border-top: 1px solid var(--border); margin: 2px 0;" />' +
       '<div style="display: flex; flex-direction: column; gap: 8px;">' +
@@ -819,7 +942,7 @@ class OrbitApp {
     const pending = asArray(monitor.pending_restarts);
     const pendingBlock = pending.length ? '<section class="panel monitor-detail-panel"><div class="panel-head"><h3>' + icon('refresh') + ' Pending restarts</h3><span>' + pending.length + '</span></div><div class="activity-list">' + pending.slice(0, 5).map(function (request) { const account = this.findAccount(request.account_id); return '<div class="activity-row"><span class="activity-icon">' + icon('refresh') + '</span><div class="activity-copy"><strong>' + escapeHtml(account ? account.display_name || account.username : 'Account') + '</strong><small>Place ' + escapeHtml(request.place_id || 'unknown') + ' - attempt ' + escapeHtml(request.attempt || 0) + '</small></div><time class="activity-time">' + relativeTime(request.due_at) + '</time></div>'; }.bind(this)).join('') + '</div></section>' : '';
     const eventBlock = events.length ? '<section class="panel monitor-detail-panel"><div class="panel-head"><h3>' + icon('activity') + ' Recent monitor events</h3><span>' + events.length + '</span></div><div class="activity-list">' + this.renderActivity(events) + '</div></section>' : '';
-    return '<section class="page-heading"><div class="page-heading-copy"><h2>Every running session, accounted for.</h2><p>Astro Account Manager keeps launch state, process IDs, and lightweight health signals together so active accounts never become guesswork.</p></div><div class="page-heading-actions"><button class="button button-primary" type="button" data-action="refresh-instances">' + icon('refresh') + ' Refresh instances</button></div></section><section class="instance-summary"><article class="panel monitor-card"><h3>Instance watcher</h3><p>Current local process observations from the desktop bridge.</p><div class="pulse-track"><svg class="pulse-svg" preserveAspectRatio="none" viewBox="0 0 400 55"><polyline points="0,33 22,33 32,19 42,42 54,28 67,33 97,33 112,18 123,42 138,25 152,33 193,33 204,21 217,38 231,33 279,33 294,16 305,42 320,27 334,33 400,33"></polyline></svg></div><div class="monitor-footer"><span>' + escapeHtml(scanLabel) + '</span><span>' + this.state.instances.length + ' tracked process' + (this.state.instances.length === 1 ? '' : 'es') + '</span><span class="monitor-mode">' + escapeHtml(closeLabel) + '</span></div></article><article class="panel"><div class="panel-head"><h3>' + icon('shield') + ' Service health</h3><span>' + escapeHtml(this.state.diagnostics.status || 'Healthy') + '</span></div><div class="health-list">' + services.map(function (service) { return '<div class="health-row"><span class="health-symbol">' + icon(service.status === 'degraded' ? 'alert' : 'check') + '</span><span class="health-copy"><strong>' + escapeHtml(service.name) + '</strong><span>' + escapeHtml(service.detail) + '</span></span><span class="status ' + escapeHtml(service.status || 'healthy') + '"></span></div>'; }).join('') + '</div></article></section><section class="section-header"><h3>Observed instances</h3><p>Tracked locally by the desktop bridge</p><span class="section-line"></span></section>' + this.renderInstancesTable() + '<section class="monitor-detail-grid">' + pendingBlock + eventBlock + '</section>' + this.renderNexusSection();
+    return '<section class="page-heading"><div class="page-heading-copy"><h2>Every running session, accounted for.</h2><p>Astro Account Manager keeps launch state, process IDs, and lightweight health signals together so active accounts never become guesswork.</p></div><div class="page-heading-actions"><button class="button button-primary" type="button" data-action="refresh-instances">' + icon('refresh') + ' Refresh instances</button></div></section><section class="instance-summary"><article class="panel monitor-card"><h3>Instance watcher</h3><p>Current local process observations from the desktop bridge.</p><div class="pulse-track"><svg class="pulse-svg" preserveAspectRatio="none" viewBox="0 0 400 55"><polyline points="0,33 22,33 32,19 42,42 54,28 67,33 97,33 112,18 123,42 138,25 152,33 193,33 204,21 217,38 231,33 279,33 294,16 305,42 320,27 334,33 400,33"></polyline></svg></div><div class="monitor-footer"><span>' + escapeHtml(scanLabel) + '</span><span>' + this.state.instances.length + ' tracked process' + (this.state.instances.length === 1 ? '' : 'es') + '</span><span class="monitor-mode">' + escapeHtml(closeLabel) + '</span></div></article><article class="panel"><div class="panel-head"><h3>' + icon('shield') + ' Service health</h3><span>' + escapeHtml(this.state.diagnostics.status || 'Healthy') + '</span></div><div class="health-list">' + services.map(function (service) { return '<div class="health-row"><span class="health-symbol">' + icon(service.status === 'degraded' ? 'alert' : 'check') + '</span><span class="health-copy"><strong>' + escapeHtml(service.name) + '</strong><span>' + escapeHtml(service.detail) + '</span></span><span class="status ' + escapeHtml(service.status || 'healthy') + '"></span></div>'; }).join('') + '</div></article></section><section class="section-header"><h3>Observed instances</h3><p>Tracked locally by the desktop bridge</p><span class="section-line"></span></section>' + this.renderInstancesTable() + '<section class="monitor-detail-grid">' + pendingBlock + eventBlock + '</section>' + (this.nexusEnabled() ? this.renderNexusSection() : '');
   }
 
   renderNexusSection() {
@@ -1026,16 +1149,20 @@ class OrbitApp {
     if (kind === 'key_press') fields = '<label>Key<input data-block-field="key" maxlength="24" value="' + escapeHtml(block.key || 'W') + '" /></label><label>Hold ms<input data-block-field="milliseconds" type="number" min="1" max="10000" value="' + escapeHtml(block.milliseconds || 80) + '" /></label>';
     if (kind === 'mouse_click') fields = '<label>X (0–1)<input data-block-field="x" type="number" min="0" max="1" step="0.01" value="' + escapeHtml(block.x === undefined ? 0.5 : block.x) + '" /></label><label>Y (0–1)<input data-block-field="y" type="number" min="0" max="1" step="0.01" value="' + escapeHtml(block.y === undefined ? 0.5 : block.y) + '" /></label>';
     if (kind === 'text') fields = '<label>Text<input data-block-field="value" maxlength="500" value="' + escapeHtml(block.value || '') + '" /></label>';
-    return '<div class="macro-block" data-block-index="' + index + '" data-block-type="' + escapeHtml(kind) + '"><span class="macro-block-grip">⋮⋮</span><strong>' + escapeHtml({ wait: 'Wait', key_press: 'Press key', mouse_click: 'Click window', text: 'Type text' }[kind] || kind) + '</strong>' + fields + '<button class="icon-button" type="button" data-action="remove-macro-block" data-index="' + index + '" aria-label="Remove block">' + icon('x') + '</button></div>';
+    if (kind === 'condition') fields = '<label>Check<select data-block-field="check">' + ['runtime_above', 'runtime_below', 'checkpoint_reached', 'checkpoint_missing', 'variable_equals', 'variable_missing', 'account_running', 'account_stopped'].map(function (name) { return '<option value="' + name + '"' + (String(block.check || 'runtime_above') === name ? ' selected' : '') + '>' + name.replace(/_/g, ' ') + '</option>'; }).join('') + '</select></label><label>Value<input data-block-field="value" maxlength="120" value="' + escapeHtml(block.value || '') + '" placeholder="seconds, name or VAR value" /></label><label>Then<select data-block-field="then"><option value="stop"' + (String(block.then || 'stop') === 'stop' ? ' selected' : '') + '>Stop the macro</option><option value="launch"' + (block.then === 'launch' ? ' selected' : '') + '>Launch the client</option><option value="restart"' + (block.then === 'restart' ? ' selected' : '') + '>Restart the client</option></select></label>';
+    if (kind === 'teleport') fields = '<label>Place id<input data-block-field="place_id" maxlength="20" value="' + escapeHtml(block.place_id || '') + '" /></label><label>JobId (optional)<input data-block-field="job_id" maxlength="64" value="' + escapeHtml(block.job_id || '') + '" /></label>';
+    if (kind === 'launch' || kind === 'restart') fields = '<label><small>' + (kind === 'launch' ? 'Launches this account, then re-pins the run to the new client.' : 'Closes this account and relaunches it, then continues.') + '</small></label>';
+    return '<div class="macro-block" data-block-index="' + index + '" data-block-type="' + escapeHtml(kind) + '"><span class="macro-block-grip">⋮⋮</span><strong>' + escapeHtml({ wait: 'Wait', key_press: 'Press key', mouse_click: 'Click window', text: 'Type text', condition: 'If', launch: 'Launch', teleport: 'Teleport', restart: 'Restart' }[kind] || kind) + '</strong>' + fields + '<button class="icon-button" type="button" data-action="remove-macro-block" data-index="' + index + '" aria-label="Remove block">' + icon('x') + '</button></div>';
   }
 
   renderMacros() {
     const accountOptions = '<option value="">Any matched account</option>' + this.state.accounts.map(function (account) { return '<option value="' + escapeHtml(account.id) + '">' + escapeHtml(account.display_name || account.username) + '</option>'; }).join('');
-    const instanceOptions = this.state.instances.map(function (instance) { const account = this.findAccount(instance.account_id); return '<option value="' + escapeHtml(instance.pid) + '">PID ' + escapeHtml(instance.pid) + ' · ' + escapeHtml(account ? account.display_name || account.username : 'Unassigned Roblox') + '</option>'; }.bind(this)).join('');
-    const runs = this.state.macroRuns.length ? this.state.macroRuns.map(function (run) { return '<div class="activity-row"><div class="activity-copy"><strong>' + escapeHtml(run.macro_name) + '</strong><small>PID ' + escapeHtml(run.pid) + ' · ' + escapeHtml(run.state) + ' · step ' + escapeHtml(run.current_step || 0) + '</small></div>' + (['running', 'starting'].includes(run.state) ? '<button class="button button-sm button-danger" type="button" data-action="stop-macro" data-id="' + escapeHtml(run.run_id) + '">Stop</button>' : '') + '</div>'; }).join('') : '<div class="empty-notices">' + icon('activity') + '<p>No macro is running.</p></div>';
-    const cards = this.state.macros.length ? this.state.macros.map(function (macro) { const account = this.findAccount(macro.account_id); return '<article class="panel macro-card"><div><span class="badge accent">' + escapeHtml(macro.mode === 'dsl' ? 'Direct DSL' : 'Blocks') + '</span><h3>' + escapeHtml(macro.name) + '</h3><p>' + escapeHtml(macro.description || 'No description') + '</p><small>' + escapeHtml(account ? 'Assigned to ' + (account.display_name || account.username) : 'Usable on any matched account') + '</small></div><div class="macro-card-actions"><select id="macro-target-' + escapeHtml(macro.id) + '" aria-label="Target Roblox instance"><option value="">Choose an instance…</option>' + instanceOptions + '</select><button class="button button-sm button-primary" type="button" data-action="start-macro" data-id="' + escapeHtml(macro.id) + '"' + (instanceOptions ? '' : ' disabled') + '>' + icon('play') + ' Run</button><button class="icon-button" type="button" data-action="delete-macro" data-id="' + escapeHtml(macro.id) + '" aria-label="Delete macro">' + icon('trash') + '</button></div></article>'; }.bind(this)).join('') : this.emptyInline('zap', 'No saved macros', 'Create one with visual blocks or the direct Astro DSL.');
-    const blockEditor = this.state.macroEditorMode === 'blocks' ? '<div class="macro-toolbox"><button type="button" class="button button-sm" data-action="add-macro-block" data-kind="wait">+ Wait</button><button type="button" class="button button-sm" data-action="add-macro-block" data-kind="key_press">+ Key</button><button type="button" class="button button-sm" data-action="add-macro-block" data-kind="mouse_click">+ Click</button><button type="button" class="button button-sm" data-action="add-macro-block" data-kind="text">+ Text</button></div><div class="macro-block-list">' + this.state.macroDraftBlocks.map(this.renderMacroBlock.bind(this)).join('') + '</div>' : '<div class="field full"><label for="macro-source">Direct Astro DSL</label><textarea id="macro-source" name="source" rows="12" spellcheck="false" placeholder="PRESS W 120&#10;WAIT 1000&#10;CLICK 0.5 0.5&#10;TEXT &quot;hello&quot;"></textarea><span class="mono">Commands: WAIT, PRESS, DOWN, UP, CLICK, TEXT, REPEAT/END, STOP. No eval or arbitrary process execution.</span></div>';
-    return '<section class="page-heading"><div class="page-heading-copy"><h2>Automate each instance independently.</h2><p>Every run is pinned to one verified PID and creation time. Window messages can continue while a client is minimized; Roblox may reject some controls in specific input modes.</p></div><div class="page-heading-actions"><button class="button" type="button" data-action="refresh-macros">' + icon('refresh') + ' Refresh</button></div></section><section class="macro-layout"><div><section class="panel settings-section"><header class="settings-section-head"><div><h3>Macro maker</h3><p>Visual blocks and direct coding compile to the same bounded action tree.</p></div></header><form data-form="macro"><div class="modal-body"><p class="form-error" hidden></p><div class="form-grid"><div class="field"><label>Name</label><input name="name" required maxlength="120" /></div><div class="field"><label>Assigned account</label><select name="account_id">' + accountOptions + '</select></div><div class="field full"><label>Description</label><input name="description" maxlength="500" /></div><div class="field"><label>Editor</label><select id="macro-editor-mode" name="mode"><option value="blocks"' + (this.state.macroEditorMode === 'blocks' ? ' selected' : '') + '>Scratch-like blocks</option><option value="dsl"' + (this.state.macroEditorMode === 'dsl' ? ' selected' : '') + '>Direct DSL</option></select></div></div>' + blockEditor + '</div><footer class="modal-foot"><button class="button button-primary" type="submit">' + icon('check') + ' Save macro</button></footer></form></section><section class="section-header"><h3>Saved macros</h3><span class="section-line"></span></section><div class="macro-cards">' + cards + '</div></div><aside class="panel macro-runs"><div class="panel-head"><h3>' + icon('activity') + ' Concurrent runs</h3></div><div class="activity-list">' + runs + '</div></aside></section>';
+    const singleInstancePid = this.state.instances.length === 1 ? String(this.state.instances[0].pid) : '';
+    const instanceOptions = this.state.instances.map(function (instance) { const account = this.findAccount(instance.account_id); return '<option value="' + escapeHtml(instance.pid) + '"' + (String(instance.pid) === singleInstancePid ? ' selected' : '') + '>PID ' + escapeHtml(instance.pid) + ' · ' + escapeHtml(account ? account.display_name || account.username : 'Unassigned Roblox') + '</option>'; }.bind(this)).join('');
+    const runs = this.state.macroRuns.length ? this.state.macroRuns.map(function (run) { const delivery = run.delivery_mode === 'minimized_input' ? 'Minimized / invisible' : 'Foreground input'; return '<div class="activity-row"><div class="activity-copy"><strong>' + escapeHtml(run.macro_name) + '</strong><small>PID ' + escapeHtml(run.pid) + ' · ' + escapeHtml(run.state) + ' · step ' + escapeHtml(run.current_step || 0) + ' · ' + escapeHtml(delivery) + '</small></div>' + (['running', 'starting'].includes(run.state) ? '<button class="button button-sm button-danger" type="button" data-action="stop-macro" data-id="' + escapeHtml(run.run_id) + '">Stop</button>' : '') + '</div>'; }).join('') : '<div class="empty-notices">' + icon('activity') + '<p>No macro is running.</p></div>';
+    const cards = this.state.macros.length ? this.state.macros.map(function (macro) { const account = this.findAccount(macro.account_id); return '<article class="panel macro-card"><div><span class="badge accent">' + escapeHtml(macro.mode === 'dsl' ? 'Direct DSL' : 'Blocks') + '</span><h3>' + escapeHtml(macro.name) + '</h3><p>' + escapeHtml(macro.description || 'No description') + '</p><small>' + escapeHtml(account ? 'Assigned to ' + (account.display_name || account.username) : 'Usable on any matched account') + '</small></div><div class="macro-card-actions"><select id="macro-target-' + escapeHtml(macro.id) + '" aria-label="Target Roblox instance"><option value=""' + (singleInstancePid ? '' : ' selected') + '>Choose an instance…</option>' + instanceOptions + '</select><button class="button button-sm button-primary" type="button" data-action="start-macro" data-id="' + escapeHtml(macro.id) + '"' + (instanceOptions ? '' : ' disabled') + '>' + icon('play') + ' Run</button><button class="icon-button" type="button" data-action="delete-macro" data-id="' + escapeHtml(macro.id) + '" aria-label="Delete macro">' + icon('trash') + '</button></div></article>'; }.bind(this)).join('') : this.emptyInline('zap', 'No saved macros', 'Create one with visual blocks or the direct Astro DSL.');
+    const blockEditor = this.state.macroEditorMode === 'blocks' ? '<div class="macro-toolbox"><button type="button" class="button button-sm" data-action="add-macro-block" data-kind="wait">+ Wait</button><button type="button" class="button button-sm" data-action="add-macro-block" data-kind="key_press">+ Key</button><button type="button" class="button button-sm" data-action="add-macro-block" data-kind="mouse_click">+ Click</button><button type="button" class="button button-sm" data-action="add-macro-block" data-kind="text">+ Text</button><button type="button" class="button button-sm" data-action="add-macro-block" data-kind="condition">+ Condition</button><button type="button" class="button button-sm" data-action="add-macro-block" data-kind="launch">+ Launch</button><button type="button" class="button button-sm" data-action="add-macro-block" data-kind="teleport">+ Teleport</button><button type="button" class="button button-sm" data-action="add-macro-block" data-kind="restart">+ Restart</button></div><div class="macro-block-list">' + this.state.macroDraftBlocks.map(this.renderMacroBlock.bind(this)).join('') + '</div>' : '<div class="field full"><label for="macro-source">Direct Astro DSL</label><textarea id="macro-source" name="source" rows="12" spellcheck="false" placeholder="PRESS W 120&#10;WAIT 1000&#10;CLICK 0.5 0.5&#10;TEXT &quot;hello&quot;"></textarea><span class="mono">Commands: WAIT, PRESS, DOWN, UP, CLICK, TEXT, REPEAT/END, IF/END, LAUNCH, TELEPORT, RESTART, STOP. No eval or arbitrary process execution.</span></div>';
+    return '<section class="page-heading"><div class="page-heading-copy"><h2>Automate each instance independently.</h2><p>Every run is pinned to one verified PID and creation time. A minimized Roblox client stays invisible: keyboard input is delivered while it remains iconified, and coordinate clicks use a 1/255-alpha Windows surface for only the input instant before returning to the taskbar. Nexus is not used by macros.</p></div><div class="page-heading-actions"><button class="button" type="button" data-action="refresh-macros">' + icon('refresh') + ' Refresh</button></div></section><section class="macro-layout"><div><section class="panel settings-section"><header class="settings-section-head"><div><h3>Macro maker</h3><p>Visual blocks and direct coding compile to the same bounded action tree.</p></div></header><form data-form="macro"><div class="modal-body"><p class="form-error" hidden></p><div class="form-grid"><div class="field"><label>Name</label><input name="name" required maxlength="120" /></div><div class="field"><label>Assigned account</label><select name="account_id">' + accountOptions + '</select></div><div class="field full"><label>Description</label><input name="description" maxlength="500" /></div><div class="field"><label>Editor</label><select id="macro-editor-mode" name="mode"><option value="blocks"' + (this.state.macroEditorMode === 'blocks' ? ' selected' : '') + '>Scratch-like blocks</option><option value="dsl"' + (this.state.macroEditorMode === 'dsl' ? ' selected' : '') + '>Direct DSL</option></select></div></div>' + blockEditor + '</div><footer class="modal-foot"><button class="button button-primary" type="submit">' + icon('check') + ' Save macro</button></footer></form></section><section class="section-header"><h3>Saved macros</h3><span class="section-line"></span></section><div class="macro-cards">' + cards + '</div></div><aside class="panel macro-runs"><div class="panel-head"><h3>' + icon('activity') + ' Concurrent runs</h3></div><div class="activity-list">' + runs + '</div></aside></section>';
   }
 
   maybeWarnRunningRoblox() {
@@ -1043,6 +1170,671 @@ class OrbitApp {
     if (this.state.mode === 'desktop' && general.warn_if_roblox_running !== false && this.state.robloxBackground && this.state.robloxBackground.running) {
       this.openModal({ kind: 'roblox-background', status: this.state.robloxBackground });
     }
+  }
+
+  /* -------------------------------------------------------------------
+     Fleet workspace.  Statistics, scheduler, account health, servers,
+     coordination, comfort, alerts, rules and the macro studio all live
+     behind one sidebar entry with a tab strip, so nine new screens cost
+     the navigation exactly one line.
+     ------------------------------------------------------------------- */
+
+  fleetTabList() {
+    return [
+      ['stats', 'Statistics'], ['schedule', 'Scheduler'], ['health', 'Account health'],
+      ['servers', 'Servers'], ['coord', 'Coordination'], ['comfort', 'Comfort'],
+      ['alerts', 'Alerts'], ['rules', 'Rules'], ['studio', 'Macro studio'],
+      ['profiles', 'Launch profiles']
+    ];
+  }
+
+  fleetValue(id) {
+    const node = document.getElementById(id);
+    return node ? String(node.value === undefined || node.value === null ? '' : node.value).trim() : '';
+  }
+
+  fleetNumber(id, fallback) {
+    const raw = this.fleetValue(id);
+    const value = Number(raw);
+    return raw === '' || Number.isNaN(value) ? fallback : value;
+  }
+
+  fleetChecked(id) {
+    const node = document.getElementById(id);
+    return Boolean(node && node.checked);
+  }
+
+  fleetPicked(id) {
+    const node = document.getElementById(id);
+    if (!node) return [];
+    return Array.prototype.slice.call(node.selectedOptions || []).map(function (option) { return option.value; }).filter(Boolean);
+  }
+
+  fleetPairs(id) {
+    // "Level=42, Gems=1200" becomes { Level: '42', Gems: '1200' }.
+    const pairs = {};
+    this.fleetValue(id).split(/[\n,]/).forEach(function (chunk) {
+      const parts = String(chunk).split('=');
+      const key = String(parts[0] || '').trim();
+      if (!key) return;
+      pairs[key] = String(parts.slice(1).join('=') || '').trim();
+    });
+    return pairs;
+  }
+
+  fleetList(id) {
+    return this.fleetValue(id).split(/[\n,]/).map(function (item) { return String(item).trim(); }).filter(Boolean);
+  }
+
+  fleetMinutes(seconds) {
+    const value = Number(seconds || 0);
+    if (!value) return '0m';
+    if (value < 60) return Math.round(value) + 's';
+    if (value < 3600) return Math.round(value / 60) + 'm';
+    return (value / 3600).toFixed(1) + 'h';
+  }
+
+  fleetClock(epochSeconds) {
+    if (!epochSeconds) return 'never';
+    return new Date(Number(epochSeconds) * 1000).toLocaleString();
+  }
+
+  fleetAccountOptions(selected) {
+    return this.state.accounts.map(function (account) {
+      return '<option value="' + escapeHtml(account.id) + '"' + (String(selected || '') === String(account.id) ? ' selected' : '') + '>' + escapeHtml(account.display_name || account.username) + '</option>';
+    }).join('');
+  }
+
+  fleetGroupOptions(selected) {
+    return this.state.groups.map(function (group) {
+      return '<option value="' + escapeHtml(group.id) + '"' + (String(selected || '') === String(group.id) ? ' selected' : '') + '>' + escapeHtml(group.name) + '</option>';
+    }).join('');
+  }
+
+  fleetMacroOptions(selected) {
+    return this.state.macros.map(function (macro) {
+      return '<option value="' + escapeHtml(macro.id) + '"' + (String(selected || '') === String(macro.id) ? ' selected' : '') + '>' + escapeHtml(macro.name) + '</option>';
+    }).join('');
+  }
+
+  async loadFleet(tab) {
+    const wanted = tab || this.state.fleetTab || 'stats';
+    this.state.fleetTab = wanted;
+    if (!this.bridge) { this.render(); return; }
+    const data = this.state.fleetData;
+    const filters = this.state.fleetFilters;
+    const studio = this.state.fleetStudio;
+    try {
+      if (wanted === 'stats') data.stats = unwrap(await this.bridge.call('get_statistics', this.state.fleetWindowDays)) || {};
+      if (wanted === 'schedule') data.schedule = unwrap(await this.bridge.call('list_scheduled_tasks')) || { tasks: [] };
+      if (wanted === 'health') data.health = unwrap(await this.bridge.call('get_account_health', { tags: filters.tags, status: filters.status, query: filters.query })) || {};
+      if (wanted === 'servers') data.servers = unwrap(await this.bridge.call('get_server_registry', filters.placeId || '')) || {};
+      if (wanted === 'comfort') {
+        data.comfort = unwrap(await this.bridge.call('get_comfort_overview', null)) || {};
+        data.wave = unwrap(await this.bridge.call('get_wave_status')) || {};
+      }
+      if (wanted === 'alerts') data.alerts = unwrap(await this.bridge.call('get_alert_settings')) || {};
+      if (wanted === 'rules') data.rules = unwrap(await this.bridge.call('get_rules_overview')) || {};
+      if (wanted === 'studio') data.studio = unwrap(await this.bridge.call('get_macro_studio', studio.macroId, studio.accountId)) || {};
+      if (wanted === 'profiles') data.profiles = unwrap(await this.bridge.call('list_launch_profiles')) || { profiles: [] };
+    } catch (error) {
+      this.toast('error', 'Fleet', error.message);
+    }
+    this.render();
+  }
+
+  renderFleet() {
+    const tab = this.state.fleetTab || 'stats';
+    const strip = this.fleetTabList().map(function (entry) {
+      return '<button type="button" class="button button-sm ' + (tab === entry[0] ? 'button-primary' : '') + '" data-action="fleet-tab" data-tab="' + entry[0] + '">' + escapeHtml(entry[1]) + '</button>';
+    }).join('');
+    let body = '';
+    if (tab === 'stats') body = this.renderFleetStats();
+    else if (tab === 'schedule') body = this.renderFleetSchedule();
+    else if (tab === 'health') body = this.renderFleetHealth();
+    else if (tab === 'servers') body = this.renderFleetServers();
+    else if (tab === 'coord') body = this.renderFleetCoordination();
+    else if (tab === 'comfort') body = this.renderFleetComfort();
+    else if (tab === 'alerts') body = this.renderFleetAlerts();
+    else if (tab === 'rules') body = this.renderFleetRules();
+    else if (tab === 'studio') body = this.renderFleetStudio();
+    else body = this.renderFleetProfiles();
+    return '<section class="page-heading"><div class="page-heading-copy"><h2>Run the whole fleet from one place.</h2><p>Every number below is measured on this machine. Nothing here closes a live Roblox client on its own.</p></div><div class="page-heading-actions"><button class="button" type="button" data-action="fleet-refresh">' + icon('refresh') + ' Refresh</button></div></section>' +
+      '<section class="macro-toolbox" aria-label="Fleet sections">' + strip + '</section>' + body;
+  }
+
+  renderFleetStats() {
+    const stats = this.state.fleetData.stats || {};
+    const totals = stats.totals || {};
+    const heatmap = stats.heatmap || { rows: [] };
+    const macros = stats.macros || {};
+    const days = stats.window_days || 28;
+    const peak = heatmap.peak ? heatmap.peak.day + ' ' + heatmap.peak.hour + 'h (' + heatmap.peak.minutes + ' min)' : 'no peak yet';
+    const ceiling = Math.max(1, Number(heatmap.peak_minutes || 0));
+    const grid = asArray(heatmap.rows).map(function (row) {
+      const cells = asArray(row.hours).map(function (value, hour) {
+        const ratio = Math.min(1, Number(value || 0) / ceiling);
+        const tint = ratio === 0 ? 'transparent' : 'rgba(99, 102, 241, ' + (0.12 + ratio * 0.78).toFixed(2) + ')';
+        return '<span class="heat-cell" title="' + escapeHtml(row.day + ' ' + hour + 'h: ' + value + ' min') + '" style="background:' + tint + '"></span>';
+      }).join('');
+      return '<div class="heat-row"><small>' + escapeHtml(row.day) + '</small><div class="heat-cells">' + cells + '</div><small>' + escapeHtml(row.total_minutes) + 'm</small></div>';
+    }).join('');
+    const reliability = asArray(stats.reliability).slice(0, 12).map(function (row) {
+      const score = row.score === null || row.score === undefined ? '—' : row.score + '%';
+      return '<tr><td><strong>' + escapeHtml(row.username || row.account_id) + '</strong></td><td>' + escapeHtml(row.sessions) + '</td><td>' + escapeHtml(row.crashes) + '</td><td>' + escapeHtml(row.total_hours) + ' h</td><td>' + escapeHtml(score) + (row.confident === false ? ' <small>(few samples)</small>' : '') + '</td></tr>';
+    }).join('');
+    const byMacro = asArray(macros.by_macro).slice(0, 8).map(function (row) {
+      return '<div class="activity-row"><div class="activity-copy"><strong>' + escapeHtml(row.name || row.macro_id || 'Macro') + '</strong><small>' + escapeHtml(row.completed || 0) + ' completed · ' + escapeHtml(row.failed || 0) + ' failed</small></div><span class="badge">' + escapeHtml(row.success_rate === null || row.success_rate === undefined ? '—' : row.success_rate + '%') + '</span></div>';
+    }).join('') || '<div class="empty-notices">' + icon('activity') + '<p>No macro run has finished yet.</p></div>';
+    const comparison = this.state.fleetData.comparison;
+    let compare = '<p class="mono">Pick an account to compare its two most recent sessions.</p>';
+    if (comparison && comparison.available === false) compare = '<p class="mono">' + escapeHtml(comparison.reason || 'Not enough sessions yet.') + '</p>';
+    else if (comparison && comparison.comparable) {
+      compare = '<div class="activity-row"><div class="activity-copy"><strong>Earlier</strong><small>' + escapeHtml(this.fleetClock(comparison.earlier.started_at)) + ' · ' + escapeHtml(this.fleetMinutes(comparison.earlier.seconds)) + ' · ' + escapeHtml(comparison.earlier.macro_runs) + ' macro run(s)</small></div></div>' +
+        '<div class="activity-row"><div class="activity-copy"><strong>Later</strong><small>' + escapeHtml(this.fleetClock(comparison.later.started_at)) + ' · ' + escapeHtml(this.fleetMinutes(comparison.later.seconds)) + ' · ' + escapeHtml(comparison.later.macro_runs) + ' macro run(s)</small></div><span class="badge accent">' + escapeHtml(comparison.verdict) + ' ' + escapeHtml(comparison.delta_percent === null || comparison.delta_percent === undefined ? '' : comparison.delta_percent + '%') + '</span></div>';
+    }
+    return '<section class="stats-grid">' +
+      this.statCard('Sessions', totals.sessions || 0, 'activity', 'Last ' + days + ' days') +
+      this.statCard('Hours played', totals.hours || 0, 'monitor', (totals.accounts || 0) + ' account(s)') +
+      this.statCard('Crashes', totals.crashes || 0, 'shield', totals.crash_rate === null || totals.crash_rate === undefined ? 'No sessions yet' : totals.crash_rate + '% of sessions') +
+      this.statCard('Macro success', macros.success_rate === null || macros.success_rate === undefined ? '—' : macros.success_rate + '%', 'zap', (macros.completed || 0) + ' of ' + (macros.total || 0) + ' runs') +
+      '</section>' +
+      '<section class="panel"><div class="panel-head"><h3>' + icon('activity') + ' Hourly heatmap</h3><div class="macro-toolbox"><button type="button" class="button button-sm" data-action="fleet-stats-window" data-days="7">7 days</button><button type="button" class="button button-sm" data-action="fleet-stats-window" data-days="28">28 days</button><button type="button" class="button button-sm" data-action="fleet-stats-window" data-days="90">90 days</button></div></div><p class="mono">Peak: ' + escapeHtml(peak) + ' · ' + escapeHtml(heatmap.total_minutes || 0) + ' minutes measured</p><div class="heatmap">' + (grid || '<p class="mono">No session has been recorded yet.</p>') + '</div></section>' +
+      '<section class="data-table-wrap"><table class="data-table"><thead><tr><th>Account</th><th>Sessions</th><th>Crashes</th><th>Played</th><th>Reliability</th></tr></thead><tbody>' + (reliability || '<tr><td colspan="5">No account has a recorded session yet.</td></tr>') + '</tbody></table></section>' +
+      '<section class="macro-layout"><section class="panel"><div class="panel-head"><h3>' + icon('zap') + ' Macro success rate</h3></div><div class="activity-list">' + byMacro + '</div></section>' +
+      '<section class="panel"><div class="panel-head"><h3>' + icon('users') + ' Session comparison</h3></div><div class="form-grid"><div class="field"><label for="fleet-compare-account">Account</label><select id="fleet-compare-account"><option value="">Choose an account…</option>' + this.fleetAccountOptions('') + '</select></div><div class="field"><label>&nbsp;</label><button class="button button-sm button-primary" type="button" data-action="fleet-compare">Compare last two</button></div></div>' + compare + '</section></section>';
+  }
+
+  renderFleetSchedule() {
+    const schedule = this.state.fleetData.schedule || { tasks: [] };
+    const rows = asArray(schedule.tasks).map(function (task) {
+      const next = task.next_run_at ? new Date(task.next_run_at * 1000).toLocaleString() : 'never (no day selected)';
+      return '<div class="activity-row"><div class="activity-copy"><strong>' + escapeHtml(task.name) + (task.enabled ? '' : ' <span class="badge">paused</span>') + '</strong><small>' + escapeHtml(task.at) + ' · ' + escapeHtml(task.action_label || task.action) + ' · ' + escapeHtml((task.day_labels || []).join(' ')) + ' · next ' + escapeHtml(next) + '</small></div><button class="icon-button" type="button" data-action="fleet-delete-task" data-id="' + escapeHtml(task.id) + '" aria-label="Delete task">' + icon('trash') + '</button></div>';
+    }).join('') || '<div class="empty-notices">' + icon('activity') + '<p>No scheduled task yet. 18:00 launch the Farm group, 23:00 stop the macros.</p></div>';
+    const dayBoxes = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'].map(function (label, index) {
+      return '<label class="choice"><input type="checkbox" id="fleet-task-day-' + index + '" checked /> ' + label + '</label>';
+    }).join('');
+    return '<section class="macro-layout"><section class="panel settings-section"><header class="settings-section-head"><div><h3>New scheduled task</h3><p>The watcher checks the clock on every tick and runs a slot once.</p></div></header><div class="form-grid">' +
+      '<div class="field"><label for="fleet-task-name">Name</label><input id="fleet-task-name" maxlength="80" placeholder="Launch Farm group" /></div>' +
+      '<div class="field"><label for="fleet-task-at">Time</label><input id="fleet-task-at" maxlength="5" placeholder="18:00" /></div>' +
+      '<div class="field"><label for="fleet-task-action">Action</label><select id="fleet-task-action"><option value="launch_group">Launch a group</option><option value="launch_accounts">Launch chosen accounts</option><option value="start_macro">Start a macro</option><option value="stop_macros">Stop every macro</option><option value="apply_resource_plan">Apply the resource plan</option><option value="close_instances">Close instances</option></select></div>' +
+      '<div class="field"><label for="fleet-task-group">Group</label><select id="fleet-task-group"><option value="">None</option>' + this.fleetGroupOptions('') + '</select></div>' +
+      '<div class="field"><label for="fleet-task-macro">Macro</label><select id="fleet-task-macro"><option value="">None</option>' + this.fleetMacroOptions('') + '</select></div>' +
+      '<div class="field"><label for="fleet-task-accounts">Accounts</label><select id="fleet-task-accounts" multiple size="4">' + this.fleetAccountOptions('') + '</select></div>' +
+      '<div class="field full"><label>Days</label><div class="macro-toolbox">' + dayBoxes + '</div></div>' +
+      '</div><footer class="modal-foot"><button class="button button-primary" type="button" data-action="fleet-save-task">' + icon('check') + ' Save task</button><button class="button" type="button" data-action="fleet-run-due">Run what is due now</button></footer></section>' +
+      '<section class="panel"><div class="panel-head"><h3>' + icon('activity') + ' Schedule</h3></div><div class="activity-list">' + rows + '</div></section></section>';
+  }
+
+  renderFleetHealth() {
+    const health = this.state.fleetData.health || {};
+    const filters = this.state.fleetFilters;
+    const counts = health.counts || {};
+    const tagChips = asArray(health.tags).slice(0, 24).map(function (tag) {
+      return '<span class="badge">' + escapeHtml(tag.tag) + ' · ' + escapeHtml(tag.count) + '</span>';
+    }).join(' ') || '<small>No tag yet.</small>';
+    const rows = asArray(health.accounts).map(function (row) {
+      const fields = Object.keys(row.custom_fields || {}).map(function (key) { return key + '=' + row.custom_fields[key]; }).join(', ');
+      return '<article class="panel"><div class="panel-head"><h3>' + escapeHtml(row.icon || '') + ' ' + escapeHtml(row.display_name || row.username) + '</h3><span class="status ' + escapeHtml(row.tone || 'healthy') + '">' + escapeHtml(row.label) + '</span></div><p class="mono">' + escapeHtml(row.detail || '') + '</p><div class="form-grid">' +
+        '<div class="field"><label>Tags</label><input id="fleet-tags-' + escapeHtml(row.id) + '" value="' + escapeHtml((row.tags || []).join(', ')) + '" placeholder="main, farm" /></div>' +
+        '<div class="field"><label>Custom fields</label><input id="fleet-fields-' + escapeHtml(row.id) + '" value="' + escapeHtml(fields) + '" placeholder="Level=42, Gems=1200" /></div>' +
+        '<div class="field"><label>Priority</label><input id="fleet-priority-' + escapeHtml(row.id) + '" type="number" min="0" max="10" value="' + escapeHtml(row.priority || 0) + '" /></div>' +
+        '</div><footer class="modal-foot"><button class="button button-sm" type="button" data-action="fleet-save-tags" data-id="' + escapeHtml(row.id) + '">Save tags</button><button class="button button-sm" type="button" data-action="fleet-save-fields" data-id="' + escapeHtml(row.id) + '">Save fields</button><button class="button button-sm" type="button" data-action="fleet-save-priority" data-id="' + escapeHtml(row.id) + '">Save priority</button></footer></article>';
+    }).join('') || '<div class="empty-notices">' + icon('users') + '<p>No account matches those filters.</p></div>';
+    return '<section class="stats-grid">' +
+      this.statCard('Accounts', health.total || 0, 'users', (health.shown || 0) + ' shown') +
+      this.statCard('Need attention', health.needs_attention || 0, 'shield', 'Session expired or auth required') +
+      this.statCard('Healthy', counts.ok || 0, 'check', 'Ready to launch') +
+      this.statCard('Roblox closed', counts.idle || 0, 'monitor', 'No client running') +
+      '</section>' +
+      '<section class="panel"><div class="panel-head"><h3>' + icon('search') + ' Filters</h3></div><div class="form-grid"><div class="field"><label for="fleet-health-query">Search</label><input id="fleet-health-query" value="' + escapeHtml(filters.query || '') + '" placeholder="username, tag or field" /></div><div class="field"><label for="fleet-health-tags">Tags</label><input id="fleet-health-tags" value="' + escapeHtml((filters.tags || []).join(', ')) + '" placeholder="farm, trade" /></div><div class="field"><label for="fleet-health-status">Status</label><select id="fleet-health-status"><option value="">Any</option><option value="ok">OK</option><option value="session_expired">Session expired</option><option value="auth_required">Authentication required</option><option value="launch_failed">Launch failed</option><option value="idle">Roblox closed</option></select></div><div class="field"><label>&nbsp;</label><button class="button button-sm button-primary" type="button" data-action="fleet-health-filter">Apply</button></div></div><p>' + tagChips + '</p></section>' +
+      '<section class="macro-cards">' + rows + '</section>';
+  }
+
+  renderFleetServers() {
+    const registry = this.state.fleetData.servers || {};
+    const picked = this.state.fleetData.picked;
+    const rows = asArray(registry.servers).slice(0, 40).map(function (row) {
+      const action = row.blacklisted
+        ? '<button class="button button-sm" type="button" data-action="fleet-unblacklist" data-id="' + escapeHtml(row.job_id) + '">Allow</button>'
+        : '<button class="button button-sm button-danger" type="button" data-action="fleet-blacklist" data-id="' + escapeHtml(row.job_id) + '">Blacklist</button>';
+      return '<tr><td><span class="mono">' + escapeHtml(row.job_id) + '</span></td><td>' + escapeHtml(row.region || '—') + '</td><td>' + escapeHtml(row.players) + '/' + escapeHtml(row.max_players) + '</td><td>' + escapeHtml(row.fill_percent === null || row.fill_percent === undefined ? '—' : row.fill_percent + '%') + '</td><td>' + escapeHtml(row.joins) + ' / ' + escapeHtml(row.failures) + '</td><td>' + escapeHtml(this.fleetMinutes(row.uptime_seconds)) + '</td><td>' + action + '</td></tr>';
+    }.bind(this)).join('') || '<tr><td colspan="7">No server has been recorded yet. Join one and it will be remembered.</td></tr>';
+    const regions = asArray(registry.regions).map(function (row) {
+      return '<span class="badge">' + escapeHtml(row.region || 'unknown') + ' · ' + escapeHtml(row.servers || row.count || 0) + '</span>';
+    }).join(' ') || '<small>No region recorded yet.</small>';
+    let pick = '';
+    if (picked) {
+      pick = picked.found
+        ? '<p class="mono">Best server: ' + escapeHtml(picked.job_id) + ' — ' + escapeHtml(picked.reason) + '</p>'
+        : '<p class="mono">' + escapeHtml(picked.reason) + '</p>';
+    }
+    return '<section class="stats-grid">' +
+      this.statCard('Known servers', registry.total || 0, 'gamepad', 'Recorded from your joins') +
+      this.statCard('Blacklisted', registry.blacklisted || 0, 'shield', 'Never picked again') +
+      '</section>' +
+      '<section class="panel"><div class="panel-head"><h3>' + icon('search') + ' Smart hopping</h3></div><div class="form-grid"><div class="field"><label for="fleet-server-place">Place id</label><input id="fleet-server-place" placeholder="e.g. 920587237" /></div><div class="field"><label for="fleet-server-region">Preferred region</label><input id="fleet-server-region" maxlength="12" placeholder="eu, us…" /></div><div class="field"><label>&nbsp;</label><button class="button button-sm" type="button" data-action="fleet-server-filter">Filter history</button></div><div class="field"><label>&nbsp;</label><button class="button button-sm button-primary" type="button" data-action="fleet-pick-server">Pick the best server</button></div></div>' + pick + '<p>' + regions + '</p></section>' +
+      '<section class="data-table-wrap"><table class="data-table"><thead><tr><th>JobId</th><th>Region</th><th>Players</th><th>Fill</th><th>Joins / fails</th><th>Uptime</th><th></th></tr></thead><tbody>' + rows + '</tbody></table></section>';
+  }
+
+  renderFleetCoordination() {
+    const plan = this.state.fleetData.plan;
+    const steps = plan ? asArray(plan.steps).map(function (step) {
+      return '<div class="activity-row"><div class="activity-copy"><strong>' + escapeHtml(step.username || step.account_id) + '</strong><small>#' + escapeHtml(step.order) + ' · +' + escapeHtml(step.offset_seconds) + 's · ' + escapeHtml(step.role || 'member') + (step.job_id ? ' · ' + escapeHtml(step.job_id) : '') + '</small></div></div>';
+    }).join('') : '';
+    const summary = plan ? '<p class="mono">' + escapeHtml(plan.note || '') + '</p>' : '<p class="mono">Choose a mode and preview the plan before anything launches.</p>';
+    return '<section class="macro-layout"><section class="panel settings-section"><header class="settings-section-head"><div><h3>Coordinated launch</h3><p>Preview first. Running a plan queues it through the wave launcher.</p></div></header><div class="form-grid">' +
+      '<div class="field"><label for="fleet-coord-mode">Mode</label><select id="fleet-coord-mode"><option value="spread">Spread across servers</option><option value="followers">Main + followers</option><option value="sync">Synchronised launch</option><option value="party">Internal party (same server)</option></select></div>' +
+      '<div class="field"><label for="fleet-coord-accounts">Accounts (first one is the main)</label><select id="fleet-coord-accounts" multiple size="6">' + this.fleetAccountOptions('') + '</select></div>' +
+      '<div class="field"><label for="fleet-coord-place">Place id</label><input id="fleet-coord-place" placeholder="optional" /></div>' +
+      '<div class="field"><label for="fleet-coord-job">JobId</label><input id="fleet-coord-job" placeholder="optional" /></div>' +
+      '<div class="field"><label for="fleet-coord-stagger">Stagger (seconds)</label><input id="fleet-coord-stagger" type="number" min="0" max="60" step="0.5" value="1.5" /></div>' +
+      '<div class="field"><label for="fleet-coord-max">Accounts per server</label><input id="fleet-coord-max" type="number" min="1" max="20" value="1" /></div>' +
+      '</div><footer class="modal-foot"><button class="button" type="button" data-action="fleet-plan-coord">Preview plan</button><button class="button button-primary" type="button" data-action="fleet-run-coord">' + icon('play') + ' Run plan</button></footer></section>' +
+      '<section class="panel"><div class="panel-head"><h3>' + icon('users') + ' Plan</h3></div>' + summary + '<div class="activity-list">' + (steps || '<div class="empty-notices">' + icon('activity') + '<p>No plan previewed yet.</p></div>') + '</div></section></section>';
+  }
+
+  renderFleetComfort() {
+    const comfort = this.state.fleetData.comfort || {};
+    const wave = this.state.fleetData.wave || {};
+    const gate = comfort.queue || wave.gate || {};
+    const audio = comfort.audio || {};
+    const sleep = comfort.sleep || {};
+    const shutdown = comfort.shutdown || {};
+    const instances = asArray(comfort.instances);
+    const mixer = instances.map(function (row) {
+      const level = ((audio.targets || []).filter(function (target) { return target.pid === row.pid; })[0] || {}).volume;
+      return '<div class="activity-row"><div class="activity-copy"><strong>' + escapeHtml(row.username || ('PID ' + row.pid)) + '</strong><small>PID ' + escapeHtml(row.pid) + (row.macro_running ? ' · macro running' : '') + '</small></div><input id="fleet-volume-' + escapeHtml(row.pid) + '" type="number" min="0" max="100" value="' + escapeHtml(level === undefined ? 100 : level) + '" /></div>';
+    }).join('') || '<div class="empty-notices">' + icon('monitor') + '<p>No Roblox client is running.</p></div>';
+    const focusOptions = instances.map(function (row) {
+      return '<option value="' + escapeHtml(row.pid) + '">' + escapeHtml(row.username || ('PID ' + row.pid)) + '</option>';
+    }).join('');
+    return '<section class="stats-grid">' +
+      this.statCard('Launch queue', gate.allowed === false ? 'Holding' : 'Open', 'activity', escapeHtml(gate.reason || 'The machine has room.')) +
+      this.statCard('CPU', gate.cpu_percent === null || gate.cpu_percent === undefined ? '—' : gate.cpu_percent + '%', 'monitor', 'Limit ' + (gate.max_cpu_percent || 80) + '%') +
+      this.statCard('Memory', gate.memory_percent === null || gate.memory_percent === undefined ? '—' : gate.memory_percent + '%', 'database', 'Limit ' + (gate.max_memory_percent || 85) + '%') +
+      this.statCard('Wave', (wave.wave || 0) + '/' + (wave.waves || 0), 'zap', wave.in_progress ? 'Launching' : 'Idle') +
+      '</section>' +
+      '<section class="macro-layout"><section class="panel"><div class="panel-head"><h3>' + icon('monitor') + ' Focus &amp; sleep</h3></div><div class="form-grid"><div class="field"><label for="fleet-focus-pid">Keep the focus on</label><select id="fleet-focus-pid"><option value="">Choose an instance…</option>' + focusOptions + '</select></div><div class="field"><label>&nbsp;</label><button class="button button-sm button-primary" type="button" data-action="fleet-comfort-focus">Focus this one</button></div></div><p class="mono">Sleep mode minimises clients idle for more than ' + escapeHtml(sleep.idle_minutes || 15) + ' minutes. Macro windows are never touched: minimising them would break foreground input.</p><footer class="modal-foot"><button class="button button-sm" type="button" data-action="fleet-comfort-sleep">Sleep idle clients (' + escapeHtml(sleep.count || 0) + ')</button><button class="button button-sm button-danger" type="button" data-action="fleet-comfort-shutdown">Safe shutdown (' + escapeHtml(shutdown.instances || 0) + ')</button><button class="button button-sm button-danger" type="button" data-action="fleet-emergency-stop">' + icon('alert') + ' Emergency stop</button></footer></section>' +
+      '<section class="panel"><div class="panel-head"><h3>' + icon('activity') + ' Audio mixer</h3></div><p class="mono">' + escapeHtml(audio.note || 'Per-process audio control is unavailable on this machine, so levels are stored only.') + '</p><div class="activity-list">' + mixer + '</div><footer class="modal-foot"><button class="button button-sm" type="button" data-action="fleet-comfort-audio">Save levels</button></footer></section></section>';
+  }
+
+  renderFleetAlerts() {
+    const alerts = this.state.fleetData.alerts || {};
+    const report = this.state.fleetData.report;
+    const events = asArray(alerts.known_events).map(function (name) {
+      const on = (alerts.events || []).indexOf(name) !== -1;
+      return '<label class="choice"><input type="checkbox" id="fleet-alert-event-' + escapeHtml(name) + '"' + (on ? ' checked' : '') + ' /> ' + escapeHtml(name.replace(/_/g, ' ')) + '</label>';
+    }).join('') || '<small>No event type is available.</small>';
+    const preview = report ? '<pre class="mono">' + escapeHtml(String(report.title || '') + '\n' + String(report.body || '')) + '</pre>' : '<p class="mono">Build the report to see today\'s summary.</p>';
+    return '<section class="macro-layout"><section class="panel settings-section"><header class="settings-section-head"><div><h3>Alert channels</h3><p>Webhook addresses are write-only: once saved, Astro shows only whether one exists.</p></div></header><div class="form-grid">' +
+      '<div class="field"><label class="choice"><input type="checkbox" id="fleet-alert-enabled"' + (alerts.enabled ? ' checked' : '') + ' /> Send alerts</label></div>' +
+      '<div class="field"><label for="fleet-alert-interval">Minimum gap (seconds)</label><input id="fleet-alert-interval" type="number" min="0" max="86400" value="' + escapeHtml(alerts.min_interval_seconds || 0) + '" /></div>' +
+      '<div class="field"><label for="fleet-alert-discord">Discord webhook ' + (alerts.discord_configured ? '(configured)' : '') + '</label><input id="fleet-alert-discord" type="password" placeholder="https://discord.com/api/webhooks/…" /></div>' +
+      '<div class="field"><label for="fleet-alert-phone">Phone relay webhook ' + (alerts.phone_configured ? '(configured)' : '') + '</label><input id="fleet-alert-phone" type="password" placeholder="https://ntfy.sh/…" /></div>' +
+      '<div class="field"><label for="fleet-alert-topic">Phone topic</label><input id="fleet-alert-topic" maxlength="60" value="' + escapeHtml(alerts.phone_topic || '') + '" /></div>' +
+      '<div class="field"><label for="fleet-alert-report-at">Daily report time</label><input id="fleet-alert-report-at" maxlength="5" placeholder="09:00" value="' + escapeHtml(alerts.daily_report_at || '') + '" /></div>' +
+      '<div class="field full"><label>Events</label><div class="macro-toolbox">' + events + '</div></div>' +
+      '</div><footer class="modal-foot"><button class="button button-primary" type="button" data-action="fleet-alerts-save">' + icon('check') + ' Save</button><button class="button" type="button" data-action="fleet-alerts-test">Send a test</button></footer></section>' +
+      '<section class="panel"><div class="panel-head"><h3>' + icon('activity') + ' Daily report</h3><button class="button button-sm" type="button" data-action="fleet-alerts-report">Build now</button></div>' + preview + '</section></section>';
+  }
+
+  renderFleetRules() {
+    const overview = this.state.fleetData.rules || {};
+    const rules = overview.rules || {};
+    const decisions = asArray(overview.decisions).slice(0, 20).map(function (row) {
+      return '<div class="activity-row"><div class="activity-copy"><strong>' + escapeHtml(row.rule || row.reason || 'Rule') + '</strong><small>' + escapeHtml(row.detail || row.summary || '') + '</small></div><span class="badge">' + escapeHtml(row.action || row.outcome || '') + '</span></div>';
+    }).join('') || '<div class="empty-notices">' + icon('shield') + '<p>No rule has fired yet.</p></div>';
+    const resumes = asArray((overview.resumes || {}).pending_resumes).map(function (row) {
+      return '<div class="activity-row"><div class="activity-copy"><strong>' + escapeHtml(row.username || row.account_id) + '</strong><small>macro ' + escapeHtml(row.macro_id) + ' · attempt ' + escapeHtml(row.attempts) + ' · ' + escapeHtml(row.reason || '') + '</small></div></div>';
+    }).join('') || '<div class="empty-notices">' + icon('zap') + '<p>No macro is waiting for a relaunch.</p></div>';
+    const priorities = asArray(overview.priorities).slice(0, 12).map(function (row) {
+      return '<tr><td>' + escapeHtml(row.username || row.id) + '</td><td>' + escapeHtml(row.priority) + '</td></tr>';
+    }).join('') || '<tr><td colspan="2">No priority set. Everything is treated equally.</td></tr>';
+    return '<section class="macro-layout"><section class="panel settings-section"><header class="settings-section-head"><div><h3>Rule engine</h3><p>Rules pause, relaunch and warn. Closing a live client always needs a person.</p></div></header><div class="form-grid">' +
+      '<div class="field"><label class="choice"><input type="checkbox" id="fleet-rule-enabled"' + (rules.enabled ? ' checked' : '') + ' /> Run the rule engine</label></div>' +
+      '<div class="field"><label class="choice"><input type="checkbox" id="fleet-rule-restart"' + (rules.restart_stuck_macros ? ' checked' : '') + ' /> Restart a stuck macro</label></div>' +
+      '<div class="field"><label for="fleet-rule-stuck">Macro stuck after (seconds)</label><input id="fleet-rule-stuck" type="number" min="10" max="3600" value="' + escapeHtml(rules.macro_stuck_seconds || 60) + '" /></div>' +
+      '<div class="field"><label for="fleet-rule-runtime">Restart Roblox after (hours)</label><input id="fleet-rule-runtime" type="number" min="1" max="48" step="0.5" value="' + escapeHtml(rules.max_runtime_hours || 6) + '" /></div>' +
+      '<div class="field"><label for="fleet-rule-cpu">Pause low priority above CPU %</label><input id="fleet-rule-cpu" type="number" min="10" max="100" value="' + escapeHtml(rules.cpu_pause_percent || 90) + '" /></div>' +
+      '<div class="field"><label for="fleet-rule-memory">Pause low priority above memory %</label><input id="fleet-rule-memory" type="number" min="10" max="100" value="' + escapeHtml(rules.memory_pause_percent || 90) + '" /></div>' +
+      '<div class="field"><label for="fleet-rule-priority">Low priority means at or below</label><input id="fleet-rule-priority" type="number" min="0" max="10" value="' + escapeHtml(rules.pause_priority_at_or_below || 3) + '" /></div>' +
+      '</div><footer class="modal-foot"><button class="button button-primary" type="button" data-action="fleet-rules-save">' + icon('check') + ' Save rules</button></footer></section>' +
+      '<section class="panel"><div class="panel-head"><h3>' + icon('activity') + ' Recent decisions</h3></div><div class="activity-list">' + decisions + '</div><div class="panel-head"><h3>' + icon('zap') + ' Macro resumes waiting</h3></div><div class="activity-list">' + resumes + '</div><div class="data-table-wrap"><table class="data-table"><thead><tr><th>Account</th><th>Priority</th></tr></thead><tbody>' + priorities + '</tbody></table></div></section></section>';
+  }
+
+  renderFleetStudio() {
+    const studio = this.state.fleetData.studio || {};
+    const debug = this.state.fleetData.debug;
+    const selection = this.state.fleetStudio;
+    const steps = asArray((debug || studio).steps).slice(0, 60).map(function (step) {
+      return '<div class="activity-row" style="padding-left:' + (12 + Number(step.depth || 0) * 18) + 'px"><div class="activity-copy"><strong>' + escapeHtml(step.path) + ' · ' + escapeHtml(step.label) + '</strong><small>' + escapeHtml(step.type) + ' · ~' + escapeHtml(step.estimated_ms) + ' ms</small></div></div>';
+    }).join('') || '<div class="empty-notices">' + icon('zap') + '<p>Choose a macro to inspect its steps.</p></div>';
+    const report = studio.profile_report || {};
+    const versions = asArray(studio.versions).map(function (row) {
+      return '<div class="activity-row"><div class="activity-copy"><strong>v' + escapeHtml(row.version) + ' ' + escapeHtml(row.label || '') + '</strong><small>' + escapeHtml(row.name) + ' · ' + escapeHtml(row.steps) + ' step(s)</small></div><button class="button button-sm" type="button" data-action="fleet-studio-rollback" data-version="' + escapeHtml(row.version) + '">Restore</button></div>';
+    }).join('') || '<div class="empty-notices">' + icon('activity') + '<p>No snapshot yet.</p></div>';
+    const profiles = asArray(studio.profiles).map(function (profile) {
+      const keys = Object.keys(profile.keys || {}).map(function (key) { return key + '=' + profile.keys[key]; }).join(', ');
+      return '<div class="activity-row"><div class="activity-copy"><strong>' + escapeHtml(profile.name) + '</strong><small>' + escapeHtml(keys) + '</small></div><button class="icon-button" type="button" data-action="fleet-studio-delete-profile" data-id="' + escapeHtml(profile.name) + '" aria-label="Delete profile">' + icon('trash') + '</button></div>';
+    }).join('') || '<div class="empty-notices">' + icon('command') + '<p>No key profile yet.</p></div>';
+    const variables = Object.keys(studio.variables || {}).map(function (key) { return key + '=' + studio.variables[key]; }).join(', ');
+    const missing = asArray(debug && debug.missing_variables);
+    return '<section class="macro-layout"><section class="panel settings-section"><header class="settings-section-head"><div><h3>Macro studio</h3><p>Step-by-step debugger, profiler, key profiles, per-account variables and versions.</p></div></header><div class="form-grid">' +
+      '<div class="field"><label for="fleet-studio-macro">Macro</label><select id="fleet-studio-macro"><option value="">Choose a macro…</option>' + this.fleetMacroOptions(selection.macroId) + '</select></div>' +
+      '<div class="field"><label for="fleet-studio-account">Account</label><select id="fleet-studio-account"><option value="">Any account</option>' + this.fleetAccountOptions(selection.accountId) + '</select></div>' +
+      '<div class="field"><label>&nbsp;</label><button class="button button-sm" type="button" data-action="fleet-studio-load">Load</button></div>' +
+      '<div class="field"><label>&nbsp;</label><button class="button button-sm button-primary" type="button" data-action="fleet-studio-debug">Debug steps</button></div>' +
+      '<div class="field full"><label for="fleet-studio-variables">Variables for this account</label><input id="fleet-studio-variables" value="' + escapeHtml(variables) + '" placeholder="FarmKey=E, Slot=3" /></div>' +
+      '<div class="field"><label for="fleet-studio-profile-name">Key profile name</label><input id="fleet-studio-profile-name" maxlength="60" placeholder="Azerty farm" /></div>' +
+      '<div class="field"><label for="fleet-studio-profile-keys">Key remaps</label><input id="fleet-studio-profile-keys" placeholder="W=Z, A=Q" /></div>' +
+      '<div class="field"><label for="fleet-studio-group">Group</label><select id="fleet-studio-group"><option value="">Choose a group…</option>' + this.fleetGroupOptions('') + '</select></div>' +
+      '<div class="field"><label for="fleet-studio-label">Snapshot label</label><input id="fleet-studio-label" maxlength="60" placeholder="before rewrite" /></div>' +
+      '</div><footer class="modal-foot"><button class="button button-sm" type="button" data-action="fleet-studio-save-variables">Save variables</button><button class="button button-sm" type="button" data-action="fleet-studio-save-profile">Save key profile</button><button class="button button-sm" type="button" data-action="fleet-studio-snapshot">Snapshot version</button><button class="button button-sm button-primary" type="button" data-action="fleet-studio-group-run">' + icon('play') + ' Run on group</button></footer>' +
+      (missing.length ? '<p class="mono">Missing variables: ' + escapeHtml(missing.join(', ')) + '</p>' : '') +
+      '<p class="mono">' + escapeHtml(report.steps || 0) + ' step(s) · about ' + escapeHtml(report.estimated_seconds || 0) + ' s per pass. ' + escapeHtml(report.note || '') + '</p></section>' +
+      '<section class="panel"><div class="panel-head"><h3>' + icon('activity') + ' Steps</h3></div><div class="activity-list">' + steps + '</div><div class="panel-head"><h3>' + icon('command') + ' Key profiles</h3></div><div class="activity-list">' + profiles + '</div><div class="panel-head"><h3>' + icon('database') + ' Versions</h3></div><div class="activity-list">' + versions + '</div></section></section>';
+  }
+
+  async handleFleetAction(action, button) {
+    if (typeof action !== 'string' || action.indexOf('fleet-') !== 0) return false;
+    const data = this.state.fleetData;
+    const filters = this.state.fleetFilters;
+    const studio = this.state.fleetStudio;
+    try {
+      if (action === 'fleet-tab') { await this.loadFleet(button.dataset.tab); return true; }
+      if (action === 'fleet-refresh') { await this.loadFleet(this.state.fleetTab); return true; }
+      if (action === 'fleet-profile-save') {
+        const payload = {
+          name: this.fleetValue('fleet-profile-name'),
+          place_id: this.fleetValue('fleet-profile-place'),
+          job_id: this.fleetValue('fleet-profile-job'),
+          link_code: this.fleetValue('fleet-profile-link'),
+          fps: this.fleetNumber('fleet-profile-fps', 0),
+          group_id: this.fleetValue('fleet-profile-group'),
+          note: this.fleetValue('fleet-profile-note')
+        };
+        this.state.fleetData.profiles = unwrap(await this.bridge.call('save_launch_profile', payload)) || { profiles: [] };
+        this.toast('success', 'Launch profile saved', payload.name);
+        this.render(); return true;
+      }
+      if (action === 'fleet-profile-delete') {
+        this.state.fleetData.profiles = unwrap(await this.bridge.call('delete_launch_profile', button.dataset.id)) || { profiles: [] };
+        this.toast('success', 'Launch profile deleted', 'The destination is gone. Nothing was closed.');
+        this.render(); return true;
+      }
+      if (action === 'fleet-profile-launch') {
+        const picked = this.fleetPicked('fleet-profile-accounts');
+        const result = unwrap(await this.bridge.call('launch_with_profile', button.dataset.id, picked)) || {};
+        const name = result.profile && result.profile.name ? result.profile.name + ': ' : '';
+        const queued = Array.isArray(result.queued) ? result.queued.length : picked.length;
+        this.toast('success', 'Launch profile started', name + queued + ' account(s) queued.' + (result.note ? ' ' + result.note : ''));
+        return true;
+      }
+      if (action === 'fleet-emergency-stop') {
+        const stop = unwrap(await this.bridge.call('emergency_stop', { disarm_rules: true })) || {};
+        this.toast('success', 'Emergency stop', (stop.macros_stopped || 0) + ' macro run(s) stopped and queued launches cancelled'
+          + (stop.rules_disarmed ? ', automatic rules disarmed' : '') + '. Running clients were left open on purpose.');
+        await this.loadFleet(this.state.fleetTab); return true;
+      }
+      if (action === 'fleet-stats-window') { this.state.fleetWindowDays = Number(button.dataset.days) || null; await this.loadFleet('stats'); return true; }
+      if (action === 'fleet-compare') {
+        const accountId = this.fleetValue('fleet-compare-account');
+        if (!accountId) { this.toast('warning', 'Choose an account', 'Pick which account to compare.'); return true; }
+        data.comparison = unwrap(await this.bridge.call('compare_account_sessions', accountId)) || {};
+        this.render();
+        return true;
+      }
+      if (action === 'fleet-save-task') {
+        const days = [];
+        for (let index = 0; index < 7; index += 1) { if (this.fleetChecked('fleet-task-day-' + index)) days.push(index); }
+        const task = {
+          name: this.fleetValue('fleet-task-name'),
+          at: this.fleetValue('fleet-task-at'),
+          action: this.fleetValue('fleet-task-action'),
+          group_id: this.fleetValue('fleet-task-group'),
+          macro_id: this.fleetValue('fleet-task-macro'),
+          account_ids: this.fleetPicked('fleet-task-accounts'),
+          days: days,
+          enabled: true
+        };
+        await this.bridge.call('save_scheduled_task', task);
+        this.toast('success', 'Task saved', task.name + ' runs at ' + task.at + '.');
+        await this.loadFleet('schedule');
+        return true;
+      }
+      if (action === 'fleet-delete-task') { await this.bridge.call('delete_scheduled_task', button.dataset.id); await this.loadFleet('schedule'); return true; }
+      if (action === 'fleet-run-due') {
+        const outcome = unwrap(await this.bridge.call('run_due_scheduled_tasks')) || {};
+        this.toast('success', 'Schedule checked', asArray(outcome.ran).length + ' task(s) ran.');
+        await this.loadFleet('schedule');
+        return true;
+      }
+      if (action === 'fleet-health-filter') {
+        filters.query = this.fleetValue('fleet-health-query');
+        filters.tags = this.fleetList('fleet-health-tags');
+        filters.status = this.fleetValue('fleet-health-status');
+        await this.loadFleet('health');
+        return true;
+      }
+      if (action === 'fleet-save-tags') {
+        await this.bridge.call('update_account_tags', button.dataset.id, this.fleetList('fleet-tags-' + button.dataset.id));
+        this.toast('success', 'Tags saved', 'The account tags were updated.');
+        await this.loadFleet('health');
+        return true;
+      }
+      if (action === 'fleet-save-fields') {
+        await this.bridge.call('update_account_fields', button.dataset.id, this.fleetPairs('fleet-fields-' + button.dataset.id));
+        this.toast('success', 'Fields saved', 'Custom fields were updated.');
+        await this.loadFleet('health');
+        return true;
+      }
+      if (action === 'fleet-save-priority') {
+        await this.bridge.call('set_account_priority', button.dataset.id, this.fleetNumber('fleet-priority-' + button.dataset.id, 0));
+        await this.loadFleet('health');
+        return true;
+      }
+      if (action === 'fleet-server-filter') { filters.placeId = this.fleetValue('fleet-server-place'); await this.loadFleet('servers'); return true; }
+      if (action === 'fleet-blacklist') { await this.bridge.call('update_server_blacklist', button.dataset.id, true, ''); await this.loadFleet('servers'); return true; }
+      if (action === 'fleet-unblacklist') { await this.bridge.call('update_server_blacklist', button.dataset.id, false, ''); await this.loadFleet('servers'); return true; }
+      if (action === 'fleet-pick-server') {
+        data.picked = unwrap(await this.bridge.call('pick_best_server', { place_id: this.fleetValue('fleet-server-place'), prefer_region: this.fleetValue('fleet-server-region') })) || {};
+        this.render();
+        return true;
+      }
+      if (action === 'fleet-plan-coord' || action === 'fleet-run-coord') {
+        const payload = {
+          mode: this.fleetValue('fleet-coord-mode'),
+          account_ids: this.fleetPicked('fleet-coord-accounts'),
+          place_id: this.fleetValue('fleet-coord-place'),
+          job_id: this.fleetValue('fleet-coord-job'),
+          stagger_seconds: this.fleetNumber('fleet-coord-stagger', 1.5),
+          max_per_server: this.fleetNumber('fleet-coord-max', 1)
+        };
+        if (!payload.account_ids.length) { this.toast('warning', 'Choose accounts', 'Select at least one account.'); return true; }
+        if (action === 'fleet-plan-coord') {
+          data.plan = unwrap(await this.bridge.call('plan_coordination', payload)) || {};
+          this.render();
+          return true;
+        }
+        const outcome = unwrap(await this.bridge.call('run_coordination', payload)) || {};
+        data.plan = outcome.plan || data.plan;
+        this.toast('success', 'Coordination queued', asArray((outcome.plan || {}).steps).length + ' account(s) queued through the wave launcher.');
+        this.render();
+        return true;
+      }
+      if (action === 'fleet-comfort-focus') {
+        const pid = this.fleetValue('fleet-focus-pid');
+        if (!pid) { this.toast('warning', 'Choose an instance', 'Pick which client keeps the focus.'); return true; }
+        const plan = unwrap(await this.bridge.call('apply_comfort_action', 'focus', { pid: Number(pid) })) || {};
+        this.toast('success', 'Focus applied', (plan.minimized || 0) + ' window(s) minimised.');
+        await this.loadFleet('comfort');
+        return true;
+      }
+      if (action === 'fleet-comfort-sleep') {
+        const plan = unwrap(await this.bridge.call('apply_comfort_action', 'sleep', {})) || {};
+        this.toast('success', 'Sleep applied', (plan.minimized || 0) + ' idle window(s) minimised.');
+        await this.loadFleet('comfort');
+        return true;
+      }
+      if (action === 'fleet-comfort-audio') {
+        const volumes = {};
+        asArray((data.comfort || {}).instances).forEach(function (row) {
+          volumes[String(row.pid)] = this.fleetNumber('fleet-volume-' + row.pid, 100);
+        }.bind(this));
+        await this.bridge.call('apply_comfort_action', 'audio', { volumes: volumes });
+        this.toast('success', 'Levels saved', 'Per-instance levels were stored.');
+        await this.loadFleet('comfort');
+        return true;
+      }
+      if (action === 'fleet-comfort-shutdown') {
+        const preview = unwrap(await this.bridge.call('apply_comfort_action', 'shutdown', {})) || {};
+        if (!preview.ready) { this.toast('warning', 'Nothing to close', 'No Roblox client is running.'); return true; }
+        if (!window.confirm('Stop every macro and close ' + (preview.instances || 0) + ' Roblox client(s)?')) return true;
+        const done = unwrap(await this.bridge.call('apply_comfort_action', 'shutdown', { confirm: true })) || {};
+        this.toast('success', 'Safe shutdown', (done.closed || 0) + ' client(s) closed after their macros stopped.');
+        await this.loadFleet('comfort');
+        return true;
+      }
+      if (action === 'fleet-alerts-save') {
+        const known = asArray((data.alerts || {}).known_events);
+        const chosen = known.filter(function (name) { return this.fleetChecked('fleet-alert-event-' + name); }.bind(this));
+        const payload = {
+          enabled: this.fleetChecked('fleet-alert-enabled'),
+          min_interval_seconds: this.fleetNumber('fleet-alert-interval', 0),
+          phone_topic: this.fleetValue('fleet-alert-topic'),
+          daily_report_at: this.fleetValue('fleet-alert-report-at'),
+          events: chosen
+        };
+        const discord = this.fleetValue('fleet-alert-discord');
+        const phone = this.fleetValue('fleet-alert-phone');
+        if (discord) payload.discord_webhook_url = discord;
+        if (phone) payload.phone_webhook_url = phone;
+        data.alerts = unwrap(await this.bridge.call('update_alert_settings', payload)) || {};
+        this.toast('success', 'Alerts saved', 'Webhook addresses are stored write-only.');
+        this.render();
+        return true;
+      }
+      if (action === 'fleet-alerts-test') {
+        const outcome = unwrap(await this.bridge.call('send_alert_test')) || {};
+        const failed = asArray(outcome.channels).filter(function (row) { return !row.sent; });
+        if (outcome.sent) this.toast('success', 'Test sent', 'At least one channel accepted the alert.');
+        else this.toast('warning', 'Nothing was sent', (failed[0] || {}).reason || 'No channel is configured.');
+        return true;
+      }
+      if (action === 'fleet-alerts-report') {
+        const outcome = unwrap(await this.bridge.call('get_daily_report', false)) || {};
+        data.report = outcome.report || {};
+        this.render();
+        return true;
+      }
+      if (action === 'fleet-rules-save') {
+        const payload = {
+          enabled: this.fleetChecked('fleet-rule-enabled'),
+          restart_stuck_macros: this.fleetChecked('fleet-rule-restart'),
+          macro_stuck_seconds: this.fleetNumber('fleet-rule-stuck', 60),
+          max_runtime_hours: this.fleetNumber('fleet-rule-runtime', 6),
+          cpu_pause_percent: this.fleetNumber('fleet-rule-cpu', 90),
+          memory_pause_percent: this.fleetNumber('fleet-rule-memory', 90),
+          pause_priority_at_or_below: this.fleetNumber('fleet-rule-priority', 3)
+        };
+        data.rules = unwrap(await this.bridge.call('update_rules', payload)) || {};
+        this.toast('success', 'Rules saved', 'The watcher will use them on its next tick.');
+        this.render();
+        return true;
+      }
+      if (action === 'fleet-studio-load') {
+        studio.macroId = this.fleetValue('fleet-studio-macro');
+        studio.accountId = this.fleetValue('fleet-studio-account');
+        data.debug = null;
+        await this.loadFleet('studio');
+        return true;
+      }
+      if (action === 'fleet-studio-debug') {
+        studio.macroId = this.fleetValue('fleet-studio-macro') || studio.macroId;
+        studio.accountId = this.fleetValue('fleet-studio-account') || studio.accountId;
+        if (!studio.macroId) { this.toast('warning', 'Choose a macro', 'Pick the macro to inspect.'); return true; }
+        data.debug = unwrap(await this.bridge.call('debug_macro', studio.macroId, studio.accountId)) || {};
+        this.render();
+        return true;
+      }
+      if (action === 'fleet-studio-snapshot') {
+        if (!studio.macroId) { this.toast('warning', 'Choose a macro', 'Load a macro first.'); return true; }
+        await this.bridge.call('snapshot_macro_version', studio.macroId, this.fleetValue('fleet-studio-label'));
+        this.toast('success', 'Snapshot saved', 'You can roll back to this version later.');
+        await this.loadFleet('studio');
+        return true;
+      }
+      if (action === 'fleet-studio-rollback') {
+        await this.bridge.call('rollback_macro', studio.macroId, Number(button.dataset.version));
+        this.state.macros = asArray(await this.bridge.call('list_macros'));
+        this.toast('success', 'Macro restored', 'Version ' + button.dataset.version + ' is now the saved macro.');
+        await this.loadFleet('studio');
+        return true;
+      }
+      if (action === 'fleet-studio-save-profile') {
+        const name = this.fleetValue('fleet-studio-profile-name');
+        if (!name) { this.toast('warning', 'Name the profile', 'A key profile needs a name.'); return true; }
+        await this.bridge.call('save_key_profile', { name: name, keys: this.fleetPairs('fleet-studio-profile-keys') });
+        await this.loadFleet('studio');
+        return true;
+      }
+      if (action === 'fleet-studio-delete-profile') { await this.bridge.call('delete_key_profile', button.dataset.id); await this.loadFleet('studio'); return true; }
+      if (action === 'fleet-studio-save-variables') {
+        const accountId = this.fleetValue('fleet-studio-account') || studio.accountId;
+        if (!accountId) { this.toast('warning', 'Choose an account', 'Variables are stored per account.'); return true; }
+        await this.bridge.call('update_macro_variables', accountId, this.fleetPairs('fleet-studio-variables'));
+        studio.accountId = accountId;
+        this.toast('success', 'Variables saved', 'They are substituted when the macro runs.');
+        await this.loadFleet('studio');
+        return true;
+      }
+      if (action === 'fleet-studio-group-run') {
+        const groupId = this.fleetValue('fleet-studio-group');
+        const macroId = this.fleetValue('fleet-studio-macro') || studio.macroId;
+        if (!groupId || !macroId) { this.toast('warning', 'Choose both', 'Pick a group and a macro.'); return true; }
+        const outcome = unwrap(await this.bridge.call('start_group_macro', groupId, macroId)) || {};
+        this.state.macroRuns = asArray(await this.bridge.call('list_macro_runs'));
+        const queued = asArray(outcome.queued).length;
+        this.toast('success', 'Group macro started', asArray(outcome.started).length + ' started' + (queued ? ', ' + queued + ' queued (one macro window at a time)' : '') + '.');
+        this.render();
+        return true;
+      }
+    } catch (error) {
+      this.toast('error', 'Fleet', error.message);
+      return true;
+    }
+    return false;
+  }
+
+  renderFleetProfiles() {
+    const data = this.state.fleetData.profiles || {};
+    const profiles = Array.isArray(data.profiles) ? data.profiles : [];
+    const groups = Array.isArray(data.groups) ? data.groups : [];
+    const groupOptions = ['<option value="">No group</option>'].concat(groups.map(function (group) {
+      return '<option value="' + escapeHtml(group.id) + '">' + escapeHtml(group.name) + '</option>';
+    })).join('');
+    const rows = profiles.length ? profiles.map(function (profile) {
+      return '<tr><td><strong>' + escapeHtml(profile.name) + '</strong><br /><small class="mono">' + escapeHtml(profile.summary || '') + '</small></td>'
+        + '<td class="mono">' + escapeHtml(profile.place_id) + '</td>'
+        + '<td class="mono">' + escapeHtml(profile.job_id || profile.link_code || 'any server') + '</td>'
+        + '<td class="mono">' + escapeHtml(profile.fps ? profile.fps + ' FPS' : 'unchanged') + '</td>'
+        + '<td><div class="table-actions"><button class="button button-sm button-primary" type="button" data-action="fleet-profile-launch" data-id="' + escapeHtml(profile.id) + '">Launch</button>'
+        + '<button class="button button-sm" type="button" data-action="fleet-profile-delete" data-id="' + escapeHtml(profile.id) + '">Delete</button></div></td></tr>';
+    }).join('') : '<tr><td colspan="5" class="mono">No launch profile yet. Save one below and it becomes a one-click destination.</td></tr>';
+    return '<section class="macro-layout"><section class="panel"><div class="panel-head"><h3>' + icon('play') + ' Saved profiles (' + profiles.length + '/' + escapeHtml(data.limit || 40) + ')</h3><button class="button button-sm" type="button" data-action="fleet-refresh">' + icon('refresh') + ' Refresh</button></div>'
+      + '<table class="data-table"><thead><tr><th>Profile</th><th>Place</th><th>Server</th><th>FPS</th><th></th></tr></thead><tbody>' + rows + '</tbody></table>'
+      + '<p class="mono">A profile launch goes through the wave launcher, so the concurrency limit, the delay between launches and the pause between waves all still apply. An FPS target is a global Roblox setting: it applies to every client, not only this profile.</p></section>'
+      + '<section class="panel"><div class="panel-head"><h3>' + icon('plus') + ' New profile</h3></div><div class="form-grid">'
+      + '<div class="field"><label for="fleet-profile-name">Name</label><input id="fleet-profile-name" maxlength="60" placeholder="Evening farm" /></div>'
+      + '<div class="field"><label for="fleet-profile-place">Place ID</label><input id="fleet-profile-place" inputmode="numeric" placeholder="920587237" /></div>'
+      + '<div class="field"><label for="fleet-profile-job">JobId (optional)</label><input id="fleet-profile-job" placeholder="Send everyone to one server" /></div>'
+      + '<div class="field"><label for="fleet-profile-link">Private server code (optional)</label><input id="fleet-profile-link" placeholder="Used instead of a JobId" /></div>'
+      + '<div class="field"><label for="fleet-profile-fps">FPS target (optional)</label><input id="fleet-profile-fps" inputmode="numeric" placeholder="0 keeps the current cap" /></div>'
+      + '<div class="field"><label for="fleet-profile-group">Group to launch</label><select id="fleet-profile-group">' + groupOptions + '</select></div>'
+      + '<div class="field full"><label for="fleet-profile-note">Note</label><input id="fleet-profile-note" maxlength="200" placeholder="What this destination is for" /></div>'
+      + '<div class="field full"><label for="fleet-profile-accounts">Accounts to launch (optional, overrides the group)</label><select id="fleet-profile-accounts" multiple size="6">' + this.fleetAccountOptions('') + '</select></div>'
+      + '</div><footer class="modal-foot"><button class="button button-sm button-primary" type="button" data-action="fleet-profile-save">Save profile</button></footer></section></section>';
   }
 
   renderDiagnostics() {
@@ -1138,7 +1930,9 @@ class OrbitApp {
     if (this.state.notificationsOpen) output += this.renderNotifications();
     if (this.state.modal) output += this.renderModal();
     if (this.state.paletteOpen) output += this.renderPalette();
-    this.overlayRoot.innerHTML = output;
+    if (output === this.state.lastOverlayHtml) return;
+    this.state.lastOverlayHtml = output;
+    this.swapHtml(this.overlayRoot, output);
   }
 
   renderNotifications() {
@@ -1429,10 +2223,11 @@ class OrbitApp {
       { kind: 'route', route: 'accounts', icon: 'users', title: 'Open accounts', detail: 'Manage account profiles', shortcut: 'G A' },
       { kind: 'route', route: 'games', icon: 'gamepad', title: 'Browse games & servers', detail: 'Choose a game and server', shortcut: 'G G' },
       { kind: 'route', route: 'instances', icon: 'monitor', title: 'Open instances', detail: 'Monitor active sessions', shortcut: 'G I' },
-      { kind: 'route', route: 'nexus', icon: 'command', title: 'Open Nexus executor', detail: 'Execute Lua scripts on clients', shortcut: 'G N' },
       { kind: 'route', route: 'settings', icon: 'settings', title: 'Open settings', detail: 'Appearance, watcher, backups', shortcut: 'G S' },
       { kind: 'action', action: 'refresh-instances', icon: 'refresh', title: 'Refresh instances', detail: 'Run a process scan', shortcut: 'Ctrl R' }
-    ].filter(function (item) { return matches(item.title + ' ' + item.detail); });
+    ].concat(this.nexusEnabled()
+      ? [{ kind: 'route', route: 'nexus', icon: 'command', title: 'Open Nexus executor', detail: 'Execute Lua scripts on clients', shortcut: 'G N' }]
+      : []).filter(function (item) { return matches(item.title + ' ' + item.detail); });
     const accounts = this.state.accounts.filter(function (account) { return matches(account.username + ' ' + account.display_name); }).slice(0, 5).map(function (account) { return { kind: 'account', id: account.id, icon: 'users', title: account.display_name || account.username, detail: '@' + account.username + ' · ' + statusText(account.status) }; });
     const games = this.state.games.filter(function (game) { return matches(game.title + ' ' + game.creator); }).slice(0, 4).map(function (game) { return { kind: 'game', id: game.place_id, icon: 'gamepad', title: game.title, detail: game.creator || 'Game' }; });
     return { actions: actions, accounts: accounts, games: games };
@@ -1456,6 +2251,7 @@ class OrbitApp {
     if (action === 'close-modal-backdrop' && event.target === button) { await this.dismissOAuthModal(); return; }
     if (action === 'close-palette-backdrop' && event.target === button) { this.closePalette(); return; }
     if (action === 'navigate') { this.navigate(button.dataset.route); return; }
+    if (await this.handleFleetAction(action, button)) return;
     if (action === 'navigate-accounts') { this.navigate('accounts'); return; }
     if (action === 'open-palette') { this.openPalette(); return; }
     if (action === 'close-modal') { await this.dismissOAuthModal(); return; }
@@ -1468,15 +2264,16 @@ class OrbitApp {
     if (action === 'create-account') { this.openModal({ kind: 'account', account: {} }); return; }
     if (action === 'open-private-link') { this.openModal({ kind: 'private-link' }); return; }
     if (action === 'add-macro-block') {
-      const defaults = { wait: { type: 'wait', milliseconds: 1000 }, key_press: { type: 'key_press', key: 'W', milliseconds: 80 }, mouse_click: { type: 'mouse_click', x: 0.5, y: 0.5, button: 'left' }, text: { type: 'text', value: 'hello' } };
+      const defaults = { wait: { type: 'wait', milliseconds: 1000 }, key_press: { type: 'key_press', key: 'W', milliseconds: 80 }, mouse_click: { type: 'mouse_click', x: 0.5, y: 0.5, button: 'left' }, text: { type: 'text', value: 'hello' }, condition: { type: 'condition', check: 'runtime_above', value: '300', then: 'stop' }, launch: { type: 'launch' }, teleport: { type: 'teleport', place_id: '', job_id: '' }, restart: { type: 'restart' } };
       this.state.macroDraftBlocks.push(defaults[button.dataset.kind] || defaults.wait); this.render(); return;
     }
     if (action === 'remove-macro-block') { this.state.macroDraftBlocks.splice(Number(button.dataset.index), 1); this.render(); return; }
     if (action === 'refresh-macros') { this.state.macros = asArray(await this.bridge.call('list_macros')); this.state.macroRuns = asArray(await this.bridge.call('list_macro_runs')); this.render(); return; }
     if (action === 'start-macro') {
       const input = document.getElementById('macro-target-' + button.dataset.id);
-      if (!input || !input.value) { this.toast('warning', 'Choose an instance', 'Select a verified Roblox PID for this macro.'); return; }
-      try { await this.bridge.call('start_macro', button.dataset.id, Number(input.value)); this.state.macroRuns = asArray(await this.bridge.call('list_macro_runs')); this.render(); this.toast('success', 'Macro started', 'The macro is pinned to PID ' + input.value + '.'); } catch (error) { this.toast('error', 'Macro failed', error.message); }
+      const targetPid = input && input.value ? input.value : (this.state.instances.length === 1 ? String(this.state.instances[0].pid) : '');
+      if (!targetPid) { this.toast('warning', 'Choose an instance', 'Select a verified Roblox PID for this macro.'); return; }
+      try { const started = unwrap(await this.bridge.call('start_macro', button.dataset.id, Number(targetPid))) || {}; this.state.macroRuns = asArray(await this.bridge.call('list_macro_runs')); this.render(); const delivery = started.delivery_mode === 'minimized_input' ? 'while minimized and invisible' : 'with foreground Windows input'; this.toast('success', 'Macro started', 'PID ' + targetPid + ' is running ' + delivery + '.'); } catch (error) { this.toast('error', 'Macro failed', error.message); }
       return;
     }
     if (action === 'stop-macro') { try { await this.bridge.call('stop_macro', button.dataset.id); this.state.macroRuns = asArray(await this.bridge.call('list_macro_runs')); this.render(); } catch (error) { this.toast('error', 'Could not stop macro', error.message); } return; }
@@ -1669,6 +2466,7 @@ class OrbitApp {
       }
       return;
     }
+    if (!this.nexusEnabled() && NEXUS_ACTIONS.has(action)) return;
     if (action === 'open-account-utilities') { this.openModal({ kind: 'account-utilities' }); return; }
     if (action === 'open-cookie-login') { this.openModal({ kind: 'cookie-login' }); return; }
     if (action === 'open-nexus-panel') { this.openModal({ kind: 'send-nexus' }); return; }
@@ -1745,6 +2543,46 @@ class OrbitApp {
     if (action === 'nexus-target-client') { this.state.nexusExecutorTarget = button.dataset.target || 'all'; this.render(); this.nexusSyncLineNumbers(); return; }
     if (action === 'nexus-quick') { this.state.nexusExecutorCode = button.dataset.script || ''; await this.nexusExecute(); return; }
     if (action === 'refresh-nexus-status') { await this.refreshNexusStatus(); return; }
+    if (action === 'smart-launch-preview' || action === 'smart-launch-group') {
+      const select = document.getElementById('fleet-group');
+      const groupId = select && select.value ? select.value : '';
+      if (!groupId) { this.toast('warning', 'Choose a group', 'Pick a group before launching a wave.'); return; }
+      this.state.fleet = Object.assign({}, this.state.fleet, { groupId: groupId });
+      try {
+        if (action === 'smart-launch-preview') {
+          const preview = unwrap(await this.bridge.call('plan_smart_launch', null, groupId)) || {};
+          this.state.fleet = Object.assign({}, this.state.fleet, { plan: preview, resources: preview.resources || null });
+          this.render();
+          this.toast('info', 'Launch preview', 'Planned ' + (preview.planned || 0) + ' account(s) in ' + (preview.waves || 0) + ' wave(s). Nothing was launched.');
+          return;
+        }
+        const started = unwrap(await this.bridge.call('start_smart_launch', null, groupId, null)) || {};
+        const plan = started.plan || {};
+        this.state.fleet = Object.assign({}, this.state.fleet, { plan: plan, resources: started.resources || null });
+        this.render();
+        this.toast('success', 'Smart launch queued', 'Queued ' + (plan.planned || 0) + ' account(s), ' + (plan.delay_seconds || 0) + 's apart.');
+      } catch (error) { this.toast('error', 'Smart launch failed', error && error.message ? error.message : String(error)); }
+      return;
+    }
+    if (action === 'stop-all-macros') {
+      try {
+        const result = unwrap(await this.bridge.call('stop_all_macros')) || {};
+        this.state.macroRuns = asArray(await this.bridge.call('list_macro_runs'));
+        this.render();
+        this.toast('success', 'Macros stopped', 'Stopped ' + (result.count || 0) + ' run(s).');
+      } catch (error) { this.toast('error', 'Stop failed', error && error.message ? error.message : String(error)); }
+      return;
+    }
+    if (action === 'apply-resource-plan') {
+      try {
+        const result = unwrap(await this.bridge.call('apply_resource_plan', null)) || {};
+        this.state.fleet = Object.assign({}, this.state.fleet, { resources: result.plan || null });
+        this.render();
+        if (result.applied) this.toast('success', 'Frame rates applied', 'Global cap set to ' + result.fps + ' FPS. Roblox applies one cap to every window.');
+        else this.toast('warning', 'Nothing applied', result.reason || 'The plan had nothing to apply.');
+      } catch (error) { this.toast('error', 'Frame rates failed', error && error.message ? error.message : String(error)); }
+      return;
+    }
     if (action === 'refresh-instances') { await this.refreshInstances(); return; }
     if (action === 'refresh-diagnostics') { await this.refreshDiagnostics(); return; }
     if (action === 'open-restore') { await this.openRestoreModal(); return; }
@@ -1888,6 +2726,13 @@ class OrbitApp {
               block[key] = input.type === 'number' ? Number(input.value) : input.value;
             });
             if (block.type === 'mouse_click') block.button = 'left';
+            if (block.type === 'condition') {
+              // A visual condition holds exactly one action. The DSL editor is
+              // there when a deeper IF tree is needed.
+              block.actions = [{ type: String(block.then || 'stop') }];
+              delete block.then;
+            }
+            if (block.type === 'teleport' && !String(block.job_id || '').trim()) delete block.job_id;
             actions.push(block);
           });
           if (!actions.length) throw new Error('Add at least one macro block.');
@@ -2458,11 +3303,13 @@ class OrbitApp {
   }
 
   navigate(route) {
+    if (route === 'nexus' && !this.nexusEnabled()) route = 'dashboard';
     this.state.route = route;
     this.state.notificationsOpen = false;
     this.state.selected.clear();
     this.render();
     if (route === 'instances') void this.loadInstanceMonitor(false);
+    if (route === 'fleet') void this.loadFleet(this.state.fleetTab);
     if (route === 'games') {
       // The page used to render an empty list forever: nothing ever asked the
       // backend for the saved games, and the search box only filtered that
@@ -2474,7 +3321,7 @@ class OrbitApp {
     if (route === 'settings' && this.state.settingsTab === 'general') void this.loadWindowsStartupStatus(false);
   }
 
-  openModal(value) { this.state.modal = value; this.renderOverlays(); window.setTimeout(function () { const autofocus = $('[autofocus], .modal input'); if (autofocus) autofocus.focus(); }, 10); }
+  openModal(value) { if (value && value.kind === 'send-nexus' && !this.nexusEnabled()) return; this.state.modal = value; this.renderOverlays(); window.setTimeout(function () { const autofocus = $('[autofocus], .modal input'); if (autofocus) autofocus.focus(); }, 10); }
   clearOAuthPolling() {
     if (this.oauthPollTimer !== null) window.clearInterval(this.oauthPollTimer);
     this.oauthPollTimer = null;
@@ -2767,8 +3614,14 @@ class OrbitApp {
     if (typeof document.visibilityState === 'string' && document.visibilityState === 'hidden') return;
     this.state.runtimePollInFlight = true;
     try {
-      this.applyInstanceMonitor(unwrap(await this.bridge.call('get_instance_monitor')) || {});
-      if (['dashboard', 'accounts', 'instances'].includes(this.state.route)) this.render();
+      if (this.state.route === 'dashboard') {
+        // One joined snapshot instead of three polls that could disagree.
+        this.applyDashboard(unwrap(await this.bridge.call('get_dashboard')) || {});
+      } else {
+        this.applyInstanceMonitor(unwrap(await this.bridge.call('get_instance_monitor')) || {});
+        if (this.state.route === 'macros') this.state.macroRuns = asArray(await this.bridge.call('list_macro_runs'));
+      }
+      if (['dashboard', 'accounts', 'instances', 'macros'].includes(this.state.route)) this.render();
     } catch (_) {
       // Explicit refreshes keep their visible error; background polling stays quiet.
     } finally {

@@ -140,7 +140,12 @@ def test_nexus_rejects_wrong_handshake_token_before_registering_account():
     anyio.run(_async_test)
 
 
-def test_nexus_application_service_and_bridge_integration(tmp_path: Path):
+def test_nexus_application_service_and_bridge_integration(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    # Nexus ships hidden: the surface is retained but unreachable unless the
+    # recovery flag is set, so this integration test opts in explicitly.
+    monkeypatch.setenv("ASTRO_ENABLE_NEXUS", "1")
     paths = _paths(tmp_path)
     repo = SQLiteRepository(paths.database)
     service = ApplicationService(paths=paths, repository=repo)

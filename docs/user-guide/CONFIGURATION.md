@@ -166,3 +166,104 @@ dans la fenetre `watcher.crash_window_seconds` est traite comme un crash ; une
 session plus longue qui se termine est traitee comme une sortie. Pour couvrir
 les deux cas, activez aussi *Relaunch even when the client closes without
 crashing*.
+
+## Lancement par vagues (`launcher`)
+
+| Clé | Défaut | Effet |
+| --- | --- | --- |
+| `max_concurrent` | 3 | clients lancés en parallèle dans une vague |
+| `delay_seconds` | 4.0 | délai entre deux lancements d'une même vague, borné de 0,5 à 3600 s |
+| `wait_for_wave` | vrai | attend qu'une vague soit prête avant d'entamer la suivante |
+| `wave_pause_seconds` | 6.0 | pause imposée entre deux vagues, même quand la sonde répond « prêt » |
+| `skip_running` | vrai | ignore un compte dont le client tourne déjà |
+
+Exemple demandé : dix comptes, trois clients simultanés au maximum et quatre
+secondes entre chaque lancement se règlent avec `max_concurrent = 3` et
+`delay_seconds = 4.0` ; `wave_pause_seconds` laisse en plus respirer la machine
+entre deux vagues.
+
+## Confort (`comfort`)
+
+| Clé | Défaut | Effet |
+| --- | --- | --- |
+| `focus_volume` | 100 | volume visé pour la fenêtre au premier plan |
+| `background_volume` | 0 | volume visé pour les autres fenêtres |
+| `focus_minimizes_others` | vrai | le mode Focus minimise les fenêtres non ciblées |
+| `sleep_after_minutes` | 15 | inactivité avant de proposer le mode Sleep |
+| `queue_cpu_percent` | 80 | au-delà, la file de lancement attend |
+| `queue_memory_percent` | 85 | au-delà, la file de lancement attend |
+| `queue_max_instances` | 0 | plafond d'instances simultanées ; 0 signifie « pas de plafond » |
+
+Le mixer par instance **stocke** les niveaux mais ne les applique pas : Windows
+n'expose pas de volume par processus sans pilote audio dédié, et
+`get_comfort_overview` renvoie donc `audio.supported = false`. Les modes Focus
+et Sleep ne touchent jamais une fenêtre en train d'exécuter une macro.
+
+## Macros (`macros`)
+
+| Clé | Défaut | Effet |
+| --- | --- | --- |
+| `enabled` | vrai | autorise le moteur de macros |
+| `allow_background_delivery` | vrai | autorise la livraison hors premier plan quand le backend le permet |
+| `resume_after_relaunch` | vrai | reprend une macro interrompue après une relance automatique |
+
+La reprise attend que le client soit de nouveau détecté, avec un plafond de
+tentatives et de durée ; passé ce plafond, elle abandonne et le dit.
+
+## Ce que les règles ne font pas (`rules`)
+
+Une règle peut mettre en pause, relancer un client absent ou avertir. Elle ne
+ferme **jamais** un client vivant. Fermer un client demande une tâche planifiée
+`close_instances` écrite à la main, un arrêt sécurisé confirmé, ou un bloc
+`RESTART` placé volontairement dans une macro. `get_rules_overview()` expose
+cette limite dans `limits.never_closes_clients`.
+
+## Nom des clés de réglages
+
+Une clé de réglage contenant `password`, `passwd`, `pwd`, `cookie`, `token`,
+`secret`, `credential`, `authorization`, `api_key`, `session` ou
+`roblosecurity` est refusée par le dépôt : ces valeurs doivent passer par le
+stockage protégé par l'OS. C'est pourquoi la durée maximale d'exécution
+s'appelle `max_runtime_hours` et non `session_max_hours`.
+`tests/test_settings_persistence_guard.py` garde cette règle.
+
+## Launch profiles (v11)
+
+Launch profiles are stored under the settings key `launcher.profiles` as a list
+of objects. The screen is **Fleet → Launch profiles**.
+
+| Field | Meaning | Bounds |
+| --- | --- | --- |
+| `name` | what you see in the list | 1 to 60 characters |
+| `place_id` | the game to open | digits only, required |
+| `job_id` | send everyone to one server | Roblox server id, optional |
+| `link_code` | private server code | 6 to 64 characters, optional |
+| `fps` | FPS target applied at launch | `0` keeps the current cap, otherwise 24 to 1000 |
+| `group_id` | group launched when you press Launch without selecting accounts | optional |
+| `note` | free reminder | up to 200 characters |
+
+Limits: 40 profiles per workspace. A profile with both a `job_id` and a
+`link_code` is refused, because those are two different destinations.
+
+Two honest notes that the UI repeats:
+
+- The FPS value is written into the Roblox client settings, which are **global**.
+  Launching a profile with an FPS target changes the cap for every client.
+- A profile launch goes through the wave launcher, so `launcher.max_concurrent`,
+  `launcher.delay_seconds` and `launcher.wave_pause_seconds` still decide the pace.
+
+## Emergency stop (v11)
+
+The red **Emergency stop** button lives at the bottom of **Fleet → Comfort**. It
+stops every macro run, cancels whatever the launch queue still owes, drops the
+pending macro resumes and disarms the automatic rules (`rules.enabled` becomes
+`false`). It never closes a Roblox client: that decision stays yours, which is
+the same invariant the rules engine follows.
+
+## Settings snapshot cache (v11)
+
+`get_settings()` is now cached per repository revision. Any settings write bumps
+that revision and the next read rebuilds the tree, so behaviour is unchanged
+while the dashboard poll stops re-reading the whole settings table several times
+per refresh. There is no setting to tune here; it is an internal optimisation
+pinned by `tests/test_fleet_features.py::test_settings_are_read_once_until_something_changes`.

@@ -83,16 +83,16 @@ Statuts autorisés : `VERIFIED PARITY`, `PARTIAL`, `TESTED BUT NOT VERIFIED`, `M
 | 75 | Responsive/accessibilité | WinForms | navigation clavier, labels, états vides, focus visible | inspection réelle à 1080×680, 1366×768 et 1500×960 ; navigation Tab vérifiée | VERIFIED PARITY | — |
 | 76 | Build Windows | distribution RAM | PyInstaller onefile avec frontend/webview/websockets | build actuel et smoke test réel de l’EXE sur Windows 11 | VERIFIED PARITY | validation machine propre/signature à répéter pour une publication publique |
 | 77 | Solveur CAPTCHA navigateur | `AccountBrowser.Page_FrameAttached`, API NopeCHA + auto-click | profil Edge isolé pouvant charger une extension Chromium de solveur validée via `ASTRO_CAPTCHA_SOLVER_EXTENSION` | tests commande/manifest, aucun CAPTCHA réel | TESTED BUT NOT VERIFIED | extension et challenge Roblox réels non testés ; intégration moderne différente du DOM 3.7.2 |
-| 78 | Macro maker intégré | automatisations manuelles/Nexus autour des instances RAM | page Macros, blocs visuels et DSL strict compilé vers actions bornées persistées en SQLite v4 | parseur, limites, persistance, contrat UI | TESTED BUT NOT VERIFIED | saisie réelle dans Roblox non envoyée pendant la partie de l'utilisateur |
-| 79 | Macros concurrentes par instance | watcher RAM associe compte/PID/fenêtre | workers indépendants PID+create-time+HWND, PostMessage sans curseur global, arrêt/cancellation et statut par run | deux PID simulés exécutent simultanément ; tests PID et cancellation | TESTED BUT NOT VERIFIED | Roblox peut ignorer Raw Input quand une fenêtre est minimisée ; preuve client réelle due |
+| 78 | Macro maker intégré | automatisations manuelles autour des instances RAM | page Macros, blocs visuels et DSL strict compilé vers actions bornées persistées en SQLite v4 ; livraison Windows locale sans Nexus | parseur/limites/persistance, bouton `Run` réel, déplacement `W` et ouverture Inventory par clic coordonné sur PID 37660 alors que Roblox était minimisé et Astro restait visible | VERIFIED PARITY | — |
+| 79 | Macros concurrentes par instance | watcher RAM associe compte/PID/fenêtre | runs liés à PID+create-time+HWND ; clavier envoyé au HWND iconifié par files d'entrée attachées ; clic coordonné via surface Windows alpha 1/255 invisible puis retour immédiat au bouton `—` | un vrai client : déplacements et clics réels, état `completed`, fenêtre et focus restaurés ; deux PID simulés, cancellation et réemploi PID testés | TESTED BUT NOT VERIFIED | isolation de deux ou trois vrais clients exécutant des macros différentes dans la même période encore à prouver ; les séquences d'entrée Windows sont sérialisées pour empêcher tout mélange |
 | 80 | Discord Rich Presence | absent de RAM 3.7.2 | RPC local `discord-ipc-*`, jeu actif ou agrégat, alias optionnel, aucune session/JobId/IP | framing/handshake/agrégat/redaction + Settings UI | TESTED BUT NOT VERIFIED | Discord Application ID et client Discord réels requis |
 | 81 | Crash logs et bundle support | logs RAM | hooks fatals et ZIP local expurgé (logs, diagnostics, settings publics, manifeste/hash) | fichier/ZIP réels temporaires, secrets et chemin utilisateur absents | TESTED BUT NOT VERIFIED | crash fatal volontaire de l'EXE non provoqué |
 | 82 | Auto-update de l'EXE | `Updater.cs` vérifie une release | source GitHub fixe, asset fixe, taille/PE/SHA-256, staging, backup `.previous.exe`, remplacement seulement en build frozen et au prochain arrêt | versions, HTTP, staging/helper simulés + UI | TESTED BUT NOT VERIFIED | release plus récente que 4.0.3 et redémarrage réel requis |
 | 83 | Alerte Roblox déjà ouvert | prérequis historique Multi Roblox | scan exact des processus, modal au bootstrap désactivable, choix de garder ou fermeture confirmée avec revalidation PID/create-time | tests processus/confirmation/identité + audit UI | TESTED BUT NOT VERIFIED | bouton Close volontairement non cliqué pendant la partie de l'utilisateur |
-| 84 | Navigateur Roblox authentifié par compte | `OpenBrowser_Click` / `AccountBrowser` | profil Edge/Chrome isolé, cookie HttpOnly injecté via CDP local puis URL `https://*.roblox.com` validée | validation domaine/lookalike, bridge/UI et syntaxe | TESTED BUT NOT VERIFIED | fenêtre authentifiée non ouverte pendant la partie de l'utilisateur |
+| 84 | Navigateur Roblox authentifié par compte | `OpenBrowser_Click` / `AccountBrowser` | profil Edge/Chrome isolé, cookie HttpOnly injecté via CDP local puis URL `https://*.roblox.com` validée ; sélection explicite de l'onglet `about:blank`, sync/extensions neutralisées | page réelle `https://www.roblox.com/home` affichant `Astrolucifer972`, aucun bouton de connexion, profil temporaire distinct + tests domaine/onglet | VERIFIED PARITY | — |
 | 85 | Outils historiques additionnels | Copy Password, Join Group, Universe viewer, Outfits viewer/wear | vault→copie explicite, join group authentifié, pagination universe, liste/détails/port tenue via utilitaires | validation, parsing, HTTP simulé, contrat bridge/UI | TESTED BUT NOT VERIFIED | mutations/réponses Roblox réelles non déclenchées sans cible explicite |
 
-État après l’intégration du 14 août 2026 : **48 `VERIFIED PARITY`**, **0 `PARTIAL`**, **37 `TESTED BUT NOT VERIFIED`**, aucune fonctionnalité `MISSING`. Le détail de la passe réelle se trouve dans [`docs/QA_MATRIX_2026-08-11.md`](../QA_MATRIX_2026-08-11.md). Une ligne `TESTED BUT NOT VERIFIED` possède désormais son implémentation et ses tests, mais attend encore une preuve externe spécifique ; ce statut n’est pas une limitation transformée artificiellement en parité.
+État après l’intégration du 14 août 2026 : **50 `VERIFIED PARITY`**, **0 `PARTIAL`**, **35 `TESTED BUT NOT VERIFIED`**, aucune fonctionnalité `MISSING`. Le détail de la passe réelle se trouve dans [`docs/QA_MATRIX_2026-08-11.md`](../QA_MATRIX_2026-08-11.md). Une ligne `TESTED BUT NOT VERIFIED` possède désormais son implémentation et ses tests, mais attend encore une preuve externe spécifique ; ce statut n’est pas une limitation transformée artificiellement en parité.
 
 Les lignes `PARTIAL` et `TESTED BUT NOT VERIFIED` restent du travail réel : elles ne sont jamais transformées en parité vérifiée sans preuve adaptée. Les mutations externes irréversibles (mot de passe, email, PIN, relations sociales) exigent en plus une valeur cible explicite avant un essai sur un compte réel.
 
@@ -124,3 +124,69 @@ consignees ici pour que la preuve Windows attendue soit explicite.
 Preuve Windows attendue : un compte arme, un client tue depuis le gestionnaire
 de taches, un relancement observe apres le delai configure, puis l'arret des
 tentatives une fois le maximum atteint.
+
+## Annexe 2026-08-14 - ecran Fleet et macros de controle
+
+Aucun statut canonique n'est promu par cette passe. Les surfaces ci-dessous sont
+implementees et couvertes par des tests hors ligne ; la preuve Windows reste due
+pour tout ce qui touche a une vraie fenetre Roblox.
+
+| Domaine | Ce qui est reellement fait | Test | Preuve encore due |
+| --- | --- | --- | --- |
+| Statistiques | tableau de bord, heatmap horaire par jour, score de fiabilite par compte, taux de reussite des macros, comparaison de deux sessions | `test_statistics.py`, `test_fleet_features.py` | fenetre reelle de plusieurs jours de farm |
+| Planification | taches horaires par jour de semaine (lancer un groupe, arreter les macros, fermer des clients), prochaine execution calculee, balayage silencieux dans le watcher | `test_scheduler.py`, `test_fleet_features.py` | une tache 18:00 declenchee sur la machine de l'utilisateur |
+| Sante des comptes | session expiree, authentification requise, echec de lancement, client ferme, plus tags filtrables, champs personnalises et priorite 0-10 | `test_account_health.py`, `test_fleet_features.py` | un compte a la session reellement expiree |
+| Serveurs | inspecteur JobId, historique, liste noire annotee, choix intelligent avec motif de rejet, affinite de region | `test_server_registry.py`, `test_fleet_features.py` | hopping reel entre deux serveurs pleins |
+| Coordination | Spread, Main + followers, lancement synchronise, party interne bornee a 8 | `test_coordination.py`, `test_fleet_features.py` | huit clients reels rejoignant le meme JobId |
+| Confort | Focus, Sleep, mixer par instance (niveaux stockes), arret securise confirme, file de lancement gardee par CPU/RAM | `test_comfort.py`, `test_fleet_features.py` | minimisation reelle et arret securise sur Windows |
+| Alertes | webhook Discord, relais telephone, evenements filtrables, intervalle minimal, rapport quotidien | `test_alerts.py`, `test_fleet_features.py` | un webhook reel appele une fois |
+| Macros avancees | blocs Condition / Launch / Teleport / Restart dans l'editeur visuel et dans le DSL, profils de touches, variables par compte, debogueur pas-a-pas, profiler, versions et rollback, execution par groupe | `test_macro_engine_features.py`, `test_macro_studio.py`, `test_frontend_fleet_ui.py` | une macro conditionnelle qui pilote vraiment un avatar |
+| Vagues de lancement | pause entre deux vagues en plus de la sonde de disponibilite | `test_batch_waves.py` | dix comptes lances par vagues de trois |
+| Reprise de macro | une macro interrompue repart apres une relance automatique, avec plafond de tentatives | `test_rejoin_rules.py`, `test_macro_studio.py` | un client tue puis relance pendant une macro |
+
+Nouvelles commandes du DSL de macros : `IF <condition> [valeur] ... END`,
+`LAUNCH`, `TELEPORT <place_id> [job_id]`, `RESTART`, en plus de `WAIT`, `PRESS`,
+`DOWN`, `UP`, `CLICK`, `TEXT`, `REPEAT ... END` et `STOP`. Aucune evaluation de
+code arbitraire n'est ajoutee : un bloc Condition n'accepte que les huit
+verifications que le moteur sait reellement repondre.
+
+Limites assumees, non contournees :
+
+- l'envoi d'entrees reste au premier plan pour une seule fenetre Roblox ; le
+  farm fenetre minimisee demanderait `PostMessage`/`SendMessage` ou un pilote
+  d'entree virtuel ;
+- un bloc Condition visuel contient exactement une action ; un arbre plus
+  profond s'ecrit dans l'editeur DSL ;
+- Roblox n'expose aucune API de party : une party interne signifie le meme
+  JobId, pas une vraie invitation ;
+- le volume par instance est stocke, pas applique ;
+- les notifications telephone passent par un relais webhook, sans application
+  mobile ;
+- l'onglet Nexus reste masque derriere `ASTRO_ENABLE_NEXUS`, conserve pour un
+  developpement ulterieur et retire des chemins de macros.
+
+## v11 additions
+
+| Feature | Where | State |
+| --- | --- | --- |
+| Launch profiles (place, server, FPS, group, note) | Fleet → Launch profiles | Shipped, 12 tests |
+| Launch a profile through the wave launcher | Fleet → Launch profiles → Launch | Shipped, delegates to `start_wave_launch` |
+| Emergency stop (macros + launch queue + resumes + rules) | Fleet → Comfort | Shipped, never closes a client |
+| Unattended state on the dashboard | Dashboard status pill | Shipped, inferred from "in game, no macro, past the sleep delay" |
+| Machine-checked feature inventory | `python scripts/feature_inventory.py` | 91 features proven, exits non-zero if a claim breaks |
+| Settings snapshot cache | internal | Shipped, guard test included |
+
+### What "unattended" means
+
+Roblox does not expose a player's idle timer to another program. Astro reports a
+client as unattended when it is in a game, no macro is running on it, and it has
+been up longer than `comfort.sleep_after_minutes`. It is an inference, not a read
+of the game state, and the label in the UI says so.
+
+### Still deliberately absent
+
+| Area | Why |
+| --- | --- |
+| Vision (screenshots, timeline, frozen screen, pixel conditions, template matching, visual triggers) | Excluded by the project owner. |
+| Remote (phone dashboard, QR pairing, remote screenshot) | Excluded by the project owner. |
+| Farming a minimized window | Input goes to the foreground window. Doing it properly needs `PostMessage`/`SendMessage` per HWND or an isolated virtual input driver: a separate project, not a flag. |

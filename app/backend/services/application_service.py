@@ -17,8 +17,23 @@ import threading
 import time
 from typing import Any
 
-from app.backend.core.config import APP_VERSION, AppPaths, DEFAULT_SETTINGS, merge_settings
-from app.backend.automations import MacroEngine, MacroParseError, parse_macro_dsl, validate_macro_actions
+import psutil
+
+from app.backend.core.config import (
+    APP_VERSION,
+    AppPaths,
+    DEFAULT_SETTINGS,
+    feature_enabled,
+    feature_flags,
+    merge_settings,
+)
+from app.backend.automations import (
+    MacroEngine,
+    MacroParseError,
+    MacroRunNotFound,
+    parse_macro_dsl,
+    validate_macro_actions,
+)
 from app.backend.core.crash_reporting import SupportBundleBuilder
 from app.backend.integrations import DiscordPresenceManager, DiscordRpcError
 from app.backend.core.windows_startup import StartupRegistrationError, WindowsStartupManager
@@ -33,6 +48,7 @@ from app.backend.core.errors import (
     ValidationError,
 )
 from app.backend.models.domain import Account, Activity, Game, Group, Notification
+from app.backend.services.fleet_features import FleetFeaturesMixin, ServiceMacroController
 from app.backend.repositories.sqlite_repository import (
     ConflictError as RepositoryConflictError,
     NotFoundError as RepositoryNotFoundError,
@@ -72,6 +88,40 @@ from app.backend.storage.backups import BackupError, VersionedBackupManager
 from app.backend.storage.bulk_import import BulkAccountImporter
 from app.backend.storage.metadata_transfer import MetadataTransfer, MetadataTransferError
 from app.backend.watchers.beta_home_cleaner import BetaHomeCleaner
+from app.backend.watchers.rejoin_rules import (
+    MAX_REJOIN_ATTEMPTS,
+    RejoinPlan,
+    classify_disconnect,
+    plan_rejoin,
+)
+from app.backend.watchers.rule_engine import (
+    ACTION_PAUSE_MACRO,
+    ACTION_RESTART_MACRO,
+    ACTION_RESUME_MACRO,
+    AccountFacts,
+    RuleDecision,
+    SystemFacts,
+    automatic_decisions,
+    evaluate_rules,
+    normalized_priority,
+    recommendations,
+    validated_rule_settings,
+)
+from app.backend.core.config import feature_enabled as _feature_enabled
+from app.backend.watchers.launch_planner import (
+    LaunchPlan,
+    plan_launches,
+    validated_launcher_settings,
+)
+from app.backend.watchers.resource_plan import (
+    ACTION_PAUSE_LAUNCHES,
+    ACTION_RECOMMEND_CLOSE,
+    InstanceFacts,
+    MachineFacts,
+    ResourcePlan,
+    plan_resources,
+    validated_resource_settings,
+)
 from app.backend.watchers.window_positioner import RobloxWindowPositioner
 from app.backend.watchers import (
     MonitorPollingLoop,
@@ -125,7 +175,7 @@ _LEGACY_GROUP_COLOR_TOKENS = {
 }
 
 
-class ApplicationService:
+class ApplicationService(FleetFeaturesMixin):
     """A small service façade consumed by pywebview and optional local APIs.
 
     The class is deliberately synchronous at its boundary because pywebview
@@ -197,6 +247,17 @@ class ApplicationService:
         self._log_runtime = log_runtime or RobloxPlayerLogRuntime()
         self._seen_log_event_keys: set[tuple[Any, ...]] = set()
         self._log_disconnected_pids: set[int] = set()
+        # Last observed disconnect code per account.  It only ever refines a
+        # relaunch the process watcher already granted; it never grants one.
+        self._log_disconnect_codes: dict[str, int] = {}
+        # Rule engine bookkeeping.  Macro progress is tracked per run from the
+        # outside, so a wedged macro is detected without asking that macro to
+        # report its own health.
+        self._macro_progress: dict[str, tuple[Any, float]] = {}
+        self._rule_paused_runs: set[str] = set()
+        self._rule_notified: set[tuple[str, str]] = set()
+        self._rule_decisions: tuple[dict[str, Any], ...] = ()
+        self._cpu_primed = False
         self.window_positioner = window_positioner or RobloxWindowPositioner
         self.oauth_login = oauth_login or OAuthLoginCoordinator()
         self.backups = VersionedBackupManager(self.paths.backups, app_version=APP_VERSION)
@@ -221,6 +282,10 @@ class ApplicationService:
         self.player_search = PlayerSearchService(self.roblox)
         self.random_server = RandomServerSelector(self.roblox)
         self.macro_engine = macro_engine or MacroEngine()
+        # LAUNCH, TELEPORT and RESTART blocks need the application, not the
+        # input backend, so the engine borrows the same launch path as the UI.
+        if hasattr(self.macro_engine, "set_controller"):
+            self.macro_engine.set_controller(ServiceMacroController(self))
         self.discord_presence = discord_presence or DiscordPresenceManager()
         frozen_runtime = bool(getattr(sys, "frozen", False)) if runtime_is_frozen is None else bool(runtime_is_frozen)
         executable_runtime = runtime_executable if runtime_executable is not None else Path(sys.executable)
@@ -242,7 +307,7 @@ class ApplicationService:
         """Release owned external resources on application shutdown."""
 
         update_preferences = self.get_settings()["categories"].get("updates", {})
-        self.stop_nexus_server()
+        self._stop_nexus_server_unchecked()
         self.stop_watcher()
         self.macro_engine.stop_all()
         self.discord_presence.close()
@@ -273,7 +338,8 @@ class ApplicationService:
             "instances": [self._instance_payload(item) for item in scan.instances],
             "settings": self.get_settings(),
             "multi_instance": self.get_multi_instance_status(),
-            "nexus": self.get_nexus_status(),
+            "features": feature_flags(),
+            "nexus": self.get_nexus_status() if feature_enabled("nexus") else {"available": False},
             "activity": self.get_activity(),
             "notifications": self.get_notifications(),
             "diagnostics": self.get_diagnostics(include_logs=False),
@@ -1309,6 +1375,14 @@ class ApplicationService:
 
     # Settings --------------------------------------------------------------
     def get_settings(self) -> dict[str, Any]:
+        # The dashboard, the watcher tick and every fleet screen read settings.
+        # Rebuilding the tree per call meant a SQLite scan plus a deep copy each
+        # time, so the snapshot is reused until a write bumps the repository
+        # revision. Callers still receive a private copy they may mutate.
+        revision = getattr(self.repository, "settings_revision", None)
+        cached = getattr(self, "_settings_snapshot", None)
+        if revision is not None and cached is not None and cached[0] == revision:
+            return deepcopy(cached[1])
         nested = deepcopy(DEFAULT_SETTINGS)
         stored = self.repository.list_settings()
         for path, value in stored.items():
@@ -1335,6 +1409,8 @@ class ApplicationService:
             "potato_graphics": nested.get("performance", {}).get("potato_graphics", False),
             "categories": nested,
         }
+        if revision is not None:
+            self._settings_snapshot = (revision, deepcopy(flat))
         return flat
 
     def update_settings(self, values: Mapping[str, Any]) -> dict[str, Any]:
@@ -2060,6 +2136,14 @@ class ApplicationService:
         closed = BetaHomeCleaner.close_beta_home_windows(min_age_seconds=30.0)
         if closed:
             self._activity("watcher", f"{closed} Beta Home window(s) closed automatically")
+        # Session history, macro resumes and the clock-driven schedule all ride
+        # on this one tick: a single process poll, one consistent set of facts.
+        self._update_fleet_ledgers(scan)
+        self._dispatch_macro_resumes()
+        try:
+            self.run_due_scheduled_tasks(silent=True)
+        except AppError:
+            self.logger.warning("A scheduled task could not run on this tick.")
         return scan
 
     def _refresh_discord_for_scan(self, scan: Any) -> None:
@@ -2130,6 +2214,7 @@ class ApplicationService:
         self._apply_instance_window_runtime(scan)
         if allow_restarts:
             self._dispatch_due_restarts()
+            self._apply_rules(scan)
         return scan
 
     def _await_launch_observation(self, account_id: str, *, timeout_seconds: float) -> bool:
@@ -2417,9 +2502,13 @@ class ApplicationService:
                 continue
             if kind_value in {"disconnected", "returned_to_app", "data_model_stopped"}:
                 self._log_disconnected_pids.add(pid)
+                observed = classify_disconnect(getattr(event, "disconnect_code", None)).code
+                if observed is not None:
+                    self._log_disconnect_codes[account_id] = observed
                 self._set_account_runtime_status(account_id, "ready")
             elif kind_value in {"game_joined", "data_model_started"}:
                 self._log_disconnected_pids.discard(pid)
+                self._log_disconnect_codes.pop(account_id, None)
                 self._set_account_runtime_status(account_id, "in_game")
         self._seen_log_event_keys = current_keys
 
@@ -2515,7 +2604,7 @@ class ApplicationService:
                 account_username=account.username,
                 place_id=target.place_id,
                 job_id=target.job_id,
-                restart_policy=restart_policy or self._restart_policy_for(account),
+                restart_policy=restart_policy or self._restart_policy_for(account, attempt=restart_attempt),
                 restart_attempt=restart_attempt,
             )
         except (TypeError, ValueError, ValidationError):
@@ -2551,9 +2640,13 @@ class ApplicationService:
             launched = False
             try:
                 account = self._get_account(request.account_id)
+                plan = self._rejoin_plan_for(request)
+                # Reusing a server that shut down or dropped the connection
+                # just fails again, so a server-side failure joins a fresh one.
+                target_job = None if plan.change_server else request.job_id
                 result = self.launch_account(
                     account.id,
-                    {"place_id": request.place_id, "job_id": request.job_id},
+                    {"place_id": request.place_id, "job_id": target_job},
                     _restart_policy=request.restart_policy,
                     _restart_attempt=request.restart_attempt,
                 )
@@ -2563,8 +2656,17 @@ class ApplicationService:
                         "relaunch",
                         f"Local relaunch requested for {account.username}",
                         account_id=account.id,
-                        metadata={"place_id": request.place_id, "attempt": request.restart_attempt},
+                        metadata={
+                            "place_id": request.place_id,
+                            "attempt": request.restart_attempt,
+                            "changed_server": plan.change_server,
+                            "reason": plan.reason.label,
+                        },
                     )
+                    # A client that comes back should come back doing what it
+                    # was doing.  The macro is queued, then started once the
+                    # new process is verified, never blind-fired here.
+                    self._queue_macro_resume(account.id, reason=plan.reason.label)
             except (AppError, RobloxLaunchError):
                 self._notice(
                     "warning",
@@ -2603,7 +2705,576 @@ class ApplicationService:
             return {"armed": False, "reason": "the maximum relaunch attempts is zero"}
         return {"armed": True, "reason": "armed"}
 
-    def _restart_policy_for(self, account: Account) -> RestartPolicy:
+    def get_rule_decisions(self) -> list[dict[str, Any]]:
+        """Return the decisions taken on the most recent watcher tick.
+
+        Read-only on purpose: the UI shows what the rules did, and what they
+        refuse to do without a human, instead of re-deriving the logic itself.
+        """
+
+        return [dict(item) for item in self._rule_decisions]
+
+    # Dashboard, smart launcher and resources --------------------------------
+
+    def get_dashboard(self, watched_pid: Any = None) -> dict[str, Any]:
+        """One read-only snapshot joining accounts, windows, macros and rules.
+
+        The UI used to ask five different questions to fill one screen, which
+        made every poll inconsistent: an account could look offline while its
+        macro was listed as running.  One join, one answer.
+        """
+
+        windows = list(self.monitor.current_instances())
+        instances: list[dict[str, Any]] = []
+        instance_by_account: dict[str, dict[str, Any]] = {}
+        for window in windows:
+            payload = self._instance_payload(window)
+            payload["runtime_seconds"] = self._instance_runtime_seconds(window)
+            instances.append(payload)
+            account_id = str(payload.get("account_id") or "")
+            if account_id:
+                instance_by_account.setdefault(account_id, payload)
+
+        runs = [run for run in self.list_macro_runs() if not run.get("finished_at")]
+        macro_by_account: dict[str, dict[str, Any]] = {}
+        for run in runs:
+            account_id = str(run.get("account_id") or "")
+            if account_id:
+                macro_by_account.setdefault(account_id, run)
+
+        comfort_settings = self.get_settings()["categories"].get("comfort", {})
+        idle_after_seconds = max(0.0, float(comfort_settings.get("sleep_after_minutes") or 0) * 60.0)
+        cards: list[dict[str, Any]] = []
+        for account in self.repository.list_accounts():
+            payload = self._account_payload(account)
+            account_id = str(payload.get("id") or "")
+            instance = instance_by_account.get(account_id)
+            macro = macro_by_account.get(account_id)
+            metadata = getattr(account, "metadata", None) or {}
+            cards.append(
+                {
+                    **payload,
+                    "instance": instance,
+                    "macro": macro,
+                    "pid": (instance or {}).get("pid"),
+                    "memory_mb": (instance or {}).get("memory_mb"),
+                    "runtime_seconds": (instance or {}).get("runtime_seconds"),
+                    "place_id": (instance or {}).get("place_id"),
+                    "live_state": self._dashboard_state(
+                        instance, macro, idle_after_seconds=idle_after_seconds
+                    ),
+                    "priority": normalized_priority(metadata.get("priority")),
+                }
+            )
+
+        groups = self.list_groups()
+        resources = self._resource_plan(
+            watched_pid=self._clean_pid(watched_pid), windows=windows, runs=runs
+        )
+        return {
+            "generated_at": _utc_now(),
+            "accounts": cards,
+            "instances": instances,
+            "groups": groups,
+            "macro_runs": runs,
+            "rule_decisions": self.get_rule_decisions(),
+            "resources": resources.to_dict(),
+            "launcher": self._launcher_settings().to_dict(),
+            "batch": self.batch_launcher.get_status(),
+            "totals": {
+                "accounts": len(cards),
+                "running": len(instances),
+                "macros": len(runs),
+                "groups": len(groups),
+            },
+            # Macros serve one window at a time in this build; the concurrent
+            # path is set aside behind ASTRO_ENABLE_MULTI_WINDOW_MACROS.
+            "single_window_macros": not _feature_enabled("multi_window_macros"),
+        }
+
+    @staticmethod
+    def _dashboard_state(
+        instance: Mapping[str, Any] | None,
+        macro: Mapping[str, Any] | None,
+        *,
+        idle_after_seconds: float = 0.0,
+    ) -> str:
+        """Return the single word the dashboard shows for this account.
+
+        ``afk`` is reported honestly: the client sits in a game, no macro is
+        driving it, and it has been that way for longer than the sleep
+        threshold.  Astro cannot read a player's own idle timer, so it reports
+        only what it really knows -- nothing is automating this window.
+        """
+
+        if instance is None:
+            return "offline"
+        if str(instance.get("state") or "") in {"crashed", "exited", "terminated"}:
+            return "error"
+        if macro is not None:
+            if macro.get("paused"):
+                return "macro_paused"
+            if macro.get("state") == "running":
+                return "farming"
+        if instance.get("place_id"):
+            runtime = float(instance.get("runtime_seconds") or 0.0)
+            if idle_after_seconds > 0 and runtime >= idle_after_seconds:
+                return "afk"
+            return "in_game"
+        return "launching"
+
+    @staticmethod
+    def _clean_pid(value: Any) -> int | None:
+        if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+            return None
+        try:
+            number = int(str(value).strip())
+        except (TypeError, ValueError):
+            return None
+        return number if number > 0 else None
+
+    def _launcher_settings(self) -> Any:
+        return validated_launcher_settings(
+            self.get_settings()["categories"].get("launcher", {})
+        )
+
+    def _resource_settings(self) -> Any:
+        return validated_resource_settings(
+            self.get_settings()["categories"].get("resources", {})
+        )
+
+    def _machine_facts(self) -> MachineFacts:
+        """Sample the machine without ever blocking a UI call."""
+
+        cpu: float | None = None
+        memory: float | None = None
+        total: int | None = None
+        available: int | None = None
+        try:
+            if not self._cpu_primed:
+                psutil.cpu_percent(interval=None)
+                self._cpu_primed = True
+            else:
+                cpu = float(psutil.cpu_percent(interval=None))
+            virtual = psutil.virtual_memory()
+            memory = float(virtual.percent)
+            total = int(virtual.total)
+            available = int(virtual.available)
+        except Exception:
+            self.logger.debug("System pressure sampling is unavailable on this machine.")
+        return MachineFacts(
+            cpu_percent=cpu,
+            memory_percent=memory,
+            total_bytes=total,
+            available_bytes=available,
+        )
+
+    def _resource_plan(
+        self,
+        *,
+        watched_pid: int | None = None,
+        windows: list[Any] | None = None,
+        runs: list[Any] | None = None,
+    ) -> ResourcePlan:
+        """Plan frame rates, reusing a snapshot the caller already paid for.
+
+        ``get_dashboard`` has already scanned the processes and listed the
+        macro runs.  Scanning again for the resource verdict doubled the cost
+        of the one screen that polls the most, so the caller may hand both
+        lists over instead.
+        """
+
+        active = list(runs) if runs is not None else self.list_macro_runs()
+        macro_pids = {
+            run.get("pid")
+            for run in active
+            if not run.get("finished_at")
+        }
+        observed = (
+            list(windows)
+            if windows is not None
+            else list(self.monitor.current_instances())
+        )
+        facts = [
+            InstanceFacts(
+                pid=int(window.pid),
+                account_id=window.account_id,
+                username=str(window.account_username or ""),
+                watched=watched_pid is not None and int(window.pid) == int(watched_pid),
+                macro_running=window.pid in macro_pids,
+                memory_bytes=window.memory_bytes,
+            )
+            for window in observed
+        ]
+        return plan_resources(
+            instances=facts,
+            machine=self._machine_facts(),
+            settings=self._resource_settings(),
+        )
+
+    def get_resource_plan(self, watched_pid: Any = None) -> dict[str, Any]:
+        """Return the frame-rate plan, watchdog verdict and remaining capacity."""
+
+        return self._resource_plan(watched_pid=self._clean_pid(watched_pid)).to_dict()
+
+    def apply_resource_plan(self, watched_pid: Any = None) -> dict[str, Any]:
+        """Apply the only cap Roblox exposes: the global client FPS cap.
+
+        Per-window frame rates are not achievable through the client settings
+        file, so this applies the most demanding window's target and reports
+        exactly what it did.
+        """
+
+        plan = self._resource_plan(watched_pid=self._clean_pid(watched_pid))
+        payload = plan.to_dict()
+        if plan.applied_fps is None:
+            return {"applied": False, "reason": plan.applied_reason, "plan": payload}
+        try:
+            result = self.set_fps_cap(int(plan.applied_fps))
+        except ValidationError as exc:
+            return {"applied": False, "reason": str(exc), "plan": payload}
+        return {
+            "applied": bool(result.get("success")),
+            "fps": plan.applied_fps,
+            "reason": plan.applied_reason,
+            "plan": payload,
+        }
+
+    def _smart_launch_plan(self, account_ids: Any, group_id: Any) -> LaunchPlan:
+        accounts = [self._account_payload(item) for item in self.repository.list_accounts()]
+        selected: list[dict[str, Any]] = []
+        if account_ids is not None:
+            if not isinstance(account_ids, (list, tuple)) or not account_ids:
+                raise ValidationError("Select at least one account to launch.")
+            index = {str(item.get("id")): item for item in accounts}
+            for identifier in account_ids:
+                item = index.get(str(identifier).strip())
+                if item is None:
+                    raise NotFoundError("Account was not found.")
+                selected.append(item)
+        elif group_id:
+            group = str(group_id).strip()
+            self._get_group(group)
+            selected = [
+                item for item in accounts if str(item.get("group_id") or "") == group
+            ]
+            if not selected:
+                raise ValidationError("This group has no account to launch.")
+        else:
+            raise ValidationError("Choose a group or a list of accounts to launch.")
+        running = {
+            str(window.account_id)
+            for window in self.monitor.current_instances()
+            if window.account_id
+        }
+        return plan_launches(
+            accounts=[
+                {"account_id": item.get("id"), "username": item.get("username")}
+                for item in selected
+            ],
+            running_account_ids=running,
+            settings=self._launcher_settings(),
+        )
+
+    def plan_smart_launch(
+        self, account_ids: Any = None, group_id: Any = None
+    ) -> dict[str, Any]:
+        """Preview a smart launch. Launches nothing."""
+
+        plan = self._smart_launch_plan(account_ids, group_id)
+        resources = self._resource_plan()
+        payload = plan.to_dict()
+        payload["resources"] = resources.to_dict()
+        payload["blocked"] = resources.action == ACTION_RECOMMEND_CLOSE
+        payload["warning"] = (
+            resources.message
+            if resources.action in (ACTION_PAUSE_LAUNCHES, ACTION_RECOMMEND_CLOSE)
+            else ""
+        )
+        return payload
+
+    def start_smart_launch(
+        self, account_ids: Any = None, group_id: Any = None, target: Any = None
+    ) -> dict[str, Any]:
+        """Launch a selection or a whole group in staggered waves."""
+
+        plan = self._smart_launch_plan(account_ids, group_id)
+        if not plan.steps:
+            raise ConflictError("Every selected account is already running.")
+        resources = self._resource_plan()
+        # Adding clients to a saturated machine is how a farm freezes, so the
+        # watchdog gets a veto here.
+        if resources.action == ACTION_RECOMMEND_CLOSE:
+            raise ConflictError(resources.message)
+        ordered = [step.account_id for step in plan.steps]
+        status = self.batch_launcher.start_batch(
+            ordered,
+            dict(target) if isinstance(target, Mapping) else None,
+            plan.delay_seconds,
+        )
+        self._activity(
+            "batch_launch",
+            (
+                f"Smart launch queued {len(ordered)} account(s) in {plan.waves} wave(s), "
+                f"{plan.delay_seconds:g}s apart"
+            ),
+            metadata={
+                "waves": plan.waves,
+                "max_concurrent": plan.max_concurrent,
+                "skipped": len(plan.skipped),
+            },
+        )
+        return {
+            "plan": plan.to_dict(),
+            "status": status,
+            "resources": resources.to_dict(),
+        }
+
+    def stop_all_macros(self) -> dict[str, Any]:
+        """Stop every live macro run. Stopping needs no confirmation."""
+
+        stopped: list[str] = []
+        for run in self.macro_engine.list_runs():
+            if run.get("finished_at"):
+                continue
+            run_id = str(run.get("run_id") or "")
+            if not run_id:
+                continue
+            try:
+                self.macro_engine.stop(run_id)
+            except MacroParseError:
+                continue
+            stopped.append(run_id)
+        if stopped:
+            self._activity("macro", f"Stopped {len(stopped)} macro run(s)")
+        return {"stopped": stopped, "count": len(stopped)}
+
+    def close_instances(self, pids: Any, *, confirm: bool = False) -> dict[str, Any]:
+        """Close several clients, reusing the single confirmed path.
+
+        This loops over ``close_instance`` on purpose instead of talking to the
+        monitor directly, so closing stays explicit and never escalates to a
+        forced kill.
+        """
+
+        if not isinstance(pids, (list, tuple)) or not pids:
+            raise ValidationError("Select at least one instance to close.")
+        if len(pids) > 32:
+            raise ValidationError("Close at most 32 instances at once.")
+        results: list[dict[str, Any]] = []
+        for pid in pids:
+            number = self._clean_pid(pid)
+            if number is None:
+                raise ValidationError("Instance process id is invalid.")
+            results.append(self.close_instance(number, confirm=confirm))
+        return {"results": results, "count": len(results)}
+
+    def _rule_settings(self) -> Any:
+        return validated_rule_settings(self.get_settings()["categories"].get("rules", {}))
+
+    def _system_facts(self) -> SystemFacts:
+        """Sample machine-wide pressure without ever blocking the watcher tick.
+
+        The first non-blocking psutil CPU reading is always 0.0, so it is primed
+        once and reported as "not measured".  An unmeasured sample can never
+        pause an account, which is the safe direction to fail in.
+        """
+
+        cpu: float | None = None
+        memory: float | None = None
+        try:
+            if not self._cpu_primed:
+                psutil.cpu_percent(interval=None)
+                self._cpu_primed = True
+            else:
+                cpu = float(psutil.cpu_percent(interval=None))
+            memory = float(psutil.virtual_memory().percent)
+        except Exception:
+            self.logger.debug("System pressure sampling is unavailable on this machine.")
+        return SystemFacts(cpu_percent=cpu, memory_percent=memory)
+
+    @staticmethod
+    def _instance_runtime_seconds(instance: Any) -> float:
+        """Return how long one instance has been alive, or 0.0 when unknown."""
+
+        started = getattr(instance, "started_at", None)
+        if not isinstance(started, str) or not started:
+            return 0.0
+        try:
+            moment = datetime.fromisoformat(started.replace("Z", "+00:00"))
+        except ValueError:
+            return 0.0
+        if moment.tzinfo is None:
+            moment = moment.replace(tzinfo=UTC)
+        return max(0.0, (datetime.now(UTC) - moment).total_seconds())
+
+    def _account_facts(self, scan: Any) -> list[AccountFacts]:
+        """Build one fact row per associated instance for the rule engine."""
+
+        now = time.monotonic()
+        runs_by_account: dict[str, Mapping[str, Any]] = {}
+        live_run_ids: set[str] = set()
+        try:
+            runs = self.list_macro_runs()
+        except (AppError, RuntimeError):
+            runs = []
+        for run in runs:
+            if not isinstance(run, Mapping):
+                continue
+            run_id = str(run.get("run_id") or "")
+            state = str(run.get("state") or "").strip().lower()
+            if not run_id or state not in {"starting", "running", "paused"}:
+                continue
+            live_run_ids.add(run_id)
+            step = run.get("current_step")
+            previous = self._macro_progress.get(run_id)
+            if previous is None or previous[0] != step:
+                self._macro_progress[run_id] = (step, now)
+            account_id = str(run.get("account_id") or "")
+            if account_id:
+                runs_by_account[account_id] = run
+        for stale in tuple(self._macro_progress):
+            if stale not in live_run_ids:
+                self._macro_progress.pop(stale, None)
+                self._rule_paused_runs.discard(stale)
+        facts: list[AccountFacts] = []
+        for instance in getattr(scan, "instances", ()) or ():
+            account_id = getattr(instance, "account_id", None)
+            if not isinstance(account_id, str) or not account_id:
+                continue
+            try:
+                account = self._get_account(account_id)
+            except AppError:
+                continue
+            run = runs_by_account.get(account_id, {})
+            run_id = str(run.get("run_id") or "") or None
+            metadata = account.metadata if isinstance(account.metadata, Mapping) else {}
+            seen = self._macro_progress.get(run_id or "")
+            state = str(run.get("state") or "").strip().lower() or None
+            facts.append(
+                AccountFacts(
+                    account_id=account_id,
+                    username=account.username or account_id,
+                    group_id=account.group_id,
+                    priority=normalized_priority(metadata.get("priority")),
+                    running=True,
+                    runtime_seconds=self._instance_runtime_seconds(instance),
+                    disconnected=getattr(instance, "pid", None) in self._log_disconnected_pids,
+                    macro_run_id=run_id,
+                    macro_id=str(run.get("macro_id") or "") or None,
+                    macro_state="paused" if run.get("paused") else state,
+                    macro_idle_seconds=max(0.0, now - seen[1]) if seen else 0.0,
+                    macro_paused_by_rule=bool(run_id and run_id in self._rule_paused_runs),
+                )
+            )
+        return facts
+
+    def _apply_rules(self, scan: Any) -> None:
+        """Evaluate the bounded rules and apply only the half that is allowed.
+
+        Anything that would close or relaunch a live client is recorded as an
+        activity entry instead of executed: this codebase requires explicit
+        confirmation before terminating a Roblox process, and an automation
+        rule does not get to be the exception.
+        """
+
+        try:
+            settings = self._rule_settings()
+        except ValidationError:
+            self.logger.warning("Rule settings are invalid; the rule engine stayed idle.")
+            return
+        if not settings.enabled:
+            self._rule_decisions = ()
+            self._rule_notified.clear()
+            return
+        try:
+            decisions = evaluate_rules(
+                accounts=self._account_facts(scan),
+                system=self._system_facts(),
+                settings=settings,
+            )
+        except (ValidationError, TypeError, ValueError):
+            self.logger.warning("Rule evaluation failed; no rule action was taken.")
+            return
+        self._rule_decisions = tuple(item.to_dict() for item in decisions)
+        for decision in automatic_decisions(decisions):
+            self._apply_rule_decision(decision)
+        pending: set[tuple[str, str]] = set()
+        for decision in recommendations(decisions):
+            key = (decision.account_id, decision.rule)
+            pending.add(key)
+            if key in self._rule_notified:
+                continue
+            self._rule_notified.add(key)
+            self._activity(
+                "rule",
+                decision.explanation,
+                account_id=decision.account_id,
+                metadata={"rule": decision.rule, "action": decision.action, "automatic": False},
+            )
+        self._rule_notified.intersection_update(pending)
+
+    def _apply_rule_decision(self, decision: RuleDecision) -> None:
+        """Apply one automatic decision through the normal validated surface."""
+
+        run_id = decision.run_id
+        if not run_id:
+            return
+        try:
+            if decision.action == ACTION_PAUSE_MACRO:
+                self.pause_macro(run_id)
+                self._rule_paused_runs.add(run_id)
+            elif decision.action == ACTION_RESUME_MACRO:
+                self.resume_macro(run_id)
+                self._rule_paused_runs.discard(run_id)
+            elif decision.action == ACTION_RESTART_MACRO:
+                pid = self._macro_run_pid(run_id)
+                self.stop_macro(run_id)
+                self._macro_progress.pop(run_id, None)
+                self._rule_paused_runs.discard(run_id)
+                if decision.macro_id and pid:
+                    self.start_macro(decision.macro_id, pid)
+            else:
+                return
+        except (AppError, RuntimeError, TypeError, ValueError):
+            self.logger.info("A rule action could not be applied to run %s.", run_id)
+            return
+        self._activity(
+            "rule",
+            decision.explanation,
+            account_id=decision.account_id,
+            metadata={"rule": decision.rule, "action": decision.action, "automatic": True},
+        )
+
+    def _macro_run_pid(self, run_id: str) -> int | None:
+        """Return the verified PID of one live macro run, when still present."""
+
+        try:
+            runs = self.list_macro_runs()
+        except (AppError, RuntimeError):
+            return None
+        for run in runs:
+            if isinstance(run, Mapping) and str(run.get("run_id") or "") == run_id:
+                pid = run.get("pid")
+                if isinstance(pid, int) and not isinstance(pid, bool) and pid > 0:
+                    return pid
+        return None
+
+    def _restart_policy_for(
+        self,
+        account: Account,
+        *,
+        attempt: int = 0,
+        disconnect_code: int | None = None,
+    ) -> RestartPolicy:
+        """Build the bounded restart policy, including the rejoin backoff.
+
+        A flat delay used to retry a dead client every N seconds no matter how
+        many attempts had already failed.  The rejoin rules grow that delay per
+        attempt, so a genuinely broken account backs off instead of hammering
+        Roblox, while the very first attempt stays exactly as fast as before.
+        """
+
         watcher = self.get_settings()["categories"].get("watcher", {})
         fallback = {
             "auto_relaunch": False,
@@ -2618,13 +3289,67 @@ class ApplicationService:
             )
         except ValidationError:
             rule = fallback
+        delay = rule["relaunch_delay_seconds"]
+        try:
+            delay = plan_rejoin(
+                attempt=min(max(self._nonnegative_int(attempt), 0), MAX_REJOIN_ATTEMPTS),
+                max_attempts=MAX_REJOIN_ATTEMPTS,
+                base_delay_seconds=rule["relaunch_delay_seconds"],
+                disconnect_code=disconnect_code,
+                change_server_after=watcher.get("rejoin_change_server_after", 2),
+                backoff_factor=watcher.get("rejoin_backoff_factor", 2.0),
+                max_delay_seconds=watcher.get("rejoin_max_delay_seconds", 300),
+                require_place=False,
+            ).delay_seconds
+        except (ValidationError, TypeError, ValueError):
+            # A malformed rejoin setting must never disarm a relaunch the
+            # operator already enabled: keep the flat delay instead.
+            self.logger.warning("Rejoin backoff settings are invalid; the flat relaunch delay is used.")
         return RestartPolicy(
+            # The restart policy must read the *same* arming decision the
+            # watcher screen shows.  Recomputing it anywhere else is exactly
+            # how the two used to disagree.
             enabled=self._relaunch_arming_state(account, watcher, rule)["armed"],
-            delay_seconds=rule["relaunch_delay_seconds"],
+            delay_seconds=delay,
             max_attempts=rule["relaunch_max_attempts"],
             restart_on_crash=rule["relaunch_on_crash"],
             restart_on_exit=rule["relaunch_on_exit"],
         )
+
+    def _rejoin_plan_for(self, request: RestartRequest) -> RejoinPlan:
+        """Choose which server one already-granted relaunch should target.
+
+        The process watcher owns *whether* a relaunch happens.  This only
+        answers *where* to reconnect, using the last disconnect code observed
+        for that account by the read-only Player-log observer.
+        """
+
+        watcher = self.get_settings()["categories"].get("watcher", {})
+        try:
+            return plan_rejoin(
+                attempt=min(
+                    max(self._nonnegative_int(getattr(request, "restart_attempt", 0)), 0),
+                    MAX_REJOIN_ATTEMPTS,
+                ),
+                max_attempts=MAX_REJOIN_ATTEMPTS,
+                base_delay_seconds=watcher.get("relaunch_delay_seconds", 15),
+                disconnect_code=self._log_disconnect_codes.get(request.account_id),
+                place_id=request.place_id,
+                job_id=request.job_id,
+                change_server_after=watcher.get("rejoin_change_server_after", 2),
+                backoff_factor=watcher.get("rejoin_backoff_factor", 2.0),
+                max_delay_seconds=watcher.get("rejoin_max_delay_seconds", 300),
+                require_place=False,
+            )
+        except (ValidationError, TypeError, ValueError):
+            # Never cancel a granted relaunch because a knob is malformed: keep
+            # the original target by refusing to change server.
+            self.logger.warning("Rejoin settings are invalid; the previous server is reused.")
+            return plan_rejoin(
+                attempt=0,
+                change_server_after=MAX_REJOIN_ATTEMPTS,
+                require_place=False,
+            )
 
     @staticmethod
     def _validated_account_watcher_rule(
@@ -2843,6 +3568,8 @@ class ApplicationService:
             ("relaunch_delay_seconds", 1, 3_600, "Relaunch delay"),
             ("unconnected_timeout_seconds", 5, 3_600, "Unconnected timeout"),
             ("health_grace_seconds", 5, 600, "Watcher health grace"),
+            ("rejoin_backoff_factor", 1, 10, "Rejoin backoff factor"),
+            ("rejoin_max_delay_seconds", 1, 3_600, "Maximum rejoin delay"),
         ):
             numeric = watcher.get(key)
             if isinstance(numeric, bool) or not isinstance(numeric, (int, float)) or not minimum <= float(numeric) <= maximum:
@@ -2850,12 +3577,22 @@ class ApplicationService:
         attempts = watcher.get("relaunch_max_attempts")
         if isinstance(attempts, bool) or not isinstance(attempts, int) or not 0 <= attempts <= 20:
             raise ValidationError("Maximum relaunch attempt count is invalid.")
+        change_server_after = watcher.get("rejoin_change_server_after")
+        if (
+            isinstance(change_server_after, bool)
+            or not isinstance(change_server_after, int)
+            or not 0 <= change_server_after <= 20
+        ):
+            raise ValidationError("The rejoin server change threshold is invalid.")
         memory_low = watcher.get("memory_low_mb")
         if isinstance(memory_low, bool) or not isinstance(memory_low, int) or not 50 <= memory_low <= 4_096:
             raise ValidationError("Low-memory threshold must be between 50 and 4096 MB.")
         expected_title = watcher.get("expected_window_title")
         if not isinstance(expected_title, str) or not 1 <= len(expected_title.strip()) <= 128:
             raise ValidationError("Expected Roblox window title is invalid.")
+        validated_rule_settings(values.get("rules", {}))
+        validated_launcher_settings(values.get("launcher", {}))
+        validated_resource_settings(values.get("resources", {}))
         instances = values.get("instances", {})
         if not isinstance(instances, Mapping) or not isinstance(instances.get("remember_window_positions"), bool):
             raise ValidationError("Window position preference is invalid.")
@@ -3080,12 +3817,24 @@ class ApplicationService:
         return []
 
     # Nexus Account Control --------------------------------------------------
+    # The whole Nexus surface is kept in the tree but hidden from the product.
+    # Every public entry point below refuses to run unless ASTRO_ENABLE_NEXUS is
+    # set, so no UI, palette entry, bridge call or LAN request can reach it.
+    # Nothing here was deleted: setting the variable restores the feature.
+    def _require_nexus_feature(self) -> None:
+        if not feature_enabled("nexus"):
+            raise ConflictError(
+                "The Nexus surface is hidden in this build. "
+                "Set ASTRO_ENABLE_NEXUS=1 before starting Astro Account Manager to restore it."
+            )
+
     def _handle_nexus_client_log(self, username: str, message: str) -> None:
         safe_message = _redact_log_line(str(message)[:2000])
         self.logger.info("[Nexus Client Log] %s", safe_message)
         self._activity("nexus", "Roblox client log", metadata={"message": safe_message})
 
     def start_nexus_server(self, host: str | None = None, port: int | None = None) -> dict[str, Any]:
+        self._require_nexus_feature()
         nexus_settings = self.get_settings()["categories"].get("nexus", {})
         target_host = host or nexus_settings.get("host", "127.0.0.1")
         target_port = int(port or nexus_settings.get("port", 5242))
@@ -3107,6 +3856,12 @@ class ApplicationService:
         return self.get_nexus_status()
 
     def stop_nexus_server(self) -> dict[str, Any]:
+        self._require_nexus_feature()
+        return self._stop_nexus_server_unchecked()
+
+    def _stop_nexus_server_unchecked(self) -> dict[str, Any]:
+        """Stop a listener that an earlier enabled run may have left behind."""
+
         if self._nexus_server is not None:
             self._nexus_server.stop()
             self._nexus_server = None
@@ -3115,6 +3870,8 @@ class ApplicationService:
         return self.get_nexus_status()
 
     def get_nexus_status(self) -> dict[str, Any]:
+        if not feature_enabled("nexus"):
+            return {"available": False, "running": False, "accounts": []}
         if self._nexus_server is not None and self._nexus_server.is_running:
             return {
                 "running": True,
@@ -3133,6 +3890,7 @@ class ApplicationService:
         }
 
     def send_nexus_command(self, target_account: str, command_name: str, payload: Any = None) -> bool:
+        self._require_nexus_feature()
         if self._nexus_server is None or not self._nexus_server.is_running:
             self.start_nexus_server()
         if self._nexus_server is None or not self._nexus_server.is_running:
@@ -3142,6 +3900,7 @@ class ApplicationService:
         return success
 
     def get_nexus_lua_script(self, host: str = "127.0.0.1", port: int = 5242) -> str:
+        self._require_nexus_feature()
         from app.backend.nexus.lua_script import get_nexus_lua_script
         if self._nexus_server is None or not self._nexus_server.is_running:
             self.start_nexus_server(host=host, port=port)
@@ -3884,7 +4643,7 @@ class ApplicationService:
             raise NotFoundError("Macro was not found.")
         return {"deleted": True, "id": str(macro_id)}
 
-    def start_macro(self, macro_id: str, pid: int) -> dict[str, Any]:
+    def start_macro(self, macro_id: str, pid: int, *, dry_run: bool = False) -> dict[str, Any]:
         settings = self.get_settings()["categories"].get("macros", {})
         if not bool(settings.get("enabled", True)):
             raise ConflictError("Macros are disabled in Settings.")
@@ -3894,33 +4653,68 @@ class ApplicationService:
         except RepositoryNotFoundError as exc:
             raise NotFoundError("Macro was not found.") from exc
         instance = next((item for item in self.monitor.current_instances() if item.pid == process_id), None)
-        if instance is None:
+        # A dry run only traces the macro, so it does not need a live client.
+        if instance is None and not dry_run:
             raise ValidationError("Select a currently verified Roblox instance.")
+        account_id = instance.account_id if instance is not None else None
         required_account = definition.get("account_id")
-        if required_account and required_account != instance.account_id:
+        if instance is not None and required_account and required_account != account_id:
             raise ConflictError("This macro is assigned to a different account.")
         started_at = None
-        if instance.started_at:
+        if instance is not None and instance.started_at:
             try:
                 started_at = datetime.fromisoformat(instance.started_at.replace("Z", "+00:00")).timestamp()
             except ValueError:
                 started_at = None
+        # Per-account variables make one macro usable by the whole fleet.
+        variables: dict[str, Any] = {}
+        if account_id:
+            try:
+                metadata = self._get_account(account_id).metadata or {}
+                variables = dict((metadata.get("macro") or {}).get("variables") or {})
+            except AppError:
+                variables = {}
         try:
             result = self.macro_engine.start(
                 definition,
                 pid=process_id,
                 expected_created_at=started_at,
-                account_id=instance.account_id,
+                account_id=account_id,
+                dry_run=bool(dry_run),
+                variables=variables,
             )
         except MacroParseError as exc:
             raise ValidationError(str(exc)) from exc
-        self._activity("macro", f"Macro started: {definition['name']}", account_id=instance.account_id)
+        verb = "Macro dry run started" if dry_run else "Macro started"
+        self._activity("macro", f"{verb}: {definition['name']}", account_id=account_id)
         return result
 
     def stop_macro(self, run_id: str) -> dict[str, Any]:
         try:
             return self.macro_engine.stop(str(run_id))
         except MacroParseError as exc:
+            raise NotFoundError(str(exc)) from exc
+
+    def pause_macro(self, run_id: str) -> dict[str, Any]:
+        try:
+            return self.macro_engine.pause(str(run_id))
+        except MacroRunNotFound as exc:
+            raise NotFoundError(str(exc)) from exc
+        except MacroParseError as exc:
+            raise ConflictError(str(exc)) from exc
+
+    def resume_macro(self, run_id: str) -> dict[str, Any]:
+        try:
+            return self.macro_engine.resume(str(run_id))
+        except MacroRunNotFound as exc:
+            raise NotFoundError(str(exc)) from exc
+        except MacroParseError as exc:
+            raise ConflictError(str(exc)) from exc
+
+    def get_macro_run_log(self, run_id: str) -> list[dict[str, Any]]:
+        try:
+            return self.macro_engine.run_log(str(run_id))
+        except MacroRunNotFound as exc:
             raise NotFoundError(str(exc)) from exc
 
     def list_macro_runs(self) -> list[dict[str, Any]]:
@@ -4017,10 +4811,41 @@ class ApplicationService:
         parsed = PrivateServerHelper.parse_vip_link(str(link or "").strip())
         if parsed is None:
             raise ValidationError("Enter a valid roblox.com private server link.")
+        if parsed.get("needs_resolution"):
+            parsed = self._resolve_share_link(account_id, parsed)
         return self.launch_account(account_id, {
             "place_id": parsed["place_id"],
             "private_server_link_code": parsed["link_code"],
         })
+
+    def _resolve_share_link(self, account_id: str, parsed: Mapping[str, Any]) -> dict[str, Any]:
+        """Ask Roblox what a share link points at, signed in as the joining account.
+
+        A share link is opaque, so this is the only way to honour one.  It needs
+        a stored session: the error says so plainly rather than blaming the link.
+        """
+
+        kind = str(parsed.get("link_type") or "server").casefold()
+        if kind != "server":
+            raise ValidationError(f"That share link points to a {kind}, not a private server.")
+        cookie = self._get_account_cookie_raw(account_id)
+        resolved = self._account_utility_call(
+            self.auth_tools.resolve_share_link, cookie, str(parsed.get("share_code") or "")
+        )
+        try:
+            place_id = int(resolved.get("place_id") or 0)
+        except (TypeError, ValueError):
+            place_id = 0
+        link_code = str(resolved.get("link_code") or "")
+        if place_id <= 0 or not link_code:
+            raise ValidationError("Roblox did not return a private server for that share link.")
+        self._activity(
+            "instances",
+            "Share link resolved to a private server",
+            account_id=account_id,
+            metadata={"place_id": place_id},
+        )
+        return {"place_id": place_id, "link_code": link_code}
 
     def export_support_bundle(self) -> dict[str, Any]:
         result = self.support_bundle_builder.create(

@@ -2,7 +2,7 @@
 
 ## 4.0.3 - 2026-08-14
 
-- Added the bounded block/DSL macro studio with independent concurrent runs pinned to verified Roblox PID creation times.
+- Added the bounded block/DSL macro studio with independent concurrent runs pinned to verified Roblox PID creation times. Keyboard input reaches a truly minimized client; coordinate clicks use a 1/255-alpha Windows surface and immediately return it to the taskbar. The macro path does not use Nexus or Roblox injection.
 - Added redacted Discord Rich Presence, support ZIP generation, fixed-source GitHub update staging, private-server links per account, and the configurable existing-Roblox warning.
 - Restored authenticated browser, Join Group, saved-password copy, universe places and outfit list/wear utilities from the historical 3.7.2 behavior.
 - Fixed oversized Discord settings checkboxes found during the real Windows smoke test.
@@ -149,7 +149,7 @@
 
 ### Validation réelle
 
-- **315 tests passés, 2 ignorés**, compilation Python et syntaxe JavaScript valides ;
+- **362 tests passés, 2 ignorés**, compilation Python et syntaxe JavaScript valides ;
 - deux sessions Roblox distinctes revalidées sans afficher les secrets ;
 - Astrolucifer972 et Pierremayou lancés simultanément avec deux PID et deux
   Place ID propres, confirmés par les logs ;
@@ -162,9 +162,9 @@
 
 ### Artefact
 
-- taille : 20 680 467 octets ;
+- taille : 20 781 538 octets ;
 - SHA-256 :
-  `88B62C0E5FECFDE2BC968CD95A893BEB7FB30FAD020A191F6FF0BE9156DFA413`.
+  `39B85AAED6286CB3C375CBE4EF7C5B6837166ABECBCA0D09B9A1A0E6C4A07D23`.
 
 ### Travail restant explicite
 

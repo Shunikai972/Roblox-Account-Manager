@@ -10,6 +10,7 @@ from app.backend.core.errors import ValidationError
 
 logger = logging.getLogger("astro.private_servers")
 _LINK_CODE = re.compile(r"^[A-Za-z0-9_-]{1,256}$")
+_SHARE_CODE = re.compile(r"^[A-Za-z0-9_-]{8,128}$")
 
 
 class PrivateServerHelper:
@@ -17,7 +18,17 @@ class PrivateServerHelper:
 
     @staticmethod
     def parse_vip_link(link: str) -> dict[str, str | int] | None:
-        """Extract placeId and privateServerLinkCode or code from a Roblox VIP link."""
+        """Extract a private server destination from a Roblox link.
+
+        Two shapes exist in the wild:
+
+        * the classic VIP link, which already contains the place id and the
+          private server code, and can be launched straight away;
+        * the newer share link (``/share?code=...&type=Server``), which contains
+          neither and must be resolved by Roblox for a signed-in account.  It is
+          returned with ``needs_resolution`` so the caller can do that instead of
+          rejecting a perfectly valid link.
+        """
 
         parsed = urlparse(link)
         hostname = (parsed.hostname or "").casefold()
@@ -41,6 +52,20 @@ class PrivateServerHelper:
 
         if place_id and isinstance(code, str) and _LINK_CODE.fullmatch(code):
             return {"place_id": place_id, "link_code": code}
+
+        # Pattern 2: https://www.roblox.com/share?code=<opaque>&type=Server
+        # Roblox's share links carry no place id at all.  The code is an opaque
+        # invite that only Roblox can expand, and expanding it needs a signed-in
+        # session.  Reporting "invalid link" here was simply wrong: the link
+        # works, we just had not asked Roblox what it points at.
+        share_code = (params.get("code") or params.get("linkId") or [None])[0]
+        if isinstance(share_code, str) and _SHARE_CODE.fullmatch(share_code):
+            share_type = str((params.get("type") or [""])[0] or "").strip().casefold()
+            return {
+                "share_code": share_code,
+                "link_type": share_type or "server",
+                "needs_resolution": True,
+            }
 
         return None
 

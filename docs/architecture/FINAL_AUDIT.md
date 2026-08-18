@@ -87,9 +87,9 @@ Résultats :
 ## Artefact actuel
 
 - chemin : `dist/AstroAccountManager.exe` ;
-- taille : **20 774 084 octets** ;
+- taille : **20 781 538 octets** ;
 - SHA-256 :
-  `EC68F3995DC9B6A7BBE470D64337585E57EEFDCA879E965BE46E9B06F093F0BA` ;
+  `39B85AAED6286CB3C375CBE4EF7C5B6837166ABECBCA0D09B9A1A0E6C4A07D23` ;
 - mode : PyInstaller onefile, windowed, icône Astro ;
 - environnement validé : Windows 11, Python 3.12, PyInstaller 6.21.
 

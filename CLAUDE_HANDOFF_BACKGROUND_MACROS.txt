@@ -1,0 +1,575 @@
+ASTRO ACCOUNT MANAGER — PASSATION CLAUDE
+MACROS PAR INSTANCE, 100 % INVISIBLES ET SANS PERIPHERIQUES REELS
+Date : 2026-08-14
+
+======================================================================
+0. DEMANDE NON NEGOCIABLE DU PROPRIETAIRE
+======================================================================
+
+Le moteur de macros doit pouvoir piloter plusieurs instances Roblox en meme
+temps, qu'elles soient reduites ou non, sans jamais :
+
+- restaurer, afficher, rendre transparente ou deplacer hors ecran une fenetre ;
+- prendre le focus ;
+- deplacer le vrai curseur Windows ;
+- utiliser le vrai clavier ou la vraie souris ;
+- envoyer des evenements globaux SendInput ;
+- serialiser toutes les instances derriere un unique focus global ;
+- utiliser Nexus pour les macros.
+
+Chaque macro doit cibler exclusivement le couple PID + create_time de son
+instance. Trois macros doivent pouvoir maintenir des touches, bouger trois
+souris logiques, cliquer et utiliser la molette en parallele pendant que le
+proprietaire utilise normalement son clavier, sa souris, Discord ou son
+navigateur.
+
+Un resultat visuellement proche ne suffit pas. Une fenetre restauree a alpha
+1/255 est explicitement refusee. Une fonction n'est terminee que si la fenetre
+reste IsIconic=true pendant toute l'action et que les peripheriques physiques
+et le foreground restent inchanges.
+
+======================================================================
+1. ETAT EXACT DU CODE TRANSMIS
+======================================================================
+
+Projet : Astro Account Manager 4.0.3
+Baseline Git avant les derniers changements :
+  c66cc95 feat: ship Astro Account Manager 4.0.3 parity and automation release
+
+Suite actuelle :
+  362 passed, 2 skipped, zero echec
+
+Fichier principal du moteur :
+  app/backend/automations/macros.py
+
+Surfaces deja existantes :
+
+- MacroEngine : parse le DSL/blocs, borne duree/nombre/profondeur, gere les
+  runs, annulation, PID + create_time et actions WAIT/PRESS/CLICK/TEXT/REPEAT.
+- Win32RobloxInputBackend : verify, begin_run, end_run, key, press, click, text.
+- ApplicationService/DesktopBridge/UI : CRUD, lancement, annulation et affichage
+  des runs sont deja raccordes.
+- tests/test_roadmap_features.py contient les tests moteur et navigateur.
+- docs/user-guide/FEATURE_MATRIX.md et docs/QA_MATRIX_2026-08-11.md portent les
+  preuves existantes.
+
+Le backend courant est un prototype a REMPLACER pour cette exigence stricte :
+
+- clavier : AttachThreadInput + SetForegroundWindow + SendInput ;
+- clic minimise : restauration de la fenetre avec WS_EX_LAYERED alpha 1/255,
+  SendInput, puis nouvelle minimisation ;
+- verrou global des segments d'entree pour eviter les fuites entre instances.
+
+Ce prototype a reellement deplace un avatar et clique dans Roblox, mais il ne
+respecte plus le cahier des charges ci-dessus. Ne pas le rebaptiser comme une
+solution. Ne pas conserver ce chemin comme mode par defaut. Le retirer ou le
+laisser uniquement comme fallback explicitement desactive en mode strict.
+
+Nexus n'est plus appele par MacroEngine/ApplicationService. Ne pas remettre une
+route de macros Nexus.
+
+======================================================================
+2. REALITE TECHNIQUE A NE PAS MASQUER
+======================================================================
+
+Les API Win32 externes ordinaires ne fournissent pas de canal universel
+"entree vers ce PID minimise" :
+
+- PostMessage/SendMessage ciblent une file de messages HWND. Un jeu lisant Raw
+  Input, DirectInput ou GetAsyncKeyState peut les ignorer.
+- SendInput injecte dans le flux d'entree systeme : il est global, utilise le
+  foreground et le curseur reel.
+- un HWND minimise n'offre normalement plus une surface client exploitable
+  pour un clic coordonne ; certains moteurs suspendent aussi leur boucle lors
+  de SIZE_MINIMIZED.
+- un peripherique HID virtuel est visible au niveau de la session. Sans couche
+  de routage, chaque processus peut voir le meme peripherique ; ce n'est pas
+  encore une association exclusive par PID.
+
+Il n'y a que deux familles credibles pour satisfaire TOUT le besoin :
+
+A. Hook interne par processus
+   Intercepter Raw Input/GetAsyncKeyState/GetKeyboardState/curseur dans chaque
+   processus et maintenir un etat clavier/souris virtuel propre a son PID.
+   ProtoInput est la reference la plus proche, mais c'est bien une injection de
+   DLL/hook. Cela peut etre bloque par Roblox. Ne jamais le presenter comme un
+   simple SendInput magique.
+
+B. Frontiere d'isolation
+   Une VM ou une session Windows distincte par instance, avec un agent local
+   qui emet les entrees dans cette session. Le bureau principal reste libre et
+   chaque VM a son propre flux d'entree. C'est la piste sans injection dans le
+   processus, mais elle est lourde (GPU, memoire, sessions Roblox, capture et
+   orchestration).
+
+Un bureau Windows cache cree par CreateDesktop n'est pas automatiquement une
+solution : SendInput cible le desktop d'entree actif. Il faut le demontrer sur
+un banc d'essai avant de le retenir.
+
+======================================================================
+3. AUDIT PROTOINPUT DEJA EFFECTUE
+======================================================================
+
+Source officielle inspectee :
+  https://github.com/SplitScreen-Me/splitscreenme-protoInput
+
+Le README confirme : hooks dans le processus, RegisterRawInput,
+GetRawInputData, GetAsyncKeyState, GetKeyboardState, fake cursor et boucle de
+fake focus. Licence annoncee : MIT.
+
+Attention essentielle : ProtoInputHost est d'abord un routeur de PERIPHERIQUES
+PHYSIQUES Raw Input selectionnes par handle. Son API publique expose notamment
+AddSelectedMouseHandle/AddSelectedKeyboardHandle et les hooks. L'inspection de
+protoloader.h n'a pas revele une API publique generale du genre
+SendSyntheticKey(instance, ...) ou SendSyntheticMouse(instance, ...).
+
+Donc "installer ProtoInput" ne suffit pas encore au moteur de macro. Il faudra
+prouver l'une de ces variantes :
+
+1. alimenter ProtoInput avec un HID virtuel distinct par instance ;
+2. ajouter au pipe ProtoInput des messages controles qui mettent a jour
+   FakeMouseKeyboard/RawInput dans le processus cible ;
+3. reutiliser la traduction XInput -> clavier/souris avec un gamepad virtuel
+   distinct et correctement redirige par instance ;
+4. conclure que ProtoInput n'est pas compatible/acceptable et passer a
+   l'isolation VM/session.
+
+Nucleus Co-op integre ProtoInput et peut servir de reference d'orchestration :
+  https://github.com/SplitScreen-Me/splitscreenme-nucleus
+
+Nucleus est GPL-3.0. Ne pas copier son code dans un produit distribue sans
+analyser les obligations de licence. ProtoInput et Nucleus ne doivent pas etre
+embarqués silencieusement comme binaires opaques.
+
+======================================================================
+3B. ALTERNATIVE PRIORITAIRE : DEVELOPPER ASTROINPUT
+======================================================================
+
+Le proprietaire propose de ne pas dependre de ProtoInput et de developper une
+bibliotheque native sur mesure, limitee aux besoins d'Astro Account Manager.
+Nom de travail : AstroInput.
+
+OBJECTIF
+
+AstroInput doit exposer un canal binaire par instance cible. MacroEngine envoie
+des commandes semantiques a une session liee au couple PID + create_time :
+
+- KEY_DOWN / KEY_UP ;
+- TEXT_UTF16 ;
+- POINTER_ABSOLUTE_CLIENT ;
+- POINTER_RELATIVE ;
+- BUTTON_DOWN / BUTTON_UP ;
+- WHEEL_HORIZONTAL / WHEEL_VERTICAL ;
+- RELEASE_ALL ;
+- PING / CAPABILITIES / DETACH.
+
+Ce ne doit PAS etre un canal d'execution de code arbitraire. Le mot
+"instructions binaires" signifie ici un protocole binaire compact avec une
+liste fermee d'opcodes d'entree, tailles bornees et validation stricte. Aucun
+opcode ne doit permettre de lire/ecrire une adresse arbitraire, charger une DLL
+quelconque, lancer un processus ou invoquer un script.
+
+FRONTIERE TECHNIQUE A ASSUMER
+
+Une DLL/EXE uniquement EXTERNE au processus ne peut pas forcer un jeu Raw Input
+minimise a consommer un etat clavier/souris prive par PID. Elle ne pourrait que
+faire PostMessage ou SendInput, donc echouerait au cahier des charges.
+
+AstroInput a donc deux implementations possibles derriere la meme API :
+
+1. AstroInputProcessAdapter
+   Un module natif minimal execute dans le processus cible, qui intercepte
+   uniquement les API d'entree dont le programme se sert et renvoie l'etat
+   virtuel de SA session. C'est techniquement un hook/in-process adapter, meme
+   si le code est ecrit par Astro. Ne jamais le masquer dans la documentation.
+
+2. AstroInputSessionAdapter
+   Un agent execute dans une VM/session Windows isolee. Le broker lui envoie le
+   meme protocole, mais aucune DLL n'est chargee dans Roblox. Cette variante est
+   plus lourde, mais constitue l'alternative propre si l'adaptateur in-process
+   est refuse ou bloque.
+
+ARCHITECTURE RECOMMANDEE
+
+AstroInput separe quatre composants :
+
+- astro_input_protocol : structures binaires, versionnage et validation ;
+- AstroInputBroker.exe : processus enfant local lance par Astro ;
+- astro_input_backend.py : binding Python vers le broker ;
+- un adapter selectionnable : ProcessAdapter ou SessionAdapter.
+
+Le broker maintient une InputSession independante par PID + create_time. Chaque
+session contient :
+
+- tableau atomique de 256 touches ;
+- modifiers et sequence de texte ;
+- position logique client X/Y et delta relatif ;
+- etat des cinq boutons ;
+- accumulateurs de molette ;
+- numero de sequence monotone ;
+- liste des capacites effectivement actives ;
+- heartbeat, etat attached/detaching/dead ;
+- journal d'ACK borné sans contenu secret.
+
+PROTOCOLE BINAIRE
+
+En-tete fixe propose :
+
+  magic[4]      = "AINP"
+  version_u16
+  opcode_u16
+  payload_len_u32
+  session_id_u64
+  sequence_u64
+  monotonic_ns_u64
+  flags_u32
+  crc32_u32
+
+Chaque opcode a un payload fixe ou strictement borne. Le parseur refuse avant
+toute mutation : mauvais magic/version, taille incoherente, sequence rejouee ou
+hors ordre, valeur NaN, coordonnee hors borne, touche inconnue, session morte et
+PID/create_time ne correspondant plus.
+
+Transport recommande : named pipe Windows duplex avec ACL du SID CurrentUser,
+nom aleatoire par lancement, authentification challenge-response locale et
+handshake de version. Le secret du challenge ne figure ni dans argv, ni dans
+les logs, ni dans SQLite. La memoire partagee/ring buffer ne doit etre ajoutee
+qu'apres mesure montrant que le pipe est insuffisant ; la fiabilite importe plus
+qu'une micro-optimisation prematuree.
+
+ADAPTATEUR PROCESSUS
+
+Ne pas recopier ProtoInput en entier. Construire seulement les adaptateurs
+necessaires, chacun active par capability probe :
+
+- GetAsyncKeyState/GetKeyState/GetKeyboardState : lire l'etat atomique propre a
+  la session ;
+- GetCursorPos/SetCursorPos/ClipCursor : exposer uniquement le curseur logique
+  de la session sans toucher au curseur Windows ;
+- WM_KEY*/WM_MOUSE* : produire depuis le thread/processus cible si le banc
+  prouve que l'application les consomme ;
+- Raw Input : adapter RegisterRawInputDevices/GetRawInputData et la notification
+  WM_INPUT seulement si la trace prouve ce chemin. Les objets/tokens Raw Input
+  synthetiques doivent etre internes a l'adaptateur et ne jamais etre confondus
+  avec des HRAWINPUT systeme reels ;
+- focus logique : capability separee. Ne pas mentir sur IsIconic. La fenetre
+  doit rester reellement minimisee et l'adaptateur doit refuser si la boucle du
+  programme ne traite plus rien dans cet etat.
+
+Le hook doit etre non bloquant : les appels du jeu lisent un snapshot atomique.
+Le thread du pipe met l'etat a jour. Aucun appel Python, disque, reseau ou lock
+long dans un hook. Un detach ou crash broker replace l'etat virtuel a zero.
+
+API PYTHON SUGGEREE
+
+  broker.probe() -> BrokerCapabilities
+  broker.attach(pid, expected_create_time) -> InputSession
+  session.key_down(vk, scan_code=0)
+  session.key_up(vk, scan_code=0)
+  session.text(value)
+  session.pointer_abs(x_normalized, y_normalized)
+  session.pointer_rel(dx, dy)
+  session.button_down(button)
+  session.button_up(button)
+  session.wheel(dx=0, dy=0)
+  session.release_all()
+  session.capabilities()
+  session.close()
+
+Chaque methode attend un ACK "accepted" puis, si le banc peut l'observer, un
+ACK distinct "observed". Un ACK accepted seul ne constitue jamais une preuve
+que le jeu a consomme l'entree.
+
+PARALLELISME
+
+Il faut un worker/queue par session. A maintient W pendant que B maintient A et
+que C clique : les trois etats coexistent. Aucun verrou global d'entree. Seul le
+transport peut multiplexer brièvement les paquets ; il ne doit pas serialiser
+la duree des actions. Les sequences sont independantes par session.
+
+SECURITE ET ROBUSTESSE
+
+- allowlist stricte de l'executable cible et verification de sa signature/chemin ;
+- PID + create_time verifies avant chaque attach et periodiquement ;
+- broker en utilisateur standard, jamais service SYSTEM ;
+- ACL CurrentUser et aucun port TCP ;
+- aucune primitive generale de memory read/write ou remote thread dans l'API
+  exposee a MacroEngine ;
+- limites de frequence, taille de texte, deltas, files et memoire ;
+- release-all automatique sur cancel, detach, timeout et fermeture d'Astro ;
+- crash containment : un adapter defectueux ne doit pas corrompre SQLite/vault ;
+- journaux sans cookies, tokens, mots de passe ou contenu sensible saisi.
+
+LICENCE ET BUILD
+
+Ecrire AstroInput depuis zero permet de choisir une licence compatible avec le
+projet et d'eviter la GPL de Nucleus. Si des portions ProtoInput MIT inspirent
+une implementation, conserver les notices requises et documenter precisement
+la provenance. Le build C/C++ x64 doit etre reproductible, epingle et integre a
+scripts/build_windows.py. Archiver commit, toolchain, taille et SHA-256.
+
+DECISION GATE
+
+AstroInputProcessAdapter n'est integre a Roblox que si :
+
+- il passe d'abord toutes les preuves sur input_lab A/B/C ;
+- aucun SendInput/SetCursorPos/SetForegroundWindow/ShowWindow n'est importe ou
+  appele dans le chemin strict ;
+- les trois fenetres restent IsIconic=true ;
+- la saisie et le curseur physiques restent independants ;
+- trois etats simultanes distincts sont observes ;
+- la compatibilite Roblox est demontree sans tentative de contourner un blocage
+  de protection. En cas de blocage, basculer vers SessionAdapter/VM ou marquer
+  la capacite indisponible.
+
+Cette voie est probablement la meilleure architecture produit si Claude veut
+un controle complet, un protocole minimal, des tests fiables et aucune
+dependance opaque. Elle ne supprime toutefois pas le fait fondamental que le
+mode ProcessAdapter execute une couche dans le processus cible.
+
+======================================================================
+4. ARCHITECTURE A IMPLEMENTER APRES PREUVE
+======================================================================
+
+Ne pas coupler MacroEngine a une bibliotheque concrete. Creer une interface de
+capacites, par exemple PerInstanceInputBackend :
+
+- probe_capabilities() ;
+- attach(pid, expected_create_time) -> session opaque ;
+- key_down/session, key_up/session ;
+- text/session ;
+- mouse_move_relative/session ;
+- mouse_move_absolute_client/session ;
+- mouse_button_down/up/session ;
+- wheel/session ;
+- release_all/session ;
+- detach/session.
+
+Les capacites doivent indiquer separement :
+
+- true_minimized ;
+- no_foreground_change ;
+- no_system_cursor_change ;
+- independent_keyboard_state ;
+- independent_pointer_state ;
+- true_parallel_instances ;
+- requires_process_injection ;
+- requires_virtual_device ;
+- requires_vm_or_session.
+
+Si une capacite requise est fausse, le bouton Run doit refuser clairement. Ne
+jamais retomber silencieusement sur SendInput/transparence.
+
+Conserver :
+
+- validation executable Roblox exacte ;
+- PID + create_time pour bloquer la reutilisation de PID ;
+- bornes du DSL ;
+- annulation deterministe ;
+- key-up/mouse-up garanti dans finally ;
+- journalisation redactee ;
+- aucune session/cookie dans le helper, les logs ou la ligne de commande.
+
+Le broker natif eventuel doit etre un processus enfant local minimal, avec pipe
+nomme ACL CurrentUser, challenge aleatoire transmis sans ligne de commande et
+protocole versionne. Il doit refuser tout PID non verifie par le parent.
+
+Parallele veut dire reellement parallele : aucun verrou global autour de la
+duree d'un PRESS. Un verrou interne PAR SESSION est acceptable. WAIT ne bloque
+jamais une autre instance. Deux key-down simultanes sur deux PID doivent rester
+maintenus en meme temps.
+
+======================================================================
+5. ORDRE DE TRAVAIL POUR CLAUDE
+======================================================================
+
+PHASE 1 — Banc d'essai, aucune modification Roblox
+
+Creer sous tools/input_lab un programme benign Windows qui peut etre lance en
+trois exemplaires A/B/C. Chaque exemplaire doit journaliser en JSONL :
+
+- PID, create_time, instance_id ;
+- IsIconic et GetForegroundWindow a chaque evenement ;
+- WM_KEYDOWN/UP, WM_CHAR, WM_MOUSE*, WM_INPUT ;
+- resultats GetAsyncKeyState/GetKeyboardState echantillonnes ;
+- position logique du pointeur et boutons/roulette ;
+- timestamps haute resolution et numero de sequence.
+
+Prevoir deux modes : message-loop classique et Raw Input. La fenetre doit
+afficher ses compteurs pour verification visuelle, mais le JSONL fait foi.
+
+PHASE 2 — Adapters experimentaux separes
+
+Tester, sans toucher au moteur principal :
+
+1. PostMessage comme controle negatif ;
+2. prototype ProtoInput strictement sur input_lab ;
+3. HID/gamepad virtuel par instance si disponible ;
+4. VM/session isolee si aucune voie sans injection n'atteint tous les criteres.
+
+PHASE 3 — Selection fondee sur mesures
+
+Ne retenir un backend que s'il passe toute la matrice de la section 7. Si aucun
+ne passe, rendre un rapport d'echec exact au lieu d'integrer un faux succes.
+
+PHASE 4 — Integration Astro
+
+Remplacer Win32RobloxInputBackend derriere l'interface, ajouter capability
+probe, UI stricte, tests unitaires, tests d'integration helper et migration des
+macros existantes. Garder l'ancien backend desactive ou le supprimer.
+
+PHASE 5 — Validation Roblox seulement apres le laboratoire
+
+Le test Roblox doit etre une validation de compatibilite, pas la premiere
+experience. Commencer avec une seule instance et une action inoffensive, puis
+deux instances, puis trois. Ne jamais conclure sur la seule valeur de retour
+d'une API : une action observable et les logs par PID sont obligatoires.
+
+======================================================================
+6. PROMPT QUE CLAUDE DOIT DONNER A GEMINI POUR LES TESTS WINDOWS
+======================================================================
+
+Claude doit adapter les chemins, puis transmettre un prompt de ce type :
+
+--- DEBUT DU PROMPT GEMINI ---
+
+Tu controles une machine Windows de test. Ta mission est de MESURER, pas de
+confirmer une hypothese. N'utilise pas Roblox pendant la premiere phase.
+
+Regles absolues :
+
+1. Ne declare jamais PASS parce qu'une API retourne succes, parce qu'un README
+   le promet ou parce que le code semble correct.
+2. Pour chaque essai, donne les commandes exactes, version/commit de l'outil,
+   hash SHA-256 des binaires testes, PIDs, create_time, et extraits JSONL.
+3. Si tu n'as pas observe une condition, ecris UNVERIFIED. Si elle echoue,
+   ecris FAIL avec l'evenement contradictoire. N'invente jamais une preuve.
+4. Va au bout de toute la matrice ; ne t'arrete pas au premier W qui bouge.
+5. Ne modifie ni Windows Defender, ni les exclusions antivirus, ni les options
+   de securite. Ne telecharge que depuis le depot officiel indique. N'utilise
+   aucun binaire aleatoire de release sans hash et source correspondante.
+6. Ne teste aucune injection sur Roblox dans cette phase.
+7. Si un outil vole le focus, deplace la souris reelle, restaure une fenetre,
+   utilise SendInput global, melange A/B/C ou perd un key-up, le test est FAIL.
+
+Lance trois copies input_lab nommees A, B et C. Minimise les trois avec le vrai
+bouton —. Verifie IsIconic=true avant, pendant et apres chaque action.
+
+Pendant que les macros tournent, garde une quatrieme application normale au
+premier plan et saisis manuellement une phrase. Cette phrase ne doit apparaitre
+dans aucun journal A/B/C, et les actions A/B/C ne doivent pas apparaitre dans
+l'application au premier plan.
+
+Execute toute la matrice de validation fournie. Produis un tableau par cas avec
+EXPECTED, OBSERVED, PASS/FAIL/UNVERIFIED, fichiers de preuve et timestamps.
+Termine par la liste de toutes les conditions encore non prouvees. Ne resume
+pas un echec comme "globalement fonctionnel".
+
+--- FIN DU PROMPT GEMINI ---
+
+Le ton peut rester neutre, mais les criteres doivent rester textuellement
+stricts. Le proprietaire transmettra les preuves Gemini a Claude. Claude doit
+les verifier ligne par ligne avant toute integration.
+
+======================================================================
+7. MATRICE DE VALIDATION OBLIGATOIRE
+======================================================================
+
+Fenetre et poste utilisateur :
+
+[ ] A/B/C restent IsIconic=true pendant 100 % des actions.
+[ ] GetForegroundWindow reste l'application normale de l'utilisateur.
+[ ] GetCursorPos systeme ne change jamais a cause des macros.
+[ ] La saisie physique de l'utilisateur reste utilisable sans latence notable.
+[ ] Aucune fenetre transparente, hors ecran ou restauree n'est employee.
+
+Clavier par instance :
+
+[ ] A maintient W 3 s pendant que B maintient A 2 s et C presse Space 10 fois.
+[ ] Key-down de A n'apparait jamais dans B/C/application utilisateur.
+[ ] Key-up est garanti apres fin, annulation, crash helper et fermeture cible.
+[ ] touches etendues, modifiers, chords et repetition sont mesurees.
+[ ] texte Unicode est soit supporte et prouve, soit refuse explicitement.
+
+Souris par instance :
+
+[ ] positions absolues client distinctes simultanees pour A/B/C.
+[ ] mouvements relatifs simultanes distincts.
+[ ] gauche/droite/milieu, down/up, double-clic et molette.
+[ ] aucun mouvement du curseur physique.
+[ ] aucune coordonnee ne fuit d'une instance a l'autre.
+
+Robustesse :
+
+[ ] PID reutilise avec create_time different est refuse.
+[ ] fermeture de B n'interrompt pas A/C.
+[ ] annulation de A n'envoie aucun up a B/C.
+[ ] trois boucles concurrentes pendant 10 minutes, zero fuite et zero blocage.
+[ ] CPU/memoire/latence p50/p95 mesures.
+[ ] helper tue au milieu d'un maintien : toutes les touches logiques sont
+    relachees ou la session cible est abandonnee sans etat bloque.
+
+Compatibilite de lecture :
+
+[ ] message-loop classique.
+[ ] Raw Input WM_INPUT.
+[ ] GetAsyncKeyState/GetKeyboardState.
+[ ] si DirectInput/XInput est revendique, preuve distincte obligatoire.
+
+Validation finale Roblox, apres laboratoire :
+
+[ ] une instance reduite, mouvement observable et aucune restauration.
+[ ] deux instances reduites, deux sequences simultanees distinctes.
+[ ] trois instances reduites, trois sequences simultanees distinctes.
+[ ] le PC reste normalement utilisable au premier plan.
+[ ] logs Roblox/PID permettent d'attribuer chaque resultat sans ambiguite.
+
+======================================================================
+8. CRITERES DE REVUE DES RESULTATS GEMINI
+======================================================================
+
+Rejeter comme preuve :
+
+- "cela devrait fonctionner" ;
+- capture uniquement avant/apres sans IsIconic echantillonne pendant ;
+- code retour succes ;
+- un seul processus ;
+- actions serialisees presentees comme paralleles ;
+- fenetre cachee/transparente/off-screen presentee comme minimisee ;
+- test ou le vrai curseur a bouge puis a ete remis ;
+- test utilisant la souris/clavier physiques routes par ProtoInput ;
+- absence d'evenement interpretee comme preuve sans journaux horodates ;
+- resultat Roblox sans correlation PID/create_time/log.
+
+Accepter seulement des preuves reproductibles contenant la configuration, les
+versions, les traces et un resultat observable par instance.
+
+======================================================================
+9. AUTRES ELEMENTS DU PROJET A PRESERVER
+======================================================================
+
+- Ne pas modifier les cookies/sessions/vault pour ce chantier.
+- Ne pas relancer Roblox pendant un audit statique.
+- Ne pas reintroduire le bug de faux PreviewBridge.
+- Ne pas casser les lancements isoles PlaceId/JobId et PID intents.
+- Toute nouvelle dependance native doit etre documentee, versionnee, verifiee
+  par hash et incluse dans le script de build de facon reproductible.
+- Les licences tierces doivent figurer dans la distribution.
+- Mettre a jour FEATURE_MATRIX, QA_MATRIX, PORTING_LEDGER, API/bridge contract,
+  CHANGELOG et tests seulement avec des statuts prouves.
+
+======================================================================
+10. LIVRABLE FINAL ATTENDU DE CLAUDE
+======================================================================
+
+1. Rapport comparatif des solutions avec preuves Gemini.
+2. Choix du backend et justification factuelle.
+3. Code du backend/broker + integration MacroEngine/service/bridge/UI.
+4. Tests unitaires et integration par PID.
+5. Matrice laboratoire complete.
+6. Matrice Roblox complete sur 1, 2 puis 3 instances.
+7. Build Windows courant, smoke test et SHA-256.
+8. Aucun statut VERIFIED PARITY tant que toutes les conditions minimisee,
+   independance des peripheriques et vrai parallele ne sont pas demontrees.
+
+Fin de la passation.

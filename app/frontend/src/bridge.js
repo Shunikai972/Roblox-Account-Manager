@@ -24,13 +24,28 @@ const CONTRACT_METHODS = [
   'parse_vip_link', 'search_players', 'get_player_presence', 'find_player_server', 'get_random_server', 'close_beta_home_windows', 'check_for_updates',
   'get_account_blocked_list', 'unblock_all_account_users', 'set_account_avatar',
   'add_account_from_cookie', 'start_manual_browser_login', 'start_saved_password_browser_login', 'poll_manual_browser_login'
-  , 'list_macros', 'save_macro', 'delete_macro', 'start_macro', 'stop_macro', 'list_macro_runs'
+  , 'list_macros', 'save_macro', 'delete_macro', 'start_macro', 'stop_macro', 'pause_macro'
+  , 'resume_macro', 'get_macro_run_log', 'list_macro_runs', 'get_rule_decisions'
   , 'get_discord_presence_status', 'refresh_discord_presence'
   , 'get_update_status', 'download_update', 'schedule_update_install', 'cancel_update'
   , 'get_roblox_background_status', 'close_running_roblox', 'launch_account_from_private_link'
   , 'export_support_bundle'
   , 'list_universe_places', 'list_user_outfits', 'wear_account_outfit', 'join_account_group'
   , 'open_account_browser', 'get_account_saved_password'
+  , 'get_dashboard', 'plan_smart_launch', 'start_smart_launch'
+  , 'get_resource_plan', 'apply_resource_plan', 'stop_all_macros', 'close_instances'
+  , 'get_statistics', 'compare_account_sessions'
+  , 'list_scheduled_tasks', 'save_scheduled_task', 'delete_scheduled_task', 'run_due_scheduled_tasks'
+  , 'get_account_health', 'update_account_tags', 'update_account_fields', 'set_account_priority'
+  , 'get_server_registry', 'record_server_visit', 'update_server_blacklist', 'pick_best_server'
+  , 'start_wave_launch', 'get_wave_status', 'plan_coordination', 'run_coordination'
+  , 'get_comfort_overview', 'apply_comfort_action'
+  , 'get_alert_settings', 'update_alert_settings', 'send_alert_test', 'get_daily_report'
+  , 'get_macro_studio', 'save_key_profile', 'delete_key_profile', 'update_macro_variables'
+  , 'debug_macro', 'snapshot_macro_version', 'rollback_macro', 'start_group_macro'
+  , 'get_rules_overview', 'update_rules', 'get_rejoin_diagnostics'
+  , 'list_launch_profiles', 'save_launch_profile', 'delete_launch_profile'
+  , 'launch_with_profile', 'emergency_stop'
 ];
 
 const DAY = 86400000;
@@ -797,6 +812,54 @@ class PreviewBridge {
   async start_macro() { return this.desktopOperationUnavailable('Running a per-instance macro'); }
   async stop_macro() { return this.desktopOperationUnavailable('Stopping a per-instance macro'); }
   async list_macro_runs() { return []; }
+  async get_rule_decisions() { return []; }
+  async get_dashboard() { return { accounts: [], instances: [], groups: [], macro_runs: [], rule_decisions: [], totals: { accounts: 0, running: 0, macros: 0, groups: 0 } }; }
+  async plan_smart_launch() { return { steps: [], skipped: [], planned: 0, waves: 0, estimated_seconds: 0 }; }
+  async start_smart_launch() { return this.desktopOperationUnavailable('Starting a smart launch'); }
+  async get_resource_plan() { return { targets: [], applied_fps: null, level: 'ok', action: 'none', message: '', per_window_fps_supported: false }; }
+  async apply_resource_plan() { return this.desktopOperationUnavailable('Applying the frame rate plan'); }
+  async stop_all_macros() { return this.desktopOperationUnavailable('Stopping every macro'); }
+  async close_instances() { return this.desktopOperationUnavailable('Closing Roblox instances'); }
+  async get_statistics() { return { totals: {}, heatmap: { rows: [], max: 0 }, reliability: [], macros: {}, window_days: 28 }; }
+  async compare_account_sessions() { return { available: false, reason: 'Session history needs the desktop app.' }; }
+  async list_scheduled_tasks() { return { tasks: [], count: 0 }; }
+  async save_scheduled_task() { return this.desktopOperationUnavailable('Saving a scheduled task'); }
+  async delete_scheduled_task() { return this.desktopOperationUnavailable('Deleting a scheduled task'); }
+  async run_due_scheduled_tasks() { return { ran: [] }; }
+  async get_account_health() { return { accounts: [], tags: [], counts: {}, total: 0, shown: 0, needs_attention: 0 }; }
+  async update_account_tags() { return this.desktopOperationUnavailable('Changing account tags'); }
+  async update_account_fields() { return this.desktopOperationUnavailable('Changing account fields'); }
+  async set_account_priority() { return this.desktopOperationUnavailable('Changing account priority'); }
+  async get_server_registry() { return { servers: [], blacklist_entries: [], total: 0 }; }
+  async record_server_visit() { return this.desktopOperationUnavailable('Recording a server visit'); }
+  async update_server_blacklist() { return this.desktopOperationUnavailable('Updating the server blacklist'); }
+  async pick_best_server() { return { job_id: '', reason: 'Server history needs the desktop app.' }; }
+  async start_wave_launch() { return this.desktopOperationUnavailable('Starting a wave launch'); }
+  async get_wave_status() { return { in_progress: false, total: 0, launched: 0, failed: 0, wave: 0, waves: 0, waiting_for_wave: false, wave_reason: '' }; }
+  async plan_coordination() { return { steps: [], notes: [], mode: 'spread' }; }
+  async run_coordination() { return this.desktopOperationUnavailable('Running a coordinated launch'); }
+  async get_comfort_overview() { return { focus: { steps: [] }, sleep: { steps: [] }, audio: { supported: false, steps: [] }, shutdown: { steps: [] }, queue: { allowed: true, reason: '' }, instances: [] }; }
+  async apply_comfort_action() { return this.desktopOperationUnavailable('Applying a comfort action'); }
+  async get_alert_settings() { return { enabled: false, events: [], known_events: [], discord_configured: false, phone_configured: false }; }
+  async update_alert_settings() { return this.desktopOperationUnavailable('Saving alert settings'); }
+  async send_alert_test() { return this.desktopOperationUnavailable('Sending a test alert'); }
+  async get_daily_report() { return { report: { title: '', body: '', fields: {} }, sent: false }; }
+  async get_macro_studio() { return { profiles: [], variables: {}, versions: [], profile_report: {}, steps: [] }; }
+  async save_key_profile() { return this.desktopOperationUnavailable('Saving a key profile'); }
+  async delete_key_profile() { return this.desktopOperationUnavailable('Deleting a key profile'); }
+  async update_macro_variables() { return this.desktopOperationUnavailable('Saving macro variables'); }
+  async debug_macro() { return { steps: [], missing_variables: [], report: {} }; }
+  async snapshot_macro_version() { return this.desktopOperationUnavailable('Saving a macro version'); }
+  async rollback_macro() { return this.desktopOperationUnavailable('Restoring a macro version'); }
+  async start_group_macro() { return this.desktopOperationUnavailable('Starting a macro for a group'); }
+  async get_rules_overview() { return { rules: {}, groups: [], decisions: [], priorities: [], machine: {}, limits: { never_closes_clients: true } }; }
+  async update_rules() { return this.desktopOperationUnavailable('Saving rule settings'); }
+  async get_rejoin_diagnostics() { return { pending_resumes: [], tracked_macros: 0, open_sessions: 0 }; }
+  async list_launch_profiles() { return { profiles: [], count: 0, limit: 40, groups: [] }; }
+  async save_launch_profile() { return { profiles: [], count: 0, limit: 40, groups: [] }; }
+  async delete_launch_profile() { return { profiles: [], count: 0, limit: 40, groups: [] }; }
+  async launch_with_profile() { return { queued: [], profile: {}, fps_applied: false, note: '' }; }
+  async emergency_stop() { return { macros_stopped: 0, rules_disarmed: false, clients_closed: 0, note: '' }; }
   async get_discord_presence_status() { return { enabled: false, connected: false, configured: false }; }
   async refresh_discord_presence() { return this.desktopOperationUnavailable('Publishing Discord Rich Presence'); }
   async get_update_status() { return { frozen: false, staged: false, pending_install: false }; }

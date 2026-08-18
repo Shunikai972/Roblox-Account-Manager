@@ -1,0 +1,22 @@
+[
+  {
+    "event": "down",
+    "scan_code": 17,
+    "time": 2.6483995000016876
+  },
+  {
+    "event": "up",
+    "scan_code": 17,
+    "time": 2.715361299997312
+  },
+  {
+    "event": "down",
+    "scan_code": 17,
+    "time": 5.762492199995904
+  },
+  {
+    "event": "up",
+    "scan_code": 17,
+    "time": 5.824500900009298
+  }
+]

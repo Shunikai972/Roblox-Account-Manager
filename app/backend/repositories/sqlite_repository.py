@@ -600,10 +600,21 @@ class SQLiteRepository:
         return removed
 
     # Settings ---------------------------------------------------------------
+    # Bumped by every settings write. A caller may hold a settings snapshot and
+    # trust it for as long as this number does not move, which keeps the
+    # dashboard poll from rebuilding the whole settings tree several times per
+    # second.
+    _settings_revision = 0
+
+    @property
+    def settings_revision(self) -> int:
+        return self._settings_revision
+
     def set_setting(self, key: str, value: Any) -> None:
         setting_key = _required_text(key, "setting key", maximum=200)
         if is_sensitive_key(setting_key):
             raise RepositoryError("Sensitive settings must use OS-protected storage.")
+        self._settings_revision += 1
         payload = (setting_key, _json_dump(_strip_sensitive_values(value)), _utc_now())
         with self.transaction():
             self._execute(
@@ -627,6 +638,7 @@ class SQLiteRepository:
         return {row["key"]: _json_load(row["value_json"], default=None) for row in rows}
 
     def delete_setting(self, key: str) -> bool:
+        self._settings_revision += 1
         with self.transaction():
             result = self._execute("DELETE FROM settings WHERE key = ?", (key,))
         return result.rowcount > 0

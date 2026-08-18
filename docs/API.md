@@ -126,3 +126,70 @@ Ces méthodes pywebview ne sont pas exposées par l'API HTTP :
 - parité 3.7.2 : `open_account_browser`, `join_account_group`, `get_account_saved_password`, `list_universe_places`, `list_user_outfits`, `wear_account_outfit`.
 
 Les actions de fermeture, suppression, installation ou mutation de compte exigent un geste utilisateur distinct. Les cookies, mots de passe et tickets ne figurent jamais dans les statuts des nouveaux moteurs.
+
+## Surfaces Fleet ajoutées le 14 août 2026
+
+L'écran **Fleet** regroupe neuf onglets derrière une seule entrée de barre
+latérale : statistiques, planification, santé des comptes, serveurs,
+coordination, confort, alertes, règles et studio de macros. Ces 35 méthodes
+pywebview ne sont pas exposées par l'API HTTP.
+
+- statistiques : `get_statistics(window_days=None)`, `compare_account_sessions(account_id)` ;
+- planification : `list_scheduled_tasks()`, `save_scheduled_task(task)`, `delete_scheduled_task(task_id)`, `run_due_scheduled_tasks()` ;
+- santé et métadonnées : `get_account_health(filters=None)`, `update_account_tags(account_id, tags)`, `update_account_fields(account_id, fields)`, `set_account_priority(account_id, priority)` ;
+- serveurs : `get_server_registry(place_id=None)`, `record_server_visit(payload)`, `update_server_blacklist(job_id, blacklisted=True, note="")`, `pick_best_server(payload=None)` ;
+- lancement par vagues : `start_wave_launch(account_ids, target=None)`, `get_wave_status()` ;
+- coordination : `plan_coordination(payload)`, `run_coordination(payload)` ;
+- confort : `get_comfort_overview(focus_pid=None)`, `apply_comfort_action(action, payload=None)` ;
+- alertes : `get_alert_settings()`, `update_alert_settings(payload)`, `send_alert_test()`, `get_daily_report(send=False)` ;
+- studio de macros : `get_macro_studio(macro_id, account_id)`, `save_key_profile(profile)`, `delete_key_profile(name)`, `update_macro_variables(account_id, variables)`, `debug_macro(macro_id, account_id)`, `snapshot_macro_version(macro_id, label)`, `rollback_macro(macro_id, version)`, `start_group_macro(group_id, macro_id)` ;
+- règles : `get_rules_overview()`, `update_rules(payload)`, `get_rejoin_diagnostics()`.
+
+### Garanties de cette surface
+
+- `get_alert_settings` ne renvoie jamais une adresse de webhook : seulement
+  `discord_configured` et `phone_configured`. Les champs du formulaire sont en
+  écriture seule, et une adresse invalide est refusée avant enregistrement.
+- `apply_comfort_action("shutdown", …)` décrit le plan et ne ferme rien tant que
+  `confirm: true` n'est pas fourni ; l'interface demande d'abord une
+  confirmation explicite.
+- `get_rules_overview()` publie `limits.never_closes_clients: true`. Une règle
+  met en pause, relance ou avertit ; fermer un client vivant reste un geste
+  humain, conformément à la décision prise le 14 août.
+- `record_server_visit` et `pick_best_server` refusent un JobId hors format et
+  écartent tout serveur en liste noire ; sans candidat, la réponse est
+  `found: false` avec un motif, jamais un serveur choisi par défaut.
+- Les champs personnalisés refusent un nom ressemblant à un identifiant
+  (mot de passe, cookie, token, session…), comme les clés de réglages.
+- `start_group_macro` démarre une seule fenêtre Roblox et renvoie les autres
+  comptes en `queued` : la livraison d'entrées multi-fenêtres reste derrière
+  `ASTRO_ENABLE_MULTI_WINDOW_MACROS`.
+
+## Launch profiles and emergency stop (v11)
+
+Five methods were added to the bridge, bringing it to 176. Each one is a thin
+wrapper: the bridge never contains logic, it only forwards to the service and
+normalises the error into a message the UI can show.
+
+| Method | Arguments | Returns |
+| --- | --- | --- |
+| `list_launch_profiles()` | none | `{profiles: [{id, name, place_id, job_id, link_code, fps, group_id, note, updated_at, summary}], count, limit, groups: [{id, name}]}` |
+| `save_launch_profile(profile)` | the profile object; an `id` updates that row, no `id` creates one | the same shape as `list_launch_profiles` |
+| `delete_launch_profile(profile_id)` | profile id | the same shape as `list_launch_profiles` |
+| `launch_with_profile(profile_id, account_ids=None)` | profile id, optional explicit accounts | the wave status plus `profile`, `fps_applied`, `note` |
+| `emergency_stop(payload=None)` | `{disarm_rules: bool}`, default `true` | `{macros_stopped, queue, resumes_cleared, rules_disarmed, clients_closed, note}` |
+
+Rules that the tests pin:
+
+- A profile carries **one** destination. A JobId and a private server code
+  together are refused (`Choose either a JobId or a private server code, not both.`).
+- `launch_with_profile` never opens its own launch path: it resolves the accounts
+  (explicit list first, otherwise the profile's group) and delegates to
+  `start_wave_launch`, so the concurrency cap, the delay between launches and the
+  pause between waves keep applying.
+- An FPS target on a profile is applied through the normal FPS cap. Roblox stores
+  that value globally, so the response says so in `note` instead of pretending the
+  cap is per instance.
+- `emergency_stop` stops macros, cancels the launch queue, clears pending macro
+  resumes and disarms the automatic rules. `clients_closed` is always `0`:
+  closing a live client stays a human decision, exactly like the rules engine.

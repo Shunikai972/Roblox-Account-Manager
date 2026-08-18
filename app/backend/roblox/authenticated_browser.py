@@ -42,6 +42,9 @@ class AuthenticatedBrowserService:
             f"--user-data-dir={profile}",
             "--no-first-run",
             "--no-default-browser-check",
+            "--disable-sync",
+            "--disable-extensions",
+            "--disable-features=msEdgeSignin,EdgeIdentity,msEdgeSync",
             "about:blank",
         ]
         try:
@@ -102,10 +105,20 @@ def _wait_for_port(profile: Path, process: subprocess.Popen[Any]) -> int:
 def _page_websocket(port: int) -> str:
     with urlopen(f"http://127.0.0.1:{port}/json/list", timeout=3.0) as response:
         payload = json.loads(response.read().decode("utf-8"))
-    for item in payload if isinstance(payload, list) else []:
+
+    pages = [
+        item
+        for item in payload if isinstance(payload, list)
+        if isinstance(item, dict) and item.get("type") == "page"
+    ]
+    # Edge can create sync/extension pages even for a fresh temporary profile.
+    # The window launched by this service is the explicit about:blank target;
+    # never inject the Roblox session into an arbitrary first CDP page.
+    pages.sort(key=lambda item: 0 if item.get("url") == "about:blank" else 1)
+    for item in pages:
         ws = item.get("webSocketDebuggerUrl") if isinstance(item, dict) else None
         parsed = urlsplit(str(ws or ""))
-        if item.get("type") == "page" and parsed.scheme in {"ws", "wss"} and parsed.hostname in {"127.0.0.1", "localhost"}:
+        if parsed.scheme in {"ws", "wss"} and parsed.hostname in {"127.0.0.1", "localhost"}:
             return str(ws)
     raise RobloxLaunchError("The isolated browser page endpoint is unavailable.")
 

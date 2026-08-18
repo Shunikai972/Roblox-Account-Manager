@@ -14,6 +14,7 @@ from app.backend.core.crash_reporting import SupportBundleBuilder, redact_suppor
 from app.backend.integrations import DiscordPresenceManager
 from app.backend.repositories.sqlite_repository import SQLiteRepository
 from app.backend.roblox.authenticated_browser import AuthenticatedBrowserService
+from app.backend.roblox.authenticated_browser import _page_websocket
 from app.backend.roblox.background import RobloxBackgroundManager
 from app.backend.roblox.private_servers import PrivateServerHelper
 
@@ -36,7 +37,11 @@ class _MacroBackend:
         return True
 
 
-def test_macro_dsl_is_bounded_and_two_instances_run_independently() -> None:
+def test_macro_dsl_is_bounded_and_two_instances_run_independently(monkeypatch) -> None:
+    # Macros drive one Roblox window at a time in this build, so the concurrent
+    # path this test covers now lives behind ASTRO_ENABLE_MULTI_WINDOW_MACROS.
+    # That path is set aside, not deleted, so its coverage stays right here.
+    monkeypatch.setenv("ASTRO_ENABLE_MULTI_WINDOW_MACROS", "1")
     backend = _MacroBackend()
     engine = MacroEngine(backend)
     actions = parse_macro_dsl("PRESS W 5\nWAIT 30\nPRESS A 5")
@@ -52,6 +57,46 @@ def test_macro_dsl_is_bounded_and_two_instances_run_independently() -> None:
     assert {event[0] for event in backend.events} == {101, 202}
     with pytest.raises(MacroParseError):
         parse_macro_dsl("REPEAT 101\nPRESS W\nEND")
+
+
+def test_macro_local_backend_run_hooks_bound_the_whole_input_run() -> None:
+    class HookedBackend(_MacroBackend):
+        def __init__(self) -> None:
+            super().__init__()
+            self.hooks: list[str] = []
+
+        def verify(self, pid: int, expected_created_at: float | None):
+            return {
+                "pid": pid,
+                "hwnd": pid * 10,
+                "background_delivery_supported": False,
+                "delivery_mode": "foreground_fallback",
+            }
+
+        def begin_run(self, target) -> bool:
+            self.hooks.append("begin")
+            return True
+
+        def end_run(self, target) -> None:
+            self.hooks.append("end")
+
+    backend = HookedBackend()
+    engine = MacroEngine(backend)
+    started = engine.start(
+        {"id": "local", "name": "Local", "actions": parse_macro_dsl("PRESS W 5")},
+        pid=303,
+        expected_created_at=3.0,
+        account_id=None,
+    )
+    deadline = time.monotonic() + 2
+    while time.monotonic() < deadline:
+        row = next(item for item in engine.list_runs() if item["run_id"] == started["run_id"])
+        if row["state"] not in {"starting", "running"}:
+            break
+        time.sleep(0.01)
+    assert row["state"] == "completed"
+    assert row["delivery_mode"] == "foreground_fallback"
+    assert backend.hooks == ["begin", "end"]
 
 
 def test_macro_definitions_persist_in_schema_v4(tmp_path: Path) -> None:
@@ -153,3 +198,39 @@ def test_private_server_and_authenticated_browser_reject_lookalike_domains() -> 
     assert PrivateServerHelper.parse_vip_link("https://www.roblox.com/games/1?privateServerLinkCode=bad%20code") is None
     with pytest.raises(Exception):
         AuthenticatedBrowserService().open("session", "https://roblox.com.evil.test/home")
+
+
+def test_authenticated_browser_selects_its_about_blank_page(monkeypatch) -> None:
+    payload = [
+        {
+            "type": "page",
+            "url": "chrome-extension://example/options.html",
+            "webSocketDebuggerUrl": "ws://127.0.0.1:9000/devtools/page/extension",
+        },
+        {
+            "type": "page",
+            "url": "edge://sync-confirmation-dialog/",
+            "webSocketDebuggerUrl": "ws://127.0.0.1:9000/devtools/page/sync",
+        },
+        {
+            "type": "page",
+            "url": "about:blank",
+            "webSocketDebuggerUrl": "ws://127.0.0.1:9000/devtools/page/isolated",
+        },
+    ]
+
+    class _Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def read(self):
+            return json.dumps(payload).encode("utf-8")
+
+    monkeypatch.setattr(
+        "app.backend.roblox.authenticated_browser.urlopen",
+        lambda *_args, **_kwargs: _Response(),
+    )
+    assert _page_websocket(9000).endswith("/isolated")

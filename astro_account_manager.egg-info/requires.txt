@@ -1,0 +1,14 @@
+cryptography<46,>=43.0
+PyNaCl<2,>=1.5
+psutil<8,>=6.1
+pywebview==6.2.1
+requests<3,>=2.32
+websockets<16,>=14
+
+[:sys_platform == "win32"]
+pydirectinput<2,>=1.0.4
+
+[dev]
+pytest<10,>=8.3
+pytest-cov<8,>=6
+pyinstaller<7,>=6.11

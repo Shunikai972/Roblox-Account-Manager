@@ -1,0 +1,346 @@
+================================================================================
+ASTRO ACCOUNT MANAGER 4.0.3 (v11) - LISTE DES FONCTIONNALITES EXISTANTES
+================================================================================
+Genere le 18/08/2026 a partir d'une analyse du code source, pas de memoire.
+Chaque ligne indique entre crochets le fichier et le symbole qui la prouve.
+
+CHIFFRES MESURES SUR LE DEPOT
+  - 176 methodes exposees au frontend (pont backend <-> UI)
+  - 9 ecrans dans la barre laterale, dont 1 ecran "Fleet" a 10 onglets
+  - 137 actions cliquables declarees, 0 sans gestionnaire
+  - 59 fichiers de tests, 666 fonctions de test
+  - 91 fonctionnalites verifiees automatiquement par scripts/feature_inventory.py
+  - Derniere validation Windows complete : 760 tests passes / 762, 0 echec
+
+
+================================================================================
+1. ECRANS DE L'APPLICATION
+================================================================================
+  1.1  Dashboard - vue d'ensemble de la flotte            [app.js -> renderDashboard]
+  1.2  Accounts - liste et fiche de chaque compte         [app.js -> renderAccounts]
+  1.3  Games & servers - jeux, serveurs, recherche        [app.js -> renderGames]
+  1.4  Instances - processus Roblox en cours              [app.js -> renderInstances]
+  1.5  Nexus - masque par defaut (flag ASTRO_ENABLE_NEXUS)[config.py -> HIDDEN_FEATURES]
+  1.6  Macros - editeur visuel et editeur DSL             [app.js -> renderMacros]
+  1.7  Fleet - 10 onglets (voir section 2)                [app.js -> renderFleet]
+  1.8  Diagnostics - etat machine, journaux, support      [app.js -> renderDiagnostics]
+  1.9  Settings - 19 categories de reglages               [app.js -> renderSettings]
+
+
+================================================================================
+2. ECRAN FLEET (10 ONGLETS, UNE SEULE ENTREE DANS LA BARRE LATERALE)
+================================================================================
+  2.1  Statistics      - tableau de bord chiffre          [renderFleetStats]
+  2.2  Scheduler       - taches horaires                  [renderFleetSchedule]
+  2.3  Account health  - sante et tags des comptes        [renderFleetHealth]
+  2.4  Servers         - registre, blacklist, hopping     [renderFleetServers]
+  2.5  Coordination    - spread, main+followers, party    [renderFleetCoordination]
+  2.6  Comfort         - focus, veille, audio, arret sur  [renderFleetComfort]
+  2.7  Alerts          - Discord, push, rapport quotidien [renderFleetAlerts]
+  2.8  Rules           - moteur de regles automatiques    [renderFleetRules]
+  2.9  Macro studio    - profils, variables, debug        [renderFleetStudio]
+  2.10 Launch profiles - destinations enregistrees        [renderFleetProfiles]
+
+
+================================================================================
+3. COMPTES
+================================================================================
+  3.1  Ajouter, modifier, supprimer un compte             [bridge -> create_account, update_account, delete_accounts]
+  3.2  Reordonner la liste                                [bridge -> reorder_accounts]
+  3.3  Profil public : avatar, pseudo, nom affiche        [bridge -> get_public_profile, refresh_account_public_profile]
+  3.4  Presence Roblox (en ligne, en jeu)                 [bridge -> get_public_presence, refresh_account_presence]
+  3.5  Connexion OAuth Roblox                             [bridge -> start_oauth_login, poll_oauth_login, refresh_oauth_account]
+  3.6  Connexion navigateur (manuelle ou mot de passe)    [bridge -> start_manual_browser_login, start_saved_password_browser_login]
+  3.7  Ajout par cookie                                   [bridge -> add_account_from_cookie]
+  3.8  Import en masse de comptes                         [bridge -> import_bulk_accounts]
+  3.9  Export / import des sessions                       [bridge -> export_account_sessions, refresh_account_session]
+  3.10 Ticket d'authentification et jeton CSRF            [bridge -> generate_auth_ticket, get_account_csrf_token]
+  3.11 Lien de lancement RbxPlayer                        [bridge -> generate_rbx_player_link]
+  3.12 Note privee par compte (280 caracteres)            [app.js -> account-notes]
+  3.13 Tags filtrables                                    [account_health.py -> normalize_tags ; bridge -> update_account_tags]
+  3.14 Champs personnalises (niveau, gemmes, etc.)        [account_health.py -> validated_custom_fields]
+  3.15 Priorite 0 a 10 utilisee par les regles            [bridge -> set_account_priority]
+  3.16 Sante du compte (session expiree, action requise)  [account_health.py -> evaluate_account_health]
+  3.17 Filtres de sante par tag, statut, texte            [account_health.py -> matches_filters]
+  3.18 Groupes de comptes et deplacement en masse         [bridge -> list_groups, create_group, move_accounts]
+
+
+================================================================================
+4. OUTILS DE COMPTE ROBLOX
+================================================================================
+  4.1  Changer le mot de passe                            [bridge -> change_account_password]
+  4.2  Changer l'adresse e-mail                           [bridge -> change_account_email]
+  4.3  Deconnecter toutes les sessions                    [bridge -> logout_all_account_sessions]
+  4.4  Changer le nom affiche                             [bridge -> set_account_display_name]
+  4.5  Envoyer une demande d'ami                          [bridge -> send_account_friend_request]
+  4.6  Bloquer / debloquer un joueur, liste des bloques   [bridge -> block_account_user, unblock_account_user, get_account_blocked_list, unblock_all_account_users]
+  4.7  Confidentialite des abonnements                    [bridge -> set_account_follow_privacy]
+  4.8  Deverrouiller le code PIN                          [bridge -> unlock_account_pin]
+  4.9  Connexion rapide dans le navigateur                [bridge -> quick_log_in_account, open_account_browser]
+  4.10 Avatar et tenues sauvegardees                      [bridge -> set_account_avatar, list_user_outfits, wear_account_outfit]
+  4.11 Rejoindre un groupe Roblox                         [bridge -> join_account_group]
+  4.12 Mot de passe memorise (lecture protegee)           [bridge -> get_account_saved_password]
+
+
+================================================================================
+5. LANCEMENT
+================================================================================
+  5.1  Lancer un compte                                   [bridge -> launch_account]
+  5.2  Plan de lancement intelligent (simule avant)       [bridge -> plan_smart_launch]
+  5.3  Lancement intelligent (plafond + delai)            [bridge -> start_smart_launch]
+  5.4  Lancement par lot, annulation, statut live         [bridge -> start_batch_launch, cancel_batch_launch, get_batch_launch_status]
+  5.5  Lancement par vagues avec pause entre vagues       [fleet_features.py -> start_wave_launch ; config -> wave_pause_seconds]
+  5.6  File d'attente dynamique (attend CPU/RAM/vague)    [fleet_features.py -> _wave_ready_check ; comfort.py -> queue_gate]
+  5.7  Profils de lancement nommes (place, serveur, FPS)  [launch_profiles.py -> validated_profile ; bridge -> launch_with_profile]
+  5.8  Lancement via lien prive : VIP ou /share           [private_servers.py -> parse_vip_link]
+  5.8b Lien /share resolu par Roblox (session requise)     [auth_tools.py -> resolve_share_link]
+  5.9  Paquets UWP et clones par compte                   [bridge -> list_uwp_packages, launch_uwp_package, create_uwp_account_clone]
+  5.10 Multi-instance (plusieurs Roblox en meme temps)    [bridge -> get_multi_instance_status, set_multi_instance]
+  5.11 Fermeture des fenetres "beta home" parasites       [bridge -> close_beta_home_windows]
+  5.12 Detection de Roblox deja ouvert avant lancement    [bridge -> get_roblox_background_status, close_running_roblox]
+
+
+================================================================================
+6. JEUX ET SERVEURS
+================================================================================
+  6.1  Bibliotheque de jeux, favoris, recents             [bridge -> list_games, set_game_favorite, list_recent_games, list_favorite_games]
+  6.2  Recherche de jeux                                  [bridge -> search_games]
+  6.3  Liste des serveurs d'un jeu                        [bridge -> list_servers]
+  6.4  Region d'un serveur et sondage de regions          [bridge -> resolve_server_region, probe_server_regions]
+  6.5  Serveur aleatoire                                  [bridge -> get_random_server]
+  6.6  Recherche de joueur et de son serveur              [bridge -> search_players, get_player_presence, find_player_server]
+  6.7  Registre des serveurs visites (historique JobId)   [server_registry.py -> inspect_history ; bridge -> record_server_visit]
+  6.8  Blacklist de serveurs                              [server_registry.py -> blacklist_add ; bridge -> update_server_blacklist]
+  6.9  Choix du meilleur serveur (hopping intelligent)    [server_registry.py -> pick_server ; bridge -> pick_best_server]
+  6.10 Affinite de region lors du choix                   [fleet_features.py -> pick_best_server]
+  6.11 Places d'un univers                                [bridge -> list_universe_places]
+
+
+================================================================================
+7. INSTANCES ET SURVEILLANCE DES PROCESSUS
+================================================================================
+  7.1  Liste des instances avec PID et duree              [bridge -> list_instances, refresh_instances]
+  7.2  Moniteur par instance (CPU, RAM, etat)             [bridge -> get_instance_monitor]
+  7.3  Association d'une instance a un compte             [bridge -> bind_instance]
+  7.4  Fermeture d'une ou plusieurs instances (humain)    [bridge -> close_instance, close_instances]
+  7.5  Surveillance par compte configurable               [bridge -> configure_account_watcher]
+  7.6  Detection crash / sortie / relance en attente      [process_monitor.py -> InstanceState]
+  7.7  Politique de relance apres crash                   [process_monitor.py -> RestartPolicy]
+  7.8  Auto-rejoin sur codes de deconnexion (277, 278...) [rejoin_rules.py ; bridge -> get_rejoin_diagnostics]
+  7.9  Lecture des journaux Roblox (place, JobId, erreurs)[roblox_log_runtime.py, roblox_log_watcher.py]
+  7.10 Positionner, capturer, restaurer une fenetre       [bridge -> position_instance_window, capture_instance_window, restore_instance_window]
+  7.11 Etats du tableau de bord : hors ligne, lancement,
+       en jeu, farming, macro en pause, sans surveillance,
+       erreur                                             [application_service.py -> _dashboard_state]
+
+
+================================================================================
+8. MACROS
+================================================================================
+  8.1  Editeur visuel par blocs (ajout, retrait, ordre)   [app.js -> add-macro-block, renderMacroBlock]
+  8.2  Editeur texte DSL equivalent                       [app.js -> Direct Astro DSL ; macros.py]
+  8.3  Blocs : Wait, Press key, Click, Text               [macros.py -> key_press, mouse_click]
+  8.4  Blocs de controle : Condition, Launch, Teleport,
+       Restart                                            [macros.py -> CONTROL_ACTIONS, CONDITION_CHECKS]
+  8.5  Conditions disponibles : duree superieure/inferieure,
+       checkpoint atteint/absent, variable egale/absente,
+       compte en cours/arrete                             [macros.py -> CONDITION_CHECKS]
+  8.6  Attentes aleatoires (min-max)                      [macros.py -> max_milliseconds]
+  8.7  Boucles bornees et imbrication bornee              [macros.py -> MAX_REPEAT, MAX_DEPTH]
+  8.8  Sous-routines nommees                              [macros.py -> MAX_SUBROUTINES]
+  8.9  Execution attachee a un PID verifie                [macros.py -> MacroRun]
+  8.10 Pause, reprise, arret d'un run                     [bridge -> pause_macro, resume_macro, stop_macro]
+  8.11 Arret de toutes les macros                         [bridge -> stop_all_macros]
+  8.12 Arret d'urgence global (macros + file + regles)    [fleet_features.py -> emergency_stop]
+  8.13 Dry run (simulation sans toucher une fenetre)      [macros.py -> dry_run]
+  8.14 Journal de run et historique                       [bridge -> get_macro_run_log, list_macro_runs]
+  8.15 Reprise de macro apres relance du client           [fleet_features.py -> _queue_macro_resume]
+  8.16 Envoi des entrees via pydirectinput, une fenetre   [direct_input.py]
+  8.17 Mode multi-fenetres conserve derriere un flag      [config.py -> ASTRO_ENABLE_MULTI_WINDOW_MACROS]
+  8.18 Macros par groupe de comptes                       [fleet_features.py -> start_group_macro]
+
+
+================================================================================
+9. MACRO STUDIO
+================================================================================
+  9.1  Profils de touches par machine                     [macro_studio.py -> validated_key_profile]
+  9.2  Variables par compte injectees dans la macro       [macro_studio.py -> validated_variables]
+  9.3  Debogueur pas a pas (variables manquantes listees) [fleet_features.py -> debug_macro]
+  9.4  Profiler : duree estimee avant execution           [macro_studio.py -> profile_macro]
+  9.5  Versions et retour arriere                         [macro_studio.py -> push_version, rollback_version]
+  9.6  Aplatissement des etapes pour lecture              [macro_studio.py -> flatten_steps]
+
+
+================================================================================
+10. COORDINATION MULTI-COMPTES
+================================================================================
+  10.1 Spread mode : repartition sur plusieurs serveurs   [coordination.py -> spread_plan]
+  10.2 Main + followers : tout le monde suit un compte    [coordination.py -> follower_plan]
+  10.3 Lancement / teleportation synchronises             [coordination.py -> sync_plan]
+  10.4 Party interne (meme JobId, taille bornee)          [coordination.py -> party_plan]
+  10.5 Simulation avant execution                         [bridge -> plan_coordination, run_coordination]
+
+
+================================================================================
+11. RESSOURCES ET CONFORT
+================================================================================
+  11.1 Plan de ressources par profil (idle, macro, actif) [resource_plan.py ; bridge -> get_resource_plan, apply_resource_plan]
+  11.2 FPS adaptatif selon l'usage                        [config -> adaptive_fps_enabled]
+  11.3 Plafond FPS : lecture, application, retrait        [bridge -> get_fps_cap, set_fps_cap, remove_fps_cap]
+  11.4 Surveillance memoire (alerte + critique)           [config -> memory_warn_percent, memory_critical_percent]
+  11.5 Focus mode (fenetre active en avant, autres baissees)[comfort.py -> focus_plan]
+  11.6 Sleep mode pour les clients inactifs               [comfort.py -> sleep_plan]
+  11.7 Niveaux audio par instance (memorises)             [comfort.py -> audio_plan]
+  11.8 Arret securise avec confirmation explicite         [comfort.py -> shutdown_plan]
+  11.9 Porte de file d'attente selon CPU / RAM            [comfort.py -> queue_gate]
+
+
+================================================================================
+12. REGLES AUTOMATIQUES ET PLANIFICATION
+================================================================================
+  12.1 Moteur de regles (pause, relance, avertissement)   [rule_engine.py ; bridge -> get_rule_decisions]
+  12.2 Vue d'ensemble et edition des regles               [fleet_features.py -> get_rules_overview, update_rules]
+  12.3 Seuils : macro bloquee, duree max, CPU, RAM,
+       priorite minimale, groupes concernes               [config -> rules]
+  12.4 Invariant : aucune fermeture automatique de client [fleet_features.py -> never_closes_clients]
+  12.5 Taches planifiees a heure fixe                     [scheduler.py -> validated_task, next_run_at]
+  12.6 Actions planifiables : lancer un groupe, lancer des
+       comptes, arreter les macros, demarrer une macro,
+       appliquer un plan de ressources, fermer des instances[scheduler.py -> TASK_ACTIONS]
+  12.7 Execution des taches dues                          [bridge -> run_due_scheduled_tasks]
+
+
+================================================================================
+13. ALERTES ET RAPPORTS
+================================================================================
+  13.1 Webhook Discord                                    [alerts.py -> discord_payload]
+  13.2 Notifications telephone via relais push            [alerts.py -> push_payload]
+  13.3 Evenements : crash d'instance, macro echouee,
+       rejoin epuise, memoire critique, lot termine,
+       tache planifiee, rapport quotidien                 [alerts.py -> ALERT_EVENTS]
+  13.4 Test d'envoi                                       [bridge -> send_alert_test]
+  13.5 Rapport quotidien                                  [alerts.py -> daily_report ; bridge -> get_daily_report]
+  13.6 Secrets jamais reaffiches ni journalises           [alerts.py -> redact]
+  13.7 Notifications dans l'application                   [bridge -> get_notifications, dismiss_notification]
+  13.8 Presence Discord (Rich Presence)                   [discord_rpc.py ; bridge -> get_discord_presence_status]
+
+
+================================================================================
+14. STATISTIQUES
+================================================================================
+  14.1 Tableau de bord statistique sur fenetre glissante  [statistics.py -> build_statistics]
+  14.2 Heatmap horaire d'activite                         [statistics.py -> build_heatmap]
+  14.3 Score de fiabilite par compte                      [statistics.py -> reliability_table]
+  14.4 Taux de reussite des macros                        [statistics.py -> macro_success_rate]
+  14.5 Comparaison de deux sessions d'un compte           [statistics.py -> compare_sessions]
+  14.6 Journal d'activite horodate                        [bridge -> get_activity]
+
+
+================================================================================
+15. DONNEES, SECURITE ET MAINTENANCE
+================================================================================
+  15.1 Base SQLite locale, aucune donnee envoyee ailleurs [sqlite_repository.py]
+  15.2 Reglages sensibles refuses hors stockage protege   [redaction.py -> is_sensitive_key]
+  15.3 Sauvegardes, liste, restauration                   [bridge -> backup_data, list_backups, restore_backup]
+  15.4 Export / import de metadonnees                     [bridge -> export_metadata, import_metadata]
+  15.5 Migration depuis une ancienne installation         [bridge -> migrate_legacy]
+  15.6 Diagnostics machine                                [bridge -> get_diagnostics]
+  15.7 Paquet de support (journaux anonymises)            [bridge -> export_support_bundle]
+  15.8 Mises a jour : verification, telechargement,
+       installation planifiee, annulation                 [bridge -> check_for_updates, download_update, schedule_update_install, cancel_update]
+  15.9 Demarrage avec Windows                             [bridge -> get_windows_startup_status, set_windows_startup]
+  15.10 API locale en boucle locale (optionnelle)         [config -> api]
+  15.11 Nexus (serveur WebSocket) masque par defaut       [config -> nexus, ASTRO_ENABLE_NEXUS]
+
+
+================================================================================
+16. REGLAGES DISPONIBLES (19 CATEGORIES)
+================================================================================
+  general      : launch_delay_ms, max_recent_games, auto_refresh_account_state,
+                 auto_backup, start_with_windows, warn_if_roblox_running
+  appearance   : theme, accent, density, reduced_motion
+  accounts     : remember_login_details, show_presence, presence_update_seconds
+  instances    : allow_multiple_launches, prevent_duplicate_accounts,
+                 remember_window_positions, launch_queue_parallelism
+  macros       : enabled, allow_background_delivery, resume_after_relaunch
+  discord      : enabled, client_id, strategy, show_account
+  updates      : auto_check, auto_download, install_on_exit
+  watcher      : enabled, scan_interval_seconds, termination_enabled,
+                 launch_match_timeout_seconds, crash_window_seconds,
+                 auto_relaunch_enabled, relaunch_delay_seconds,
+                 relaunch_max_attempts, relaunch_on_crash, relaunch_on_exit,
+                 close_unconnected, unconnected_timeout_seconds,
+                 close_if_memory_low, memory_low_mb, close_if_title_mismatch,
+                 health_grace_seconds, rejoin_change_server_after,
+                 rejoin_backoff_factor, rejoin_max_delay_seconds,
+                 expected_window_title
+  rules        : enabled, macro_stuck_seconds, max_runtime_hours,
+                 cpu_pause_percent, memory_pause_percent,
+                 pause_priority_at_or_below, restart_stuck_macros, group_ids
+  launcher     : max_concurrent, delay_seconds, wait_for_wave,
+                 wave_pause_seconds, skip_running, profiles (profils v11)
+  comfort      : focus_volume, background_volume, focus_minimizes_others,
+                 sleep_after_minutes, queue_cpu_percent, queue_memory_percent,
+                 queue_max_instances
+  resources    : adaptive_fps_enabled, watched_fps, macro_fps, idle_fps,
+                 memory_warn_percent, memory_critical_percent, reserve_mb,
+                 average_instance_mb
+  performance  : global_max_fps, potato_graphics
+  network      : request_timeout_seconds, region_lookup_enabled,
+                 region_lookup_provider, region_lookup_format,
+                 region_lookup_timeout_seconds, region_cache_ttl_seconds
+  oauth        : enabled, client_id, redirect_uri, callback_timeout_seconds
+  api          : enabled, host, port, allow_external, allow_get_cookie,
+                 allow_launch_account, allow_account_editing,
+                 allow_import_cookie, allow_get_accounts,
+                 legacy_password_auth_enabled
+  nexus        : enabled, host, port, allow_external
+  notifications: auto_dismiss_seconds, desktop_notifications
+  developer    : enabled, verbose_logs
+
+
+================================================================================
+17. LIMITES ASSUMEES (CE QUE L'APPLICATION NE PEUT PAS FAIRE)
+================================================================================
+  - Les entrees clavier et souris vont a la fenetre au premier plan. Une fenetre
+    minimisee n'est pas pilotee dans ce build.
+  - Le plafond FPS de Roblox est global : il ne peut pas differer d'une instance
+    a l'autre, y compris via un profil de lancement.
+  - Pas de controle audio par processus sur cette machine : les niveaux sont
+    memorises, pas appliques.
+  - Pas d'API de groupe Roblox : une "party" signifie tout le monde sur le meme
+    JobId.
+  - Les notifications telephone passent par un relais webhook, il n'y a pas
+    d'application mobile.
+  - L'auto-rejoin lit les journaux (codes 277, 278...) mais ne voit pas la boite
+    de dialogue de deconnexion affichee dans le jeu.
+  - L'etat "sans surveillance" est une deduction (en jeu, aucune macro, au-dela
+    du delai de veille) : Roblox ne partage pas le minuteur d'inactivite.
+  - Le demarrage d'une macro de groupe lance une fenetre, les autres passent en
+    file d'attente.
+
+
+================================================================================
+18. VOLONTAIREMENT NON IMPLEMENTE
+================================================================================
+  - Vision : captures par instance, timeline, detecteur d'ecran fige, conditions
+    par pixel, template matching, declencheurs visuels.
+  - Distant : tableau de bord mobile, appairage QR, vue distante, capture a
+    distance.
+  - Macros en fenetre minimisee : necessiterait des messages Win32 cibles
+    (PostMessage/SendMessage par HWND) ou un pilote d'entree virtuel isole.
+
+
+================================================================================
+19. VERIFIER CETTE LISTE SOI-MEME
+================================================================================
+  python scripts/feature_inventory.py     -> 91 fonctionnalites prouvees, 0 manquante
+  python scripts/portable_audit.py        -> 176/176 methodes, 137 actions, 0 orpheline
+  python -m pytest                        -> suite complete sous Windows
+
+  Documents lies :
+    docs/user-guide/FEATURE_INVENTORY.md  (inventaire genere, avec les preuves)
+    docs/user-guide/FEATURE_MATRIX.md     (matrice par version)
+    docs/API.md                           (contrat des 176 methodes)
+    HANDOFF.md                            (passation technique complete)
+================================================================================

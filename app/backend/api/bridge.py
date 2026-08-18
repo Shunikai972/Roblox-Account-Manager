@@ -390,11 +390,20 @@ class DesktopBridge:
     def delete_macro(self, macro_id: str, confirm: bool = False) -> dict[str, Any]:
         return self._invoke(self._service.delete_macro, macro_id, confirm=confirm)
 
-    def start_macro(self, macro_id: str, pid: int) -> dict[str, Any]:
-        return self._invoke(self._service.start_macro, macro_id, pid)
+    def start_macro(self, macro_id: str, pid: int, dry_run: bool = False) -> dict[str, Any]:
+        return self._invoke(self._service.start_macro, macro_id, pid, dry_run=dry_run)
 
     def stop_macro(self, run_id: str) -> dict[str, Any]:
         return self._invoke(self._service.stop_macro, run_id)
+
+    def pause_macro(self, run_id: str) -> dict[str, Any]:
+        return self._invoke(self._service.pause_macro, run_id)
+
+    def resume_macro(self, run_id: str) -> dict[str, Any]:
+        return self._invoke(self._service.resume_macro, run_id)
+
+    def get_macro_run_log(self, run_id: str) -> list[dict[str, Any]]:
+        return self._invoke(self._service.get_macro_run_log, run_id)
 
     def list_macro_runs(self) -> list[dict[str, Any]]:
         return self._invoke(self._service.list_macro_runs)
@@ -428,6 +437,181 @@ class DesktopBridge:
 
     def export_support_bundle(self) -> dict[str, Any]:
         return self._invoke(self._service.export_support_bundle)
+
+    def get_rule_decisions(self) -> list[dict[str, Any]]:
+        return self._invoke(self._service.get_rule_decisions)
+
+    def get_dashboard(self, watched_pid: int | None = None) -> dict[str, Any]:
+        return self._invoke(self._service.get_dashboard, watched_pid)
+
+    def plan_smart_launch(
+        self, account_ids: list[str] | None = None, group_id: str | None = None
+    ) -> dict[str, Any]:
+        return self._invoke(self._service.plan_smart_launch, account_ids, group_id)
+
+    def start_smart_launch(
+        self,
+        account_ids: list[str] | None = None,
+        group_id: str | None = None,
+        target: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        return self._invoke(
+            self._service.start_smart_launch, account_ids, group_id, target
+        )
+
+    def get_resource_plan(self, watched_pid: int | None = None) -> dict[str, Any]:
+        return self._invoke(self._service.get_resource_plan, watched_pid)
+
+    def apply_resource_plan(self, watched_pid: int | None = None) -> dict[str, Any]:
+        return self._invoke(self._service.apply_resource_plan, watched_pid)
+
+    def stop_all_macros(self) -> dict[str, Any]:
+        return self._invoke(self._service.stop_all_macros)
+
+    def close_instances(self, pids: list[int], confirm: bool = False) -> dict[str, Any]:
+        return self._invoke(self._service.close_instances, pids, confirm=confirm)
+
+    # Statistics -------------------------------------------------------------
+
+    def get_statistics(self, window_days: int | None = None) -> dict[str, Any]:
+        return self._invoke(self._service.get_statistics, window_days)
+
+    def compare_account_sessions(self, account_id: str) -> dict[str, Any]:
+        return self._invoke(self._service.compare_account_sessions, account_id)
+
+    # Schedule ----------------------------------------------------------------
+
+    def list_scheduled_tasks(self) -> dict[str, Any]:
+        return self._invoke(self._service.list_scheduled_tasks)
+
+    def save_scheduled_task(self, task: Mapping[str, Any]) -> dict[str, Any]:
+        return self._invoke(self._service.save_scheduled_task, task)
+
+    def delete_scheduled_task(self, task_id: str) -> dict[str, Any]:
+        return self._invoke(self._service.delete_scheduled_task, task_id)
+
+    def run_due_scheduled_tasks(self) -> dict[str, Any]:
+        return self._invoke(self._service.run_due_scheduled_tasks)
+
+    # Account health, tags and custom fields ----------------------------------
+
+    def get_account_health(self, filters: Mapping[str, Any] | None = None) -> dict[str, Any]:
+        return self._invoke(self._service.get_account_health, filters)
+
+    def update_account_tags(self, account_id: str, tags: list[str] | None = None) -> dict[str, Any]:
+        return self._invoke(self._service.update_account_tags, account_id, tags or [])
+
+    def update_account_fields(self, account_id: str, fields: Mapping[str, Any] | None = None) -> dict[str, Any]:
+        return self._invoke(self._service.update_account_fields, account_id, fields or {})
+
+    def set_account_priority(self, account_id: str, priority: int = 0) -> dict[str, Any]:
+        return self._invoke(self._service.set_account_priority, account_id, priority)
+
+    # Servers ------------------------------------------------------------------
+
+    def get_server_registry(self, place_id: str | None = None) -> dict[str, Any]:
+        return self._invoke(self._service.get_server_registry, place_id)
+
+    def record_server_visit(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        return self._invoke(self._service.record_server_visit, payload)
+
+    def update_server_blacklist(self, job_id: str, blacklisted: bool = True, note: str = "") -> dict[str, Any]:
+        return self._invoke(
+            self._service.update_server_blacklist, job_id, blacklisted=blacklisted, note=note
+        )
+
+    def pick_best_server(self, payload: Mapping[str, Any] | None = None) -> dict[str, Any]:
+        return self._invoke(self._service.pick_best_server, payload)
+
+    # Waves and coordination ----------------------------------------------------
+
+    def start_wave_launch(self, account_ids: list[str], target: dict[str, Any] | None = None) -> dict[str, Any]:
+        return self._invoke(self._service.start_wave_launch, account_ids, target)
+
+    def get_wave_status(self) -> dict[str, Any]:
+        return self._invoke(self._service.get_wave_status)
+
+    def plan_coordination(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        return self._invoke(self._service.plan_coordination, payload)
+
+    def run_coordination(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        return self._invoke(self._service.run_coordination, payload)
+
+    # Comfort --------------------------------------------------------------------
+
+    def get_comfort_overview(self, focus_pid: int | None = None) -> dict[str, Any]:
+        return self._invoke(self._service.get_comfort_overview, focus_pid)
+
+    def apply_comfort_action(self, action: str, payload: Mapping[str, Any] | None = None) -> dict[str, Any]:
+        return self._invoke(self._service.apply_comfort_action, action, payload)
+
+    # Alerts ----------------------------------------------------------------------
+
+    def get_alert_settings(self) -> dict[str, Any]:
+        return self._invoke(self._service.get_alert_settings)
+
+    def update_alert_settings(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        return self._invoke(self._service.update_alert_settings, payload)
+
+    def send_alert_test(self) -> dict[str, Any]:
+        return self._invoke(self._service.send_alert_test)
+
+    def get_daily_report(self, send: bool = False) -> dict[str, Any]:
+        return self._invoke(self._service.get_daily_report, send)
+
+    # Macro studio -------------------------------------------------------------------
+
+    def get_macro_studio(self, macro_id: str = "", account_id: str = "") -> dict[str, Any]:
+        return self._invoke(self._service.get_macro_studio, macro_id, account_id)
+
+    def save_key_profile(self, profile: Mapping[str, Any]) -> dict[str, Any]:
+        return self._invoke(self._service.save_key_profile, profile)
+
+    def delete_key_profile(self, name: str) -> dict[str, Any]:
+        return self._invoke(self._service.delete_key_profile, name)
+
+    def update_macro_variables(self, account_id: str, variables: Mapping[str, Any] | None = None) -> dict[str, Any]:
+        return self._invoke(self._service.update_macro_variables, account_id, variables or {})
+
+    def debug_macro(self, macro_id: str, account_id: str = "") -> dict[str, Any]:
+        return self._invoke(self._service.debug_macro, macro_id, account_id)
+
+    def snapshot_macro_version(self, macro_id: str, label: str = "") -> dict[str, Any]:
+        return self._invoke(self._service.snapshot_macro_version, macro_id, label)
+
+    def rollback_macro(self, macro_id: str, version: int = 0) -> dict[str, Any]:
+        return self._invoke(self._service.rollback_macro, macro_id, version)
+
+    def start_group_macro(self, group_id: str, macro_id: str) -> dict[str, Any]:
+        return self._invoke(self._service.start_group_macro, group_id, macro_id)
+
+    # Rules ---------------------------------------------------------------------------
+
+    def get_rules_overview(self) -> dict[str, Any]:
+        return self._invoke(self._service.get_rules_overview)
+
+    def update_rules(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        return self._invoke(self._service.update_rules, payload)
+
+    def get_rejoin_diagnostics(self) -> dict[str, Any]:
+        return self._invoke(self._service.get_rejoin_diagnostics)
+
+    # Launch profiles and emergency stop -----------------------------------------------
+
+    def list_launch_profiles(self) -> dict[str, Any]:
+        return self._invoke(self._service.list_launch_profiles)
+
+    def save_launch_profile(self, profile: Mapping[str, Any]) -> dict[str, Any]:
+        return self._invoke(self._service.save_launch_profile, profile)
+
+    def delete_launch_profile(self, profile_id: str) -> dict[str, Any]:
+        return self._invoke(self._service.delete_launch_profile, profile_id)
+
+    def launch_with_profile(self, profile_id: str, account_ids: list[str] | None = None) -> dict[str, Any]:
+        return self._invoke(self._service.launch_with_profile, profile_id, account_ids)
+
+    def emergency_stop(self, payload: Mapping[str, Any] | None = None) -> dict[str, Any]:
+        return self._invoke(self._service.emergency_stop, payload)
 
     def _invoke(self, action: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
         try:

@@ -16,6 +16,33 @@ from app.backend.roblox.errors import RobloxServiceError
 
 logger = logging.getLogger("astro.auth_tools")
 _JOB_ID = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
+_SHARE_CODE = re.compile(r"^[A-Za-z0-9_-]{8,128}$")
+_INVITE_CODE = re.compile(r"^[A-Za-z0-9_-]{1,256}$")
+
+
+def read_private_server_invite(payload: Any) -> dict[str, Any]:
+    """Read Roblox's share-link response into a place id and private server code.
+
+    Kept as a module function so the parsing can be tested without a network
+    call: every failure mode below has been seen from Roblox at least once.
+    """
+
+    if not isinstance(payload, dict):
+        raise RobloxServiceError("Roblox returned an unreadable share link response.")
+    invite = payload.get("privateServerInviteData")
+    if not isinstance(invite, dict):
+        raise RobloxServiceError("That share link is not an invite to a private server.")
+    status = str(invite.get("status") or "").strip()
+    if status and status.casefold() != "valid":
+        raise RobloxServiceError(f"Roblox reports this private server link as {status.lower()}.")
+    try:
+        place_id = int(invite.get("placeId"))
+    except (TypeError, ValueError) as exc:
+        raise RobloxServiceError("Roblox did not say which place that share link belongs to.") from exc
+    code = invite.get("linkCode") or invite.get("inviteCode") or invite.get("code")
+    if place_id <= 0 or not isinstance(code, str) or not _INVITE_CODE.fullmatch(code):
+        raise RobloxServiceError("Roblox did not return a usable private server code.")
+    return {"place_id": place_id, "link_code": code, "status": status or "Valid"}
 
 
 class RobloxAuthTools:
@@ -140,6 +167,48 @@ class RobloxAuthTools:
         if normalized_port is not None and not 1 <= normalized_port <= 65535:
             normalized_port = None
         return {"address": normalized_address, "port": normalized_port}
+
+    def resolve_share_link(self, cookie: str, share_code: str) -> dict[str, Any]:
+        """Expand a roblox.com/share invite code into a place and private server code.
+
+        A share link holds no place id, so the only honest way to open one is to
+        ask Roblox to resolve it while signed in as the account that will join.
+        """
+
+        if not isinstance(cookie, str) or not cookie.strip():
+            raise RobloxServiceError("A Roblox session is required to open a share link.")
+        if not isinstance(share_code, str) or not _SHARE_CODE.fullmatch(share_code):
+            raise RobloxServiceError("That share link code is invalid.")
+        session = requests.Session()
+        session.headers.update(
+            {
+                "Referer": "https://www.roblox.com/",
+                "Origin": "https://www.roblox.com",
+                "User-Agent": "AstroAccountManager/4.0",
+                "Accept": "application/json",
+                "Content-Type": "application/json",
+            }
+        )
+        session.cookies.set(".ROBLOSECURITY", cookie, domain=".roblox.com")
+        endpoint = "https://apis.roblox.com/sharelinks/v1/resolve-link"
+        body = {"linkId": share_code, "linkType": "Server"}
+        try:
+            response = session.post(endpoint, json=body, timeout=15.0)
+            if response.status_code == 403 and response.headers.get("x-csrf-token"):
+                session.headers["x-csrf-token"] = response.headers["x-csrf-token"]
+                response = session.post(endpoint, json=body, timeout=15.0)
+            if response.status_code == 401:
+                raise RobloxServiceError("This account's Roblox session expired, so the share link could not be opened.")
+            if response.status_code != 200:
+                raise RobloxServiceError(f"Roblox refused to resolve that share link (HTTP {response.status_code}).")
+            payload = response.json()
+        except RobloxServiceError:
+            raise
+        except (requests.RequestException, TypeError, ValueError) as exc:
+            raise RobloxServiceError("Could not reach Roblox to resolve that share link.") from exc
+        finally:
+            session.close()
+        return read_private_server_invite(payload)
 
     def generate_rbx_player_uri(self, auth_ticket: str, place_id: int, job_id: str | None = None) -> str:
         """Format an rbx-player protocol URI using a valid auth ticket."""

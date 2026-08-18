@@ -15,6 +15,9 @@ logger = logging.getLogger("astro.batch_launcher")
 class BatchLauncher:
     """Orchestrates launching a queue of Roblox accounts with configured delays."""
 
+    _WAVE_POLL_SECONDS = 1.0
+    _MAX_WAVE_WAIT_SECONDS = 300.0
+
     def __init__(self, launch_single_fn: Callable[[str, dict[str, Any] | None], dict[str, Any]]) -> None:
         self.launch_single_fn = launch_single_fn
         self._lock = threading.RLock()
@@ -23,6 +26,9 @@ class BatchLauncher:
         self._cancel_event = threading.Event()
         self.queue: list[str] = []
         self.delay_seconds: float = 2.5
+        self.wave_size: int = 0
+        self.wave_pause_seconds: float = 0.0
+        self.ready_check: Callable[[], dict[str, Any]] | None = None
         self.target: dict[str, Any] | None = None
         self.status: dict[str, Any] = {
             "in_progress": False,
@@ -30,9 +36,22 @@ class BatchLauncher:
             "launched": 0,
             "failed": 0,
             "current_account": None,
+            "wave": 0,
+            "waves": 0,
+            "waiting_for_wave": False,
+            "wave_reason": "",
         }
 
-    def start_batch(self, account_ids: list[str], target: dict[str, Any] | None = None, delay_seconds: float = 2.5) -> dict[str, Any]:
+    def start_batch(
+        self,
+        account_ids: list[str],
+        target: dict[str, Any] | None = None,
+        delay_seconds: float = 2.5,
+        *,
+        wave_size: int = 0,
+        wave_pause_seconds: float = 0.0,
+        ready_check: Callable[[], dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
         with self._lock:
             if self.status["in_progress"]:
                 raise ConflictError("A batch launch is already in progress.")
@@ -53,9 +72,24 @@ class BatchLauncher:
             if target is not None and not isinstance(target, dict):
                 raise ValidationError("Batch launch target is invalid.")
 
+            try:
+                normalized_wave = int(wave_size or 0)
+                normalized_pause = float(wave_pause_seconds or 0.0)
+            except (TypeError, ValueError) as exc:
+                raise ValidationError("Batch wave settings must be numbers.") from exc
+            if not 0 <= normalized_wave <= 100:
+                raise ValidationError("A launch wave must hold between 1 and 100 accounts.")
+            if not math.isfinite(normalized_pause) or not 0 <= normalized_pause <= 3600:
+                raise ValidationError("The pause between waves must be between 0 and 3600 seconds.")
+            if ready_check is not None and not callable(ready_check):
+                raise ValidationError("The launch readiness check is invalid.")
+
             self.queue = normalized
             self.target = dict(target) if target is not None else None
             self.delay_seconds = normalized_delay
+            self.wave_size = normalized_wave
+            self.wave_pause_seconds = normalized_pause
+            self.ready_check = ready_check
             self._cancelled = False
             self._cancel_event.clear()
             self.status = {
@@ -64,6 +98,10 @@ class BatchLauncher:
                 "launched": 0,
                 "failed": 0,
                 "current_account": None,
+                "wave": 1 if normalized_wave else 0,
+                "waves": math.ceil(len(self.queue) / normalized_wave) if normalized_wave else 1,
+                "waiting_for_wave": False,
+                "wave_reason": "",
             }
 
             self._thread = threading.Thread(target=self._run_batch, daemon=True)
@@ -80,6 +118,48 @@ class BatchLauncher:
     def get_status(self) -> dict[str, Any]:
         with self._lock:
             return dict(self.status)
+
+    def _wait_for_wave(self, index: int) -> None:
+        """Hold the queue between waves, then wait until the machine is ready.
+
+        The fixed pause always applies.  When a readiness check is wired the
+        launcher then polls it, but never for ever: after the bounded window it
+        continues and says why, because a stuck probe must not strand a batch.
+        """
+
+        with self._lock:
+            self.status["waiting_for_wave"] = True
+            self.status["wave_reason"] = "Pausing between waves."
+        pause = self.wave_pause_seconds if self.wave_pause_seconds else self.delay_seconds
+        self._cancel_event.wait(pause)
+
+        check = self.ready_check
+        if check is not None:
+            deadline = 0.0
+            reason = ""
+            while deadline < self._MAX_WAVE_WAIT_SECONDS and not self._cancel_event.is_set():
+                try:
+                    verdict = check() or {}
+                except Exception:  # noqa: BLE001 - a probe must not break a batch
+                    logger.warning("The launch readiness check failed", exc_info=True)
+                    reason = "The readiness check failed, so the batch continued."
+                    break
+                if verdict.get("allowed", True):
+                    reason = ""
+                    break
+                reason = str(verdict.get("reason") or "Waiting for the machine to free up.")
+                with self._lock:
+                    self.status["wave_reason"] = reason
+                self._cancel_event.wait(self._WAVE_POLL_SECONDS)
+                deadline += self._WAVE_POLL_SECONDS
+            if reason and deadline >= self._MAX_WAVE_WAIT_SECONDS:
+                logger.info("Wave gate timed out: %s", reason)
+
+        with self._lock:
+            self.status["waiting_for_wave"] = False
+            self.status["wave_reason"] = ""
+            if self.wave_size:
+                self.status["wave"] = (index + 1) // self.wave_size + 1
 
     def _run_batch(self) -> None:
         for idx, account_id in enumerate(self.queue):
@@ -102,8 +182,13 @@ class BatchLauncher:
                 with self._lock:
                     self.status["failed"] += 1
 
-            # Sleep delay between launches unless it's the last item
-            if idx < len(self.queue) - 1:
+            if idx >= len(self.queue) - 1:
+                continue
+            # A wave boundary is where the machine gets to breathe: the whole
+            # point of launching 20 alts three at a time.
+            if self.wave_size and (idx + 1) % self.wave_size == 0:
+                self._wait_for_wave(idx)
+            else:
                 self._cancel_event.wait(self.delay_seconds)
 
         with self._lock:

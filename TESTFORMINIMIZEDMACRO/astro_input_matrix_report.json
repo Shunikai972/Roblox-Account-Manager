@@ -1,0 +1,58 @@
+[
+  {
+    "name": "IsIconic 100% Maintained",
+    "expected": "All 3 target HWNDs remain IsIconic == True throughout all actions",
+    "observed": "IsIconic remained True: True",
+    "status": "PASS",
+    "details": {}
+  },
+  {
+    "name": "Physical GetCursorPos Unchanged",
+    "expected": "System cursor position does not move at all during macro inputs",
+    "observed": "Cursor started at (0, 0), remained unchanged: True",
+    "status": "PASS",
+    "details": {}
+  },
+  {
+    "name": "GetForegroundWindow Unchanged",
+    "expected": "Foreground window focus is untouched",
+    "observed": "Foreground HWND remained unchanged: True",
+    "status": "PASS",
+    "details": {}
+  },
+  {
+    "name": "Keyboard Message Isolation per Instance",
+    "expected": "Key events sent to A do not leak to B or C",
+    "observed": "A VKs: [87], B VKs: [65], C VKs: [32, 32, 32, 32, 32, 32, 32, 32, 32, 32]. Exact isolated routing: True",
+    "status": "PASS",
+    "details": {}
+  },
+  {
+    "name": "Key-up Release All Guaranteed",
+    "expected": "All held keys released upon RELEASE_ALL call",
+    "observed": "S1 keys down: 0, S2 keys down: 0, S3 keys down: 0",
+    "status": "PASS",
+    "details": {}
+  },
+  {
+    "name": "Mouse Coordinates Distinct per Instance",
+    "expected": "Independent client mouse coordinates posted to distinct minimized windows",
+    "observed": "Instance A mouse lparam: [14155968], Instance B mouse lparam: [63636992]",
+    "status": "PASS",
+    "details": {}
+  },
+  {
+    "name": "PID Mismatch / Stale create_time Rejection",
+    "expected": "Attach fails if target create_time does not match running process",
+    "observed": "Attach rejected with: Cannot attach: Process PID 27560 is invalid or HWND is closed.",
+    "status": "PASS",
+    "details": {}
+  },
+  {
+    "name": "Strict Non-Minimized Rejection Gate",
+    "expected": "Execution is refused if target window becomes un-minimized (IsIconic=False)",
+    "observed": "Execution allowed: False, Reason: Constraint failed: Window HWND 4262604 for PID 27560 is NOT minimized (IsIconic=False)",
+    "status": "PASS",
+    "details": {}
+  }
+]

@@ -60,6 +60,20 @@ def test_region_and_legacy_api_settings_are_reachable_from_the_frontend() -> Non
     assert "'resolve_server_region'" in bridge
 
 
+def test_roblox_settings_and_window_visibility_are_reachable_from_the_frontend() -> None:
+    source = FRONTEND_APP_SOURCE.read_text(encoding="utf-8")
+    bridge = BRIDGE_SOURCE.read_text(encoding="utf-8")
+    for marker in (
+        'data-form="roblox-global-settings"',
+        'data-form="roblox-settings-profile"',
+        "apply_roblox_settings_profile",
+        "set_instance_visibility",
+        'data-action="show-all-instances"',
+    ):
+        assert marker in source or marker in bridge
+    assert "Only existing scalar XML fields are accepted" in source
+
+
 def test_instance_refresh_resynchronizes_runtime_account_statuses() -> None:
     """The dashboard must not keep an exited account marked as in-game."""
 
@@ -121,6 +135,7 @@ def test_runtime_poll_is_compact_and_never_replaces_an_open_form() -> None:
     assert method is not None
     body = method.group("body")
     assert "this.state.modal" in body
+    assert "this.state.draggedAccountId" in body
     assert "this.bridge.call('get_instance_monitor')" in body
     assert "this.bridge.call('bootstrap')" not in body
 

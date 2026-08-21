@@ -30,6 +30,7 @@ class BatchLauncher:
         self.wave_pause_seconds: float = 0.0
         self.ready_check: Callable[[], dict[str, Any]] | None = None
         self.target: dict[str, Any] | None = None
+        self.per_account_targets: dict[str, dict[str, Any] | None] = {}
         self.status: dict[str, Any] = {
             "in_progress": False,
             "total": 0,
@@ -51,6 +52,7 @@ class BatchLauncher:
         wave_size: int = 0,
         wave_pause_seconds: float = 0.0,
         ready_check: Callable[[], dict[str, Any]] | None = None,
+        per_account_targets: dict[str, dict[str, Any] | None] | None = None,
     ) -> dict[str, Any]:
         with self._lock:
             if self.status["in_progress"]:
@@ -71,6 +73,16 @@ class BatchLauncher:
                 raise ValidationError("Batch launch delay must be between 0.5 and 3600 seconds.")
             if target is not None and not isinstance(target, dict):
                 raise ValidationError("Batch launch target is invalid.")
+            if per_account_targets is not None and not isinstance(per_account_targets, dict):
+                raise ValidationError("Per-account launch targets are invalid.")
+            normalized_targets: dict[str, dict[str, Any] | None] = {}
+            for account_id, account_target in dict(per_account_targets or {}).items():
+                key = str(account_id).strip()
+                if key not in normalized:
+                    raise ValidationError("A per-account target does not belong to this batch.")
+                if account_target is not None and not isinstance(account_target, dict):
+                    raise ValidationError("A per-account launch target is invalid.")
+                normalized_targets[key] = dict(account_target) if account_target is not None else None
 
             try:
                 normalized_wave = int(wave_size or 0)
@@ -86,6 +98,7 @@ class BatchLauncher:
 
             self.queue = normalized
             self.target = dict(target) if target is not None else None
+            self.per_account_targets = normalized_targets
             self.delay_seconds = normalized_delay
             self.wave_size = normalized_wave
             self.wave_pause_seconds = normalized_pause
@@ -171,7 +184,8 @@ class BatchLauncher:
 
             try:
                 logger.info("Launching queued Roblox account %d/%d", idx + 1, len(self.queue))
-                result = self.launch_single_fn(account_id, self.target)
+                target = self.per_account_targets.get(account_id, self.target)
+                result = self.launch_single_fn(account_id, target)
                 with self._lock:
                     if isinstance(result, dict) and result.get("accepted") is False:
                         self.status["failed"] += 1

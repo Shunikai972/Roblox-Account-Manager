@@ -11,6 +11,7 @@ import re
 import struct
 import subprocess
 import sys
+import time
 from typing import Any
 from urllib.parse import urlparse
 
@@ -59,26 +60,42 @@ class UpdateChecker:
         """Fetch release info from GitHub API."""
 
         try:
-            res = requests.get(RELEASES_URL, timeout=5.0, headers={"User-Agent": "AstroAccountManager"})
+            res = requests.get(
+                RELEASES_URL,
+                timeout=5.0,
+                headers={
+                    "Accept": "application/vnd.github+json",
+                    "X-GitHub-Api-Version": "2022-11-28",
+                    "User-Agent": "AstroAccountManager",
+                },
+            )
             if res.status_code == 200:
                 data = res.json()
+                if not isinstance(data, dict):
+                    raise ValueError("The GitHub release payload is not an object.")
                 tag_name = str(data.get("tag_name") or "").lstrip("v")
                 current_key = _version_key(CURRENT_VERSION)
                 latest_key = _version_key(tag_name)
                 has_update = bool(current_key is not None and latest_key is not None and latest_key > current_key)
+                raw_assets = data.get("assets")
+                if raw_assets is None:
+                    raw_assets = []
+                if not isinstance(raw_assets, list):
+                    raise ValueError("The GitHub release asset list is invalid.")
                 return {
                     "current_version": CURRENT_VERSION,
                     "latest_version": tag_name or CURRENT_VERSION,
                     "update_available": has_update,
-                    "release_notes": data.get("body", ""),
-                    "download_url": data.get("html_url", ""),
+                    "release_notes": str(data.get("body") or "")[:100_000],
+                    "download_url": str(data.get("html_url") or "")[:2_048],
+                    "checked_at": int(time.time()),
                     "assets": [
                         {
                             "name": str(asset.get("name") or ""),
                             "size": int(asset.get("size") or 0),
                             "url": str(asset.get("browser_download_url") or ""),
                         }
-                        for asset in data.get("assets", [])
+                        for asset in raw_assets
                         if isinstance(asset, dict)
                     ],
                 }
@@ -129,10 +146,23 @@ class UpdateManager:
 
     def status(self) -> dict[str, Any]:
         manifest = self._read_manifest(self.manifest_path)
+        staged_exists = self.staged_path.is_file()
+        staged_size = self.staged_path.stat().st_size if staged_exists else None
+        declared_size = manifest.get("size") if manifest else None
+        staged_valid = bool(
+            manifest
+            and staged_exists
+            and isinstance(declared_size, int)
+            and declared_size == staged_size
+            and _version_key(str(manifest.get("version") or "")) is not None
+        )
+        pending_exists = self.pending_path.is_file()
         return {
             "frozen": self.runtime_is_frozen,
-            "staged": bool(manifest and self.staged_path.is_file()),
-            "pending_install": self.pending_path.is_file(),
+            "staged": bool(manifest and staged_exists),
+            "staged_valid": staged_valid,
+            "pending_install": pending_exists,
+            "ready_to_install": bool(pending_exists and staged_valid),
             "version": manifest.get("version") if manifest else None,
             "sha256": manifest.get("sha256") if manifest else None,
             "size": manifest.get("size") if manifest else None,
@@ -176,6 +206,7 @@ class UpdateManager:
             "size": len(raw),
             "source": RELEASES_URL,
             "checksum_verified": checksum_verified,
+            "downloaded_at": int(time.time()),
         }
         self._write_manifest(self.manifest_path, manifest)
         return {**manifest, "path": str(self.staged_path), "filename": self.staged_path.name, "staged": True, "frozen": self.runtime_is_frozen}
@@ -190,6 +221,8 @@ class UpdateManager:
             raise UpdateError("No validated update is staged.")
         raw = self.staged_path.read_bytes()
         _validate_pe(raw)
+        if len(raw) != int(manifest.get("size") or 0):
+            raise UpdateError("The staged update size no longer matches its manifest.")
         digest = hashlib.sha256(raw).hexdigest().upper()
         if digest != str(manifest.get("sha256") or "").upper():
             raise UpdateError("The staged update no longer matches its manifest.")
@@ -218,14 +251,35 @@ class UpdateManager:
         target = self.runtime_executable
         if target.suffix.casefold() != ".exe" or not target.is_file():
             return False
+        try:
+            raw = self.staged_path.read_bytes()
+            _validate_pe(raw)
+            digest = hashlib.sha256(raw).hexdigest().upper()
+            if len(raw) != int(pending.get("size") or 0):
+                return False
+            if digest != str(pending.get("sha256") or "").upper():
+                return False
+            if Path(str(pending.get("target") or "")).resolve() != target:
+                return False
+            if Path(str(pending.get("staged") or "")).resolve() != self.staged_path:
+                return False
+        except (OSError, TypeError, ValueError, UpdateError):
+            logger.exception("The pending update failed its final integrity check")
+            return False
         backup = target.with_suffix(".previous.exe")
+        incoming = target.with_suffix(".astro-incoming.exe")
         script = (
             "$ErrorActionPreference='Stop';"
             "$pidToWait=[int]$env:ASTRO_UPDATE_PID;"
-            "try { Wait-Process -Id $pidToWait -Timeout 60 -ErrorAction SilentlyContinue } catch {};"
-            "Start-Sleep -Milliseconds 500;"
+            "$deadline=(Get-Date).AddSeconds(60);"
+            "while ((Get-Process -Id $pidToWait -ErrorAction SilentlyContinue) -and ((Get-Date) -lt $deadline)) { Start-Sleep -Milliseconds 250 };"
+            "if (Get-Process -Id $pidToWait -ErrorAction SilentlyContinue) { exit 3 };"
+            "Remove-Item -LiteralPath $env:ASTRO_UPDATE_INCOMING -Force -ErrorAction SilentlyContinue;"
+            "Copy-Item -LiteralPath $env:ASTRO_UPDATE_SOURCE -Destination $env:ASTRO_UPDATE_INCOMING -Force;"
+            "$incomingHash=(Get-FileHash -LiteralPath $env:ASTRO_UPDATE_INCOMING -Algorithm SHA256).Hash;"
+            "if ($incomingHash -ne $env:ASTRO_UPDATE_SHA256) { Remove-Item -LiteralPath $env:ASTRO_UPDATE_INCOMING -Force -ErrorAction SilentlyContinue; exit 2 };"
             "Copy-Item -LiteralPath $env:ASTRO_UPDATE_TARGET -Destination $env:ASTRO_UPDATE_BACKUP -Force;"
-            "Copy-Item -LiteralPath $env:ASTRO_UPDATE_SOURCE -Destination $env:ASTRO_UPDATE_TARGET -Force;"
+            "Move-Item -LiteralPath $env:ASTRO_UPDATE_INCOMING -Destination $env:ASTRO_UPDATE_TARGET -Force;"
             "Remove-Item -LiteralPath $env:ASTRO_UPDATE_SOURCE -Force -ErrorAction SilentlyContinue;"
             "Remove-Item -LiteralPath $env:ASTRO_UPDATE_MANIFEST -Force -ErrorAction SilentlyContinue;"
             "Remove-Item -LiteralPath $env:ASTRO_UPDATE_PENDING -Force -ErrorAction SilentlyContinue;"
@@ -237,6 +291,8 @@ class UpdateManager:
             "ASTRO_UPDATE_SOURCE": str(self.staged_path),
             "ASTRO_UPDATE_TARGET": str(target),
             "ASTRO_UPDATE_BACKUP": str(backup),
+            "ASTRO_UPDATE_INCOMING": str(incoming),
+            "ASTRO_UPDATE_SHA256": digest,
             "ASTRO_UPDATE_MANIFEST": str(self.manifest_path),
             "ASTRO_UPDATE_PENDING": str(self.pending_path),
         })

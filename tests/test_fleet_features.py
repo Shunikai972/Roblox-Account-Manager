@@ -255,6 +255,23 @@ def test_coordination_plans_stage_every_account_before_anything_launches(tmp_pat
         assert offsets[1] > offsets[0]
         assert len({step["job_id"] for step in spread["steps"]}) == 3
 
+        captured: list[tuple[str, dict | None]] = []
+        service.batch_launcher.launch_single_fn = lambda account_id, target: captured.append((account_id, target)) or {"accepted": True}
+        service.update_settings({"categories": {"launcher": {"delay_seconds": 0.5, "max_concurrent": 3, "wave_pause_seconds": 0}}})
+        started = service.run_coordination(
+            {
+                "mode": "spread",
+                "account_ids": ids,
+                "place_id": "12345",
+                "servers": [JOB_ONE, JOB_TWO, JOB_THREE],
+                "max_per_server": 1,
+            }
+        )
+        assert started["batch"]["in_progress"] is True
+        service.batch_launcher._thread.join(timeout=5)
+        assert [target["job_id"] for _, target in captured] == [JOB_ONE, JOB_TWO, JOB_THREE]
+        assert all(target["place_id"] == "12345" for _, target in captured)
+
         tight = service.plan_coordination(
             {"mode": "spread", "account_ids": ids, "servers": [JOB_ONE, JOB_TWO], "max_per_server": 1}
         )

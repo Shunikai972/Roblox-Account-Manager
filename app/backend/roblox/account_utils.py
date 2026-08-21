@@ -273,4 +273,8 @@ class AccountUtils:
         if res.status_code == 200:
             logger.info("Account PIN unlock requested.")
             return True
+        if res.status_code in (404, 410):
+            raise RobloxServiceError(
+                "Roblox retired the parental Account PIN system; this historical unlock endpoint is no longer available."
+            )
         raise RobloxServiceError(f"Failed to unlock the account PIN (HTTP {res.status_code}).")

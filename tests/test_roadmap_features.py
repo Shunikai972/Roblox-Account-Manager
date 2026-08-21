@@ -148,6 +148,31 @@ def test_discord_rpc_handshake_and_redacted_aggregate_activity() -> None:
     assert b"cookie" not in written.lower()
 
 
+def test_discord_presence_supports_stable_per_game_templates_and_assets() -> None:
+    stream = _RpcStream()
+    manager = DiscordPresenceManager(lambda: stream, process_id=42)
+    rows = [{"place_id": 123, "account_id": "a1", "account_username": "AltOne"}]
+    options = dict(
+        show_account=True,
+        game_lookup=lambda place_id: "Anime Vanguards",
+        details_template="Playing {game}",
+        state_template="{account} · {instances} active",
+        large_image="anime_vanguards",
+        large_text="{game}",
+        game_overrides=[{"place_id": "123", "details": "Farming {game}"}],
+    )
+    first = manager.activity_for_instances(rows, **options)
+    second = manager.activity_for_instances(rows, **options)
+    assert first is not None and second is not None
+    assert first["details"] == "Farming Anime Vanguards"
+    assert first["state"] == "@AltOne · 1 active"
+    assert first["timestamps"]["start"] == second["timestamps"]["start"]
+    manager.publish("123456789", first)
+    command = b"".join(stream.writes)
+    assert b'"assets":{"large_image":"anime_vanguards"' in command
+    assert b'"buttons":[{"label":"View game"' in command
+
+
 def test_support_bundle_redacts_secrets_and_excludes_database(tmp_path: Path) -> None:
     logs = tmp_path / "logs"
     exports = tmp_path / "exports"

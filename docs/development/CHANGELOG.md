@@ -1,5 +1,49 @@
 # Changelog
 
+## 5.1.0 - 2026-08-21
+
+- Rebuilt the Windows onefile/windowed artifact from the 5.1.0 sources
+  (21,039,286 bytes; SHA-256
+  `52CA90BF1D4863EDA85B75F7F4F372A63D42C05F6111DE10767E7057379C7757`).
+- Reworked Dashboard Fleet Control into a full-width launch workspace with a
+  readable group picker, capacity metrics, four explicit actions and a compact
+  machine-health status strip.
+- Rebuilt the Macros page around a three-step Visual/DSL workflow, action
+  library, ordered step cards and clearer saved/live-run panels. Unsaved name,
+  description, account, DSL and block values now survive background refreshes.
+- Replaced the Fleet hourly activity list with an accessible 24-by-7 heatmap,
+  hour axis, daily totals, peak/measurement summary, range switch and tooltips.
+- Parallelized independent Macro runtime and Fleet comfort bridge requests and
+  removed redundant watcher metadata from Dashboard activity rows.
+- Hardened auto-update staging and shutdown replacement: malformed releases,
+  redirects, PE/size/hash tampering and invalid pending payloads are rejected;
+  explicit installs are honored even when automatic install is disabled; and
+  the hidden swap helper now waits correctly on Windows PowerShell 5.1.
+- Live updater smoke test downloaded the official v5.0.0 asset (20,992,263
+  bytes) to an isolated temporary directory, validated its PE header and staged
+  SHA-256, then removed it without installing or launching it.
+- Added a typed, bounded `GlobalBasicSettings_13.xml` manager for FPS, volume,
+  graphics quality, fullscreen and camera mode, with advanced existing-field
+  overrides, atomic writes, readback, profiles and group associations.
+- Added verified-PID Roblox window Hide/Show controls that do not activate the
+  shown window, plus an honest per-instance capability/status surface.
+- Added server quality scoring, filters and multi-account distribution while
+  preserving each account's exact PlaceId/JobId through the batch worker.
+- Added persistent streamer privacy, CPU/RAM instance telemetry, bounded memory
+  growth detection and a read-only Roblox version/compatibility scanner.
+- Expanded Discord Rich Presence with stable elapsed time, templates, protocol-
+  correct assets, HTTPS buttons and per-PlaceId overrides.
+- Fixed the Fleet comfort action that previously reported successful window
+  changes after calling a nonexistent method; it now reports every real result.
+- Fixed secret clipboard error handling, cursor restoration for keyboard-only
+  macros, periodic UI rebuild/drag interruption and failed privacy-toggle rollback.
+- Hardened password/email validation and pinned password changes to explicit
+  JSON plus the exact CSRF retry, preventing ambiguous HTTP 415 requests.
+- Marked legacy parental PIN operations as platform-blocked after Roblox's
+  November 2024 removal instead of advertising a mutation that no longer exists.
+- Validation: 825 passed, 2 platform-conditional skips; Python compilation,
+  JavaScript syntax, bridge parity, `git diff --check` and build dry-run passed.
+
 ## 4.0.3 - 2026-08-14
 
 - Added the bounded block/DSL macro studio with independent concurrent runs pinned to verified Roblox PID creation times. Keyboard input reaches a truly minimized client; coordinate clicks use a 1/255-alpha Windows surface and immediately return it to the taskbar. The macro path does not use Nexus or Roblox injection.

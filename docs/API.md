@@ -28,11 +28,28 @@ Ces réponses sensibles ne sont jamais incluses dans `bootstrap`, les diagnostic
 
 - `launch_account`, `start_batch_launch`, `cancel_batch_launch`, `get_batch_launch_status`
 - `parse_vip_link`, `search_players`, `get_player_presence`, `find_player_server`, `get_random_server`
+- `list_servers(place_id, options)`, `plan_server_distribution(payload)`, `run_server_distribution(payload)`
 - `get_multi_instance_status`, `set_multi_instance`, `get_fps_cap`, `set_fps_cap`, `remove_fps_cap`
+- `get_roblox_settings_manager`, `save_roblox_settings_profile`, `delete_roblox_settings_profile`, `apply_roblox_settings`, `apply_roblox_settings_profile`
 - `list_uwp_packages`, `launch_uwp_package`, `create_uwp_account_clone`, `unregister_uwp_account_clone`
-- `list_instances`, `refresh_instances`, `get_instance_monitor`, `bind_instance`, `close_instance`, `configure_account_watcher`, `position_instance_window`, `capture_instance_window`, `restore_instance_window`, `close_beta_home_windows`
+- `list_instances`, `refresh_instances`, `get_instance_monitor`, `get_instance_visibility`, `set_instance_visibility`, `set_group_visibility`, `get_instance_performance`, `bind_instance`, `close_instance`, `configure_account_watcher`, `position_instance_window`, `capture_instance_window`, `restore_instance_window`, `close_beta_home_windows`
+- `get_compatibility_report`, `acknowledge_roblox_version`
 
 `find_player_server(place_id, user_id, max_pages=10)` reproduit le scan RAM par `playerTokens` et miniatures, avec pagination et lots bornés ; les tokens opaques ne quittent jamais le backend. Les règles automatiques mémoire/titre/timeout exigent `watcher.termination_enabled` et leur option indépendante, ignorent la fenêtre au premier plan et ne ciblent qu’un processus/fenêtre Roblox vérifiés. La capture/restauration de géométrie est opt-in via `instances.remember_window_positions` ; les actions manuelles exigent une confirmation.
+
+La liste de serveurs accepte des options bornées (`sort_by`, `min_free_slots`,
+`avoid_previous`, `avoid_job_ids`) et ajoute un score expliqué. La distribution
+conserve un `LaunchTarget` distinct par compte jusque dans le worker de batch ;
+elle ne remplace jamais les destinations par une cible commune. Les actions
+Hide/Show recherchent uniquement une fenêtre top-level appartenant au PID
+Roblox déjà observé ; Show utilise le mode sans activation et ne vole pas le focus.
+
+Le gestionnaire `GlobalBasicSettings_13.xml` ne modifie que des champs scalaires
+existants et connus, écrit atomiquement, relit le résultat et restaure la valeur
+FPS précédente si une étape échoue. Ces valeurs restent globales à
+l'installation Roblox : l'association profil/groupe choisit quoi appliquer
+avant un lancement, elle ne prétend pas fournir plusieurs réglages globaux
+simultanés à plusieurs processus.
 
 `probe_server_regions(account_id, place_id, job_ids)` reproduit la sonde RAM
 `join-game-instance` avec la session sélectionnée, au plus 16 serveurs, puis
@@ -46,11 +63,18 @@ La fermeture d’une instance requiert l’activation globale et une confirmatio
 
 ### Utilitaires authentifiés
 
-`change_account_password`, `change_account_email`, `logout_all_account_sessions`, `set_account_display_name`, `send_account_friend_request`, `block_account_user`, `unblock_account_user`, `get_account_blocked_list`, `unblock_all_account_users`, `quick_log_in_account`, `set_account_follow_privacy`, `unlock_account_pin` et `set_account_avatar` sont raccordés à Accounts → Utilities.
+`change_account_password`, `change_account_email`, `logout_all_account_sessions`, `set_account_display_name`, `send_account_friend_request`, `block_account_user`, `unblock_account_user`, `get_account_blocked_list`, `unblock_all_account_users`, `quick_log_in_account`, `set_account_follow_privacy`, `unlock_account_pin` et `set_account_avatar` sont raccordés à Accounts → Utilities. Le changement de mot de passe utilise un corps JSON explicite et rejoue exactement la requête après le challenge CSRF, ce qui couvre le défaut HTTP 415 historique. `unlock_account_pin` est conservé comme diagnostic legacy : Roblox ayant retiré l'Account PIN parental, une réponse 404/410 devient une explication claire et non un faux succès.
 
 ### Maintenance
 
 `get_settings`, `update_settings`, `reset_settings`, `get_windows_startup_status`, `set_windows_startup`, `get_activity`, `get_notifications`, `dismiss_notification`, `backup_data`, `list_backups`, `restore_backup`, `export_metadata`, `import_metadata`, `migrate_legacy`, `get_diagnostics` et `check_for_updates`.
+
+`appearance.privacy_mode` est persistant. Il masque noms/UserId, floute les
+avatars et interdit à Discord RPC d'inclure l'alias. La télémétrie de processus
+est en lecture seule, bornée à 240 points et ne fabrique ni FPS ni débit réseau
+lorsque ces mesures ne sont pas disponibles. Le scanner de compatibilité ne
+lance jamais Roblox ; l'enregistrement d'une version testée exige une action
+confirmée distincte.
 
 ## API HTTP loopback
 

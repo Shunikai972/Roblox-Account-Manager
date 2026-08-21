@@ -107,8 +107,18 @@ class DesktopBridge:
     def remove_game(self, place_id: int | str) -> dict[str, Any]:
         return self._invoke(self._service.remove_game, place_id)
 
-    def list_servers(self, place_id: int | str) -> list[dict[str, Any]]:
-        return self._invoke(self._service.list_servers, place_id)
+    def list_servers(self, place_id: int | str, options: Mapping[str, Any] | None = None) -> list[dict[str, Any]]:
+        return self._invoke(self._service.list_servers, place_id, options)
+
+    def plan_server_distribution(
+        self, account_ids: list[str], place_id: int | str, max_per_server: int = 1, options: Mapping[str, Any] | None = None
+    ) -> dict[str, Any]:
+        return self._invoke(self._service.plan_server_distribution, account_ids, place_id, max_per_server, options)
+
+    def run_server_distribution(
+        self, account_ids: list[str], place_id: int | str, max_per_server: int = 1, options: Mapping[str, Any] | None = None
+    ) -> dict[str, Any]:
+        return self._invoke(self._service.run_server_distribution, account_ids, place_id, max_per_server, options)
 
     def resolve_server_region(self, address: str) -> dict[str, Any]:
         return self._invoke(self._service.resolve_server_region, address)
@@ -161,6 +171,24 @@ class DesktopBridge:
 
     def get_instance_monitor(self) -> dict[str, Any]:
         return self._invoke(self._service.get_instance_monitor)
+
+    def get_instance_visibility(self, pid: int | None = None) -> dict[str, Any]:
+        return self._invoke(self._service.get_instance_visibility, pid)
+
+    def get_instance_performance(self, pid: int | None = None, include_history: bool = False) -> dict[str, Any]:
+        return self._invoke(self._service.get_instance_performance, pid, include_history=include_history)
+
+    def get_compatibility_report(self) -> dict[str, Any]:
+        return self._invoke(self._service.get_compatibility_report)
+
+    def acknowledge_roblox_version(self, confirm: bool = False) -> dict[str, Any]:
+        return self._invoke(self._service.acknowledge_roblox_version, confirm=confirm)
+
+    def set_instance_visibility(self, pid: int, visible: bool) -> dict[str, Any]:
+        return self._invoke(self._service.set_instance_visibility, pid, visible)
+
+    def set_group_visibility(self, group_id: str, visible: bool) -> dict[str, Any]:
+        return self._invoke(self._service.set_group_visibility, group_id, visible)
 
     def close_instance(self, pid: int, confirm: bool = False) -> dict[str, Any]:
         return self._invoke(self._service.close_instance, pid, confirm=confirm)
@@ -251,6 +279,21 @@ class DesktopBridge:
 
     def remove_fps_cap(self) -> dict[str, Any]:
         return self._invoke(self._service.remove_fps_cap)
+
+    def get_roblox_settings_manager(self, query: str = "") -> dict[str, Any]:
+        return self._invoke(self._service.get_roblox_settings_manager, query)
+
+    def save_roblox_settings_profile(self, profile: Mapping[str, Any]) -> dict[str, Any]:
+        return self._invoke(self._service.save_roblox_settings_profile, profile)
+
+    def delete_roblox_settings_profile(self, profile_id: str) -> dict[str, Any]:
+        return self._invoke(self._service.delete_roblox_settings_profile, profile_id)
+
+    def apply_roblox_settings(self, payload: Mapping[str, Any], confirm: bool = False) -> dict[str, Any]:
+        return self._invoke(self._service.apply_roblox_settings, payload, confirm=confirm)
+
+    def apply_roblox_settings_profile(self, profile_id: str, confirm: bool = False) -> dict[str, Any]:
+        return self._invoke(self._service.apply_roblox_settings_profile, profile_id, confirm=confirm)
 
     def start_batch_launch(self, account_ids: list[str], target: dict[str, Any] | None = None, delay_seconds: float = 2.5) -> dict[str, Any]:
         return self._invoke(self._service.start_batch_launch, account_ids, target, delay_seconds)

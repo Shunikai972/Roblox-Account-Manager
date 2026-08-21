@@ -13,6 +13,7 @@ from .process_monitor import (
     TerminationResult,
     TerminationStatus,
 )
+from .performance_telemetry import InstancePerformanceTelemetry
 from .roblox_log_watcher import RobloxLogEvent, RobloxLogEventKind, RobloxLogSnapshot, RobloxLogTailer
 from .roblox_log_runtime import (
     RobloxInstanceLogEvent,
@@ -24,6 +25,7 @@ from .roblox_log_runtime import (
 )
 
 __all__ = [
+    "InstancePerformanceTelemetry",
     "InstanceState",
     "LaunchIntent",
     "MonitorEvent",

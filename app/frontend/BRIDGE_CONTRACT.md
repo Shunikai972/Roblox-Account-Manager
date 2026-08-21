@@ -67,7 +67,9 @@ collections, although a complete desktop response should provide every field.
 | `get_game` | `place_id: string` | `Game` with optional `description`. |
 | `set_game_favorite` | `place_id: string | number`, `favorite: boolean` | Updated local `Game`; does not modify recency. |
 | `remove_game` | `place_id: string | number` | `{ deleted: number }`; removes the local game record and favourite marker. |
-| `list_servers` | `place_id: string` | `Server[]`. |
+| `list_servers` | `place_id: string`, `options?: {sort_by, min_free_slots, avoid_previous, avoid_job_ids}` | Ranked `Server[]` with `score`, `score_breakdown`, eligibility and bounded filters. |
+| `plan_server_distribution` | `{account_ids, place_id, max_accounts_per_server, ...filters}` | A dry-run assignment preserving one exact JobId per account; never launches. |
+| `run_server_distribution` | same payload, `confirm: boolean` | Starts the isolated batch only with `confirm: true`; every account keeps its planned target. |
 | `resolve_server_region` | `address: string` | `{ region: string | null, enabled: boolean, reason: string | null }`; opt-in and never echoes the address. |
 | `probe_server_regions` | `account_id: string`, `place_id: string`, `job_ids: string[]` | At most 16 authenticated results containing JobId, redacted region, ping and status; never returns the machine address. |
 | `launch_account` | `id: string`, `target: LaunchTarget \| null` | `{ accepted: boolean, account_id: string }`. |
@@ -78,6 +80,12 @@ collections, although a complete desktop response should provide every field.
 | `list_instances` | — | `Instance[]`. |
 | `refresh_instances` | — | `Instance[]`. |
 | `get_instance_monitor` | — | `{ instances, events, log_watcher, log_events, pending_restarts, last_scan_complete, termination_enabled }`. `log_events` is a bounded, typed and redacted local Player-log history; it contains no path, filename or raw log line and never requests process control. |
+| `get_instance_visibility` | `pid?: number` | Capability plus verified PID-owned top-level window states; no focus change. |
+| `set_instance_visibility` | `pid: number`, `visible: boolean` | Hides or shows one observed Roblox window without activation. |
+| `set_group_visibility` | `group_id: string`, `visible: boolean` | Applies the same PID-verified operation to observed instances in one group and reports every result/failure. |
+| `get_instance_performance` | `pid?: number`, `include_history?: boolean` | Read-only CPU/RAM sample, bounded history and conservative memory-growth assessment. |
+| `get_compatibility_report` | — | Read-only Roblox version and feature capability report; never launches a client. |
+| `acknowledge_roblox_version` | `confirm: boolean` | Records the current installed version as explicitly tested; requires `confirm: true`. |
 | `get_multi_instance_status` | — | `{ supported, enabled, configured, restart_required, handle_count }`. |
 | `set_multi_instance` | `enabled: boolean` | Persists the preference and applies the mutex immediately; `restart_required` is true when Roblox was already open. |
 | `close_instance` | `pid: number`, `confirm: boolean` | Graceful local close result; requires `confirm: true` and a backend opt-in. |
@@ -90,6 +98,11 @@ collections, although a complete desktop response should provide every field.
 | `reset_settings` | `category: string \| null`, `confirm: boolean` | Restores one canonical category or all settings to defaults; requires `confirm: true` and preserves accounts/data. |
 | `get_windows_startup_status` | — | Current-user Windows Run capability and Astro registration state, without a command or filesystem path. |
 | `set_windows_startup` | `enabled: boolean`, `confirm: boolean` | Explicitly enables/disables Astro's own Run value; rejects unconfirmed calls and never registers `python.exe` from a development runtime. |
+| `get_roblox_settings_manager` | `query?: string` | Current bounded `GlobalBasicSettings_13.xml` values, capability, profiles and group associations. |
+| `save_roblox_settings_profile` | `profile` | Creates/updates a validated profile; a group can reference at most one profile. |
+| `delete_roblox_settings_profile` | `profile_id: string` | Deletes the profile and its group association only. |
+| `apply_roblox_settings` | `payload`, `confirm: boolean` | Atomically applies typed existing XML fields plus FPS cap with rollback; requires confirmation. |
+| `apply_roblox_settings_profile` | `profile_id: string`, `confirm: boolean` | Applies one persisted profile under the same confirmation/rollback rules. |
 | `get_activity` | — | `Activity[]`. |
 | `get_notifications` | — | `Notification[]`. |
 | `dismiss_notification` | `id: string` | `{ dismissed: string }`. |
@@ -307,6 +320,7 @@ The app currently consumes these persisted keys:
   "accent": "#9c85ff",
   "density": "comfortable",
   "reduce_motion": false,
+  "privacy_mode": false,
   "launch_behavior": "confirm",
   "close_when_empty": false,
   "watcher_enabled": true,
@@ -385,6 +399,12 @@ plaintext file under Astro’s export directory. None of these values may be
 placed in application state, Preview data, diagnostics, logs or portable
 metadata. PreviewBridge rejects every method in this section.
 
+Password and email changes use validated explicit JSON bodies and an exact
+CSRF-challenge retry; they never fall back to an ambiguous form body. The
+legacy PIN method cannot create a PIN. Roblox retired parental Account PINs in
+November 2024, so HTTP 404/410 is reported as a platform removal rather than a
+successful unlock.
+
 ### Local API settings
 
 `categories.api` contains `enabled`, `host`, `port`, `allow_external`, `allow_get_cookie`,
@@ -409,7 +429,7 @@ never returns a machine address to JavaScript.
 The native bridge also exposes:
 
 - `list_macros()`, `save_macro(payload)`, `delete_macro(id, confirm)`, `start_macro(id, pid)`, `stop_macro(run_id)`, `list_macro_runs()`;
-- `get_discord_presence_status()`, `refresh_discord_presence()`;
+- `get_discord_presence_status()`, `refresh_discord_presence()`; RPC supports bounded templates, published assets, HTTPS buttons and PlaceId-specific overrides while keeping the elapsed timestamp stable for the same activity;
 - `get_update_status()`, `check_for_updates()`, `download_update(confirm)`, `schedule_update_install(confirm)`, `cancel_update(confirm)`;
 - `get_roblox_background_status()`, `close_running_roblox(confirm)`;
 - `launch_account_from_private_link(account_id, link)` and `export_support_bundle()`;

@@ -69,6 +69,75 @@ def test_fps_cap_updates_and_restores_roblox_global_frame_cap(tmp_path: Path):
     assert patcher.global_settings_file.read_text(encoding="utf-8") == original
 
 
+def test_global_roblox_settings_are_typed_atomic_and_profile_ready(tmp_path: Path):
+    patcher = ClientSettingsPatcher(local_app_data=tmp_path)
+    patcher.roblox_root.mkdir(parents=True)
+    original = """<?xml version="1.0" encoding="utf-8"?>
+<roblox><Item><Properties>
+<int name="FramerateCap">60</int>
+<float name="MasterVolume">1</float>
+<int name="GraphicsQualityLevel">5</int>
+<token name="SavedQualityLevel">5</token>
+<bool name="Fullscreen">true</bool>
+<token name="CameraMode">0</token>
+<string name="Unrelated">keep</string>
+</Properties></Item></roblox>
+"""
+    patcher.global_settings_file.write_text(original, encoding="utf-8")
+
+    result = patcher.apply_global_settings(
+        {
+            "MasterVolume": 0.25,
+            "GraphicsQualityLevel": 1,
+            "SavedQualityLevel": 1,
+            "Fullscreen": False,
+        }
+    )
+
+    assert result["basic"] == {
+        "fps": 60,
+        "volume_percent": 25,
+        "graphics_quality": 1,
+        "fullscreen": False,
+        "camera_mode": 0,
+    }
+    assert patcher.global_settings_backup_file.read_text(encoding="utf-8") == original
+    assert next(row for row in result["advanced"] if row["name"] == "Unrelated")["value"] == "keep"
+
+
+def test_global_roblox_settings_reject_unknown_or_out_of_range_values(tmp_path: Path):
+    patcher = ClientSettingsPatcher(local_app_data=tmp_path)
+    patcher.roblox_root.mkdir(parents=True)
+    patcher.global_settings_file.write_text(
+        '<roblox><float name="MasterVolume">1</float><bool name="Fullscreen">false</bool></roblox>',
+        encoding="utf-8",
+    )
+
+    with pytest.raises(Exception, match="does not exist"):
+        patcher.apply_global_settings({"InventedSetting": 1})
+    with pytest.raises(Exception, match="supported range"):
+        patcher.apply_global_settings({"MasterVolume": 2})
+    with pytest.raises(Exception, match="true or false"):
+        patcher.apply_global_settings({"Fullscreen": "maybe"})
+
+
+def test_removing_fps_preserves_other_global_settings_changed_after_backup(tmp_path: Path):
+    patcher = ClientSettingsPatcher(local_app_data=tmp_path)
+    patcher.roblox_root.mkdir(parents=True)
+    patcher.global_settings_file.write_text(
+        '<roblox><int name="FramerateCap">60</int><float name="MasterVolume">1</float></roblox>',
+        encoding="utf-8",
+    )
+    assert patcher.set_fps_cap(144) is True
+    patcher.apply_global_settings({"MasterVolume": 0.2})
+
+    assert patcher.remove_fps_cap() is True
+
+    current = patcher.read_global_settings()
+    assert current["basic"]["fps"] == 60
+    assert current["basic"]["volume_percent"] == 20
+
+
 def test_client_settings_invalid_json_is_never_overwritten(tmp_path: Path):
     patcher = ClientSettingsPatcher(local_app_data=tmp_path)
     patcher.settings_dir.mkdir(parents=True)
@@ -110,6 +179,25 @@ def test_batch_launcher_rejects_duplicates_and_counts_rejected_launches():
     assert launcher.get_status()["failed"] == 1
 
 
+def test_batch_launcher_keeps_each_accounts_destination_isolated():
+    launches: list[tuple[str, dict | None]] = []
+    launcher = BatchLauncher(launch_single_fn=lambda account_id, target: launches.append((account_id, target)) or {"accepted": True})
+    launcher.start_batch(
+        ["alt1", "alt2"],
+        {"place_id": "1"},
+        delay_seconds=0.5,
+        per_account_targets={
+            "alt1": {"place_id": "1", "job_id": "server-a"},
+            "alt2": {"place_id": "2", "job_id": "server-b"},
+        },
+    )
+    launcher._thread.join(timeout=2)
+    assert launches == [
+        ("alt1", {"place_id": "1", "job_id": "server-a"}),
+        ("alt2", {"place_id": "2", "job_id": "server-b"}),
+    ]
+
+
 def test_automations_service_and_bridge_integration(tmp_path: Path):
     paths = _paths(tmp_path)
     repo = SQLiteRepository(paths.database)
@@ -131,6 +219,74 @@ def test_automations_service_and_bridge_integration(tmp_path: Path):
     assert res_rem["success"] is True
 
     service.close()
+
+
+def test_roblox_settings_profiles_are_grouped_persisted_and_confirmed(tmp_path: Path):
+    paths = _paths(tmp_path)
+    patcher = ClientSettingsPatcher(local_app_data=tmp_path)
+    patcher.roblox_root.mkdir(parents=True)
+    patcher.global_settings_file.write_text(
+        """<roblox><int name="FramerateCap">60</int><float name="MasterVolume">1</float>
+<int name="GraphicsQualityLevel">5</int><token name="SavedQualityLevel">5</token>
+<bool name="Fullscreen">true</bool><token name="CameraMode">0</token></roblox>""",
+        encoding="utf-8",
+    )
+    service = ApplicationService(paths=paths, client_settings=patcher)
+    bridge = DesktopBridge(service)
+    try:
+        group = bridge.create_group({"name": "Farm"})
+        saved = bridge.save_roblox_settings_profile(
+            {
+                "name": "LOW RESOURCE FARM",
+                "group_id": group["id"],
+                "values": {
+                    "fps": 60,
+                    "volume_percent": 0,
+                    "graphics_quality": 1,
+                    "fullscreen": False,
+                    "camera_mode": 0,
+                },
+            }
+        )
+        profile = saved["profiles"][0]
+        assert profile["group_id"] == group["id"]
+        assert profile["values"]["graphics_quality"] == 1
+
+        with pytest.raises(Exception, match="confirmation"):
+            bridge.apply_roblox_settings_profile(profile["id"], False)
+        applied = bridge.apply_roblox_settings_profile(profile["id"], True)
+        assert applied["applied_profile"]["name"] == "LOW RESOURCE FARM"
+        assert applied["basic"]["volume_percent"] == 0
+        assert applied["basic"]["graphics_quality"] == 1
+        assert applied["basic"]["fullscreen"] is False
+
+        # Profiles use the existing settings repository: no schema migration,
+        # and the association survives a service-level readback.
+        assert bridge.get_roblox_settings_manager()["profiles"][0]["name"] == "LOW RESOURCE FARM"
+        assert bridge.delete_roblox_settings_profile(profile["id"])["profiles"] == []
+    finally:
+        service.close()
+
+
+def test_roblox_settings_profile_rolls_back_fps_when_xml_change_is_rejected(tmp_path: Path):
+    paths = _paths(tmp_path)
+    patcher = ClientSettingsPatcher(local_app_data=tmp_path)
+    patcher.roblox_root.mkdir(parents=True)
+    patcher.global_settings_file.write_text(
+        '<roblox><int name="FramerateCap">60</int><float name="MasterVolume">1</float></roblox>',
+        encoding="utf-8",
+    )
+    assert patcher.set_fps_cap(144) is True
+    service = ApplicationService(paths=paths, client_settings=patcher)
+    try:
+        with pytest.raises(Exception, match="does not exist"):
+            service.apply_roblox_settings(
+                {"fps": 60, "advanced": {"MissingSetting": 1}},
+                confirm=True,
+            )
+        assert patcher.get_fps_cap() == 144
+    finally:
+        service.close()
 
 
 def test_default_client_settings_path_uses_validated_roblox_version(monkeypatch, tmp_path: Path):

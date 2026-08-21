@@ -6,8 +6,9 @@ SQLite, DPAPI Windows et une interface HTML/CSS/JavaScript.
 
 L'objectif est une parité fonctionnelle prouvée, jamais un « 100 % » déclaré
 sur la base de mocks. La [matrice canonique](docs/user-guide/FEATURE_MATRIX.md)
-compte actuellement 48 fonctionnalités `VERIFIED PARITY`, aucune `PARTIAL` et
-37 `TESTED BUT NOT VERIFIED`. Ces dernières sont implémentées et testées, mais
+compte actuellement 51 fonctionnalités `VERIFIED PARITY`, aucune `PARTIAL`,
+38 `TESTED BUT NOT VERIFIED` et 1 `BLOCKED` par le retrait du PIN parental côté
+Roblox. Les fonctionnalités non vérifiées sont implémentées et testées, mais
 attendent encore un prérequis externe précis. Les preuves sont détaillées dans le
 [rapport QA du 11 août 2026](docs/QA_MATRIX_2026-08-11.md).
 
@@ -29,9 +30,14 @@ attendent encore un prérequis externe précis. Les preuves sont détaillées da
 - groupes, tri persistant, recherche, alias, descriptions, champs, avatars et
   présence ;
 - utilitaires authentifiés : mot de passe, email, sessions, display name, amis,
-  blocage, confidentialité, PIN, avatar et Quick Log In ;
+  blocage, confidentialité, avatar et Quick Log In ; diagnostic explicite du
+  retrait Roblox pour l'ancien PIN parental ;
 - Nexus WebSocket avec handshake authentifié et commandes RAM/Lua ;
-- découverte et clones UWP confirmés, ClientSettings/FPS natif et positionnement de fenêtres ;
+- découverte et clones UWP confirmés, gestionnaire typé des réglages Roblox avec
+  profils de groupe, visibilité Hide/Show par PID et positionnement de fenêtres ;
+- classement intelligent des serveurs, distribution JobId isolée par compte,
+  mode streamer persistant, télémétrie CPU/RAM et scanner de compatibilité ;
+- Discord Rich Presence configurable par jeu avec templates, assets et redaction ;
 - API loopback/LAN opt-in compatible RAM, bearer obligatoire et permissions séparées ;
 - migration 3.7.2, backups vérifiés, restauration confirmée et transfert de
   métadonnées publiques.
@@ -54,7 +60,7 @@ node --check app/frontend/src/app.js
 node --check app/frontend/src/bridge.js
 ```
 
-Dernier résultat complet : **360 tests passés, 2 ignorés**, sans lancer ni fermer Roblox.
+Dernier résultat complet : **825 tests passés, 2 ignorés**, sans lancer ni fermer Roblox.
 
 ## Build Windows
 
@@ -63,9 +69,10 @@ python -m pip install ".[dev]"
 python scripts/build_windows.py
 ```
 
-Artefact actuel : `dist/AstroAccountManager.exe`, 20 781 538 octets,
-SHA-256
-`39B85AAED6286CB3C375CBE4EF7C5B6837166ABECBCA0D09B9A1A0E6C4A07D23`.
+Artefact 5.1.0 reconstruit le 21 août 2026 :
+`dist/AstroAccountManager.exe`, **21 039 286 octets**, SHA-256
+`52CA90BF1D4863EDA85B75F7F4F372A63D42C05F6111DE10767E7057379C7757`.
+Le build est un PyInstaller onefile/windowed et embarque `app/frontend`.
 
 Consultez aussi [l'audit d'intégration](docs/architecture/FINAL_AUDIT.md), le
 [registre de portage](docs/PORTING_LEDGER.md) et la

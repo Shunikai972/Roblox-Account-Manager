@@ -84,8 +84,9 @@ def test_webhook_fields_are_write_only_in_the_form() -> None:
 
 
 def test_the_visual_editor_offers_the_four_control_blocks() -> None:
+    assert 'data-action="add-macro-block" data-kind="' in APP_JS
     for kind in ("condition", "launch", "teleport", "restart"):
-        assert 'data-action="add-macro-block" data-kind="' + kind + '"' in APP_JS, kind
+        assert "['" + kind + "'," in APP_JS, kind
         assert "'" + kind + "': {" in APP_JS or kind + ": { type: '" + kind + "'" in APP_JS, kind
 
 
@@ -119,9 +120,39 @@ def test_only_conditions_the_engine_can_answer_are_offered() -> None:
 
 
 def test_the_dsl_hint_lists_the_new_commands() -> None:
-    hint = APP_JS.split("Commands: WAIT")[1][:200]
-    for command in ("IF/END", "LAUNCH", "TELEPORT", "RESTART"):
+    hint = APP_JS.split('macro-command-strip')[1][:800]
+    for command in ("IF", "LAUNCH", "TELEPORT", "RESTART"):
         assert command in hint, command
+
+
+def test_dashboard_fleet_control_is_a_full_width_action_workspace() -> None:
+    assert "renderFleetCard()" in APP_JS
+    assert 'class="panel fleet-control-card"' in APP_JS
+    for action in ("smart-launch-preview", "apply-resource-plan", "stop-all-macros", "smart-launch-group"):
+        assert 'data-action="' + action + '"' in APP_JS
+
+
+def test_hourly_activity_is_a_labelled_24_by_7_grid() -> None:
+    heatmap = APP_JS.split("renderFleetStats() {")[1].split("renderFleetSchedule()", 1)[0]
+    assert "Array.from({ length: 24 }" in heatmap
+    assert 'role="img" aria-label="' in heatmap
+    assert "heatmap-scroll" in heatmap
+    assert "heatmap-summary" in heatmap
+    assert "heatmap-legend" in heatmap
+
+
+def test_macro_editor_preserves_dsl_and_can_reorder_visual_steps() -> None:
+    assert "macroDraftSource: ''" in APP_JS
+    assert "macroDraftName: ''" in APP_JS
+    assert "macroDraftDescription: ''" in APP_JS
+    assert "macroDraftAccountId: ''" in APP_JS
+    assert "this.state.macroDraftSource = input.value;" in APP_JS
+    assert "this.state.macroDraftName = input.value;" in APP_JS
+    assert "this.state.macroDraftDescription = input.value;" in APP_JS
+    assert "this.state.macroDraftAccountId = target.value;" in APP_JS
+    assert "action === 'move-macro-block'" in APP_JS
+    assert "this.state.macroDraftBlocks.splice(to, 0, moved);" in APP_JS
+    assert 'aria-label="Macro workflow"' in APP_JS
 
 
 def test_the_fleet_screen_states_what_it_measures_without_promising_more() -> None:

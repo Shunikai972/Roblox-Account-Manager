@@ -38,6 +38,7 @@ from .types import (
     UserPresence,
 )
 from .uwp import UwpLaunchResult, UwpRobloxPackage, WindowsUwpRobloxManager
+from .window_visibility import WindowVisibilityManager, WindowVisibilitySnapshot
 
 __all__ = [
     "AuthenticatedUser",
@@ -72,6 +73,8 @@ __all__ = [
     "WindowsMultiInstanceController",
     "WindowsRobloxLauncher",
     "WindowsUwpRobloxManager",
+    "WindowVisibilityManager",
+    "WindowVisibilitySnapshot",
     "UwpLaunchResult",
     "UwpRobloxPackage",
     "UserPresence",

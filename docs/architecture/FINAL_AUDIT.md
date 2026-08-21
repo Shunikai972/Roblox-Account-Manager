@@ -1,6 +1,6 @@
-# Audit d'intégration — Astro Account Manager 4.0.0a1
+# Audit d'intégration — Astro Account Manager 5.1.0
 
-Audit actualisé le 11 août 2026 dans
+Audit actualisé le 21 août 2026 dans
 `D:\Noam\Downloads\Code Account manager`, après comparaison RAM 3.7.2,
 correctifs de lancement, tests automatisés, essais Windows/Roblox réels et
 reconstruction de l'EXE.
@@ -19,9 +19,9 @@ confirmés par le watcher et les logs. Le multi-instance est donc réellement
 validé sur cette machine, et plus seulement simulé.
 
 Le projet ne doit toutefois pas être déclaré « terminé à 100 % ». La matrice
-compte encore **5 fonctionnalités `PARTIAL`** et **26 `TESTED BUT NOT VERIFIED`**.
-Elles restent des travaux ou validations explicites, pas des limitations
-transformées artificiellement en fin de projet.
+compte **0 fonctionnalité `PARTIAL`**, **38 `TESTED BUT NOT VERIFIED`** et
+**1 `BLOCKED`** par le retrait du PIN parental côté Roblox. Les validations
+externes restantes ne sont pas transformées artificiellement en parité.
 
 ## Synthèse fonctionnelle
 
@@ -37,9 +37,9 @@ transformées artificiellement en fin de projet.
 | Auto-relaunch | crash réel, nouveau PID et bonne cible/session | VERIFIED PARITY |
 | Fenêtres Roblox | déplacement, capture et restauration réels | VERIFIED PARITY |
 | Recherche jeux | endpoint Omni réel, cache borné | VERIFIED PARITY |
-| API RAM | 22 routes exercées individuellement sur HTTP loopback réel | PARTIAL |
+| API RAM | 22 routes exercées individuellement sur HTTP loopback réel | VERIFIED PARITY |
 | Auth API RAM | bearer + password historique opt-in testés sur loopback | TESTED BUT NOT VERIFIED |
-| Région serveur | transport/cache/UI portés sans requête terrain | PARTIAL |
+| Région serveur | transport/cache/UI portés sans requête terrain | TESTED BUT NOT VERIFIED |
 | Nexus | serveur WebSocket/handshake/messages réels en local | TESTED BUT NOT VERIFIED |
 | UWP | lecture Windows réelle, aucun paquet Roblox installé | TESTED BUT NOT VERIFIED |
 | Frontend | trois résolutions, clavier, contrat bridge et actions | VERIFIED PARITY |
@@ -52,12 +52,12 @@ passe est consignée dans [QA_MATRIX_2026-08-11.md](../QA_MATRIX_2026-08-11.md).
 
 | Statut | Nombre |
 |---|---:|
-| Total | 77 |
-| VERIFIED PARITY | 46 |
-| PARTIAL | 5 |
-| TESTED BUT NOT VERIFIED | 26 |
+| Total | 90 |
+| VERIFIED PARITY | 51 |
+| PARTIAL | 0 |
+| TESTED BUT NOT VERIFIED | 38 |
 | MISSING | 0 |
-| BLOCKED | 0 |
+| BLOCKED | 1 |
 
 ## Validation exécutée
 
@@ -66,15 +66,15 @@ python -m pytest -q
 python -m compileall -q app main.py scripts\build_windows.py
 node --check app/frontend/src/app.js
 node --check app/frontend/src/bridge.js
-python scripts\build_windows.py
+python scripts\build_windows.py --dry-run
 ```
 
 Résultats :
 
-- **360 tests passés, 2 ignorés, 0 échec** en 81,51 s après le lot roadmap du 14 août ;
+- **825 tests passés, 2 ignorés, 0 échec** en 105,13 s après la passe du 21 août ;
 - compilation Python et syntaxe JavaScript sans erreur ;
 - les 22 routes historiques testées une par une sur un serveur loopback réel ;
-- 81 actions frontend déclarées, 82 handlers click et 24 formulaires gérés ;
+- 189 méthodes bridge alignées, 147 actions frontend toutes prises en charge ;
 - interface inspectée à 1080×680, 1366×768 et 1500×960 ;
 - deux sessions Roblox réelles revalidées sans imprimer cookie ni ticket ;
 - deux vrais clients simultanés, puis fermeture séparée et réconciliation
@@ -82,41 +82,39 @@ Résultats :
 - crash/relaunch réel : nouveau PID, compte et Place ID corrects ;
 - ClientSettings réel : FPS 144 écrit, vérifié, retiré, fichier original
   restauré avec le même SHA ;
-- EXE final démarré avec une fenêtre répondante `Astro Account Manager`.
+- PyInstaller onefile/windowed 5.1.0 reconstruit avec le frontend embarqué ;
+  l'EXE n'a pas été lancé pendant la session Roblox active de l'utilisateur.
 
-## Artefact actuel
+## Artefact 5.1.0 courant
 
 - chemin : `dist/AstroAccountManager.exe` ;
-- taille : **20 781 538 octets** ;
+- taille : **21 039 286 octets** ;
 - SHA-256 :
-  `39B85AAED6286CB3C375CBE4EF7C5B6837166ABECBCA0D09B9A1A0E6C4A07D23` ;
+  `52CA90BF1D4863EDA85B75F7F4F372A63D42C05F6111DE10767E7057379C7757` ;
 - mode : PyInstaller onefile, windowed, icône Astro ;
 - environnement validé : Windows 11, Python 3.12, PyInstaller 6.21.
 
-Cet artefact inclut les correctifs v5 du 13 août. Il a été ouvert pour un smoke
-test ciblé du bridge et de Games & servers, puis fermé proprement. Deux jeux et
-50 serveurs publics ont été observés ; aucun compte ni processus Roblox n’a été
-lancé ou fermé par ce test.
+Cet artefact correspond aux sources et à la documentation 5.1.0 du 21 août.
+Son en-tête PE, son archive PyInstaller et la présence des assets frontend ont
+été contrôlés statiquement. Le smoke test de remplacement/redémarrage frozen
+reste distinct afin de ne pas interrompre le client Roblox déjà ouvert.
 
 ## Travail restant concret
 
-Les cinq lignes encore `PARTIAL` sont :
+Il ne reste aucune ligne `PARTIAL` ni `MISSING`. Les 38 lignes
+`TESTED BUT NOT VERIFIED` ont une implémentation et des tests, mais demandent
+encore une preuve externe adaptée : plusieurs vraies fenêtres pour Hide/Show et
+distribution serveur, session longue pour calibrer la fuite mémoire, client
+Discord avec assets, cycle de mise à jour Roblox, login navigateur/OAuth,
+serveur VIP, client Nexus et paquet UWP réel. Les changements authentifiés de
+mot de passe/email/relations sociales ne sont jamais exécutés sans valeurs
+cibles et confirmation explicites. Le PIN parental est le seul `BLOCKED`, car
+Roblox a supprimé cette fonctionnalité côté plateforme.
 
-1. **Nº 5 — import username/password** : porter un login automatique moderne ou
-   définir explicitement son remplacement compatible avec le comportement RAM.
-2. **Nº 33 — clones UWP par compte** : implémenter et tester copie/register/
-   uninstall seulement dans un environnement disposant de paquets UWP adaptés.
-3. **Nº 37 — région serveur** : obtenir une adresse machine réellement fournie
-   par Roblox et valider le transport déjà raccordé à la liste et à l'UI.
-4. **Nº 62 — RAMAccount.lua** : valider le comportement dans un vrai client
-   Nexus en jeu.
-5. **Nº 63 — API RAM** : aligner les dernières formes de réponses legacy.
-
-Les 26 lignes `TESTED BUT NOT VERIFIED` ont chacune un test consigné. Les
-prochaines validations prioritaires sont : login navigateur complet, VIP,
-Follow avec présence publique, mutations utilitaires avec valeurs cibles,
-client Nexus en jeu, paquet UWP réel, extension CAPTCHA réelle et release
-GitHub valide.
+La génération automatisée de comptes, les adresses jetables et le contournement
+automatique de CAPTCHA ne font pas partie de cette livraison. Les parcours
+d'ajout restent le navigateur isolé manuel, le cookie explicite, l'import bulk
+et OAuth pour l'identité/profil.
 
 ## État laissé sur la machine
 

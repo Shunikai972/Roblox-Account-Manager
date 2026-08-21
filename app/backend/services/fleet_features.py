@@ -820,7 +820,25 @@ class FleetFeaturesMixin:
             raise ValidationError("That plan has nothing to launch.")
         data = dict(payload or {})
         target = dict(data["target"]) if isinstance(data.get("target"), Mapping) else None
-        status = self.start_wave_launch([str(step["account_id"]) for step in steps], target)
+        settings = self._fleet_launcher_settings()
+        account_ids = [str(step["account_id"]) for step in steps]
+        per_account_targets: dict[str, dict[str, Any] | None] = {}
+        for step in steps:
+            destination = dict(target or {})
+            if step.get("place_id"):
+                destination["place_id"] = str(step["place_id"])
+            if step.get("job_id"):
+                destination["job_id"] = str(step["job_id"])
+            per_account_targets[str(step["account_id"])] = destination or None
+        status = self.batch_launcher.start_batch(
+            account_ids,
+            target,
+            float(settings.get("delay_seconds") or 4.0),
+            wave_size=int(settings.get("max_concurrent") or 3),
+            wave_pause_seconds=float(settings.get("wave_pause_seconds") or 0.0),
+            ready_check=self._wave_ready_check if bool(settings.get("wait_for_wave", True)) else None,
+            per_account_targets=per_account_targets,
+        )
         self._activity(
             "coordination",
             f"{plan.get('mode', 'Coordinated')} launch queued for {len(steps)} account(s).",
@@ -880,17 +898,37 @@ class FleetFeaturesMixin:
         if name in {"focus", "sleep"}:
             overview = self.get_comfort_overview(data.get("pid") if name == "focus" else None)
             plan = dict(overview[name])
-            minimized = 0
-            for step in plan.get("steps", []):
-                if step.get("action") != "minimize":
-                    continue
+            requested: list[tuple[int, str]] = []
+            if name == "focus":
+                conflicts = {int(pid) for pid in plan.get("macro_conflicts", [])}
+                for target in plan.get("targets", []):
+                    pid = int(target.get("pid") or 0)
+                    if target.get("restore"):
+                        requested.append((pid, "restore"))
+                    elif target.get("minimize") and pid not in conflicts:
+                        requested.append((pid, "minimize"))
+            else:
+                requested.extend(
+                    (int(target.get("pid") or 0), "minimize")
+                    for target in plan.get("sleeping", [])
+                )
+            results: list[dict[str, Any]] = []
+            failures: list[dict[str, Any]] = []
+            for pid, operation in requested:
                 try:
-                    if self.multi_instance.minimize_window(int(step.get("pid") or 0)):
-                        minimized += 1
-                except Exception:  # noqa: BLE001 - one stubborn window is not fatal
-                    continue
-            plan["minimized"] = minimized
-            plan["applied"] = True
+                    snapshot = (
+                        self.window_visibility.restore(pid)
+                        if operation == "restore"
+                        else self.window_visibility.minimize(pid)
+                    )
+                    results.append({"pid": pid, "operation": operation, **snapshot.to_dict()})
+                except AppError as exc:
+                    failures.append({"pid": pid, "operation": operation, "error": str(exc)})
+            plan["requested"] = len(requested)
+            plan["results"] = results
+            plan["failures"] = failures
+            plan["minimized"] = sum(1 for row in results if row["operation"] == "minimize")
+            plan["applied"] = bool(results) and not failures
             return plan
         if name == "audio":
             volumes: dict[str, int] = {}

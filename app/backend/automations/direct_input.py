@@ -300,6 +300,7 @@ class PyDirectInputRobloxBackend:
                 "module": module,
                 "previous": previous,
                 "cursor": cursor,
+                "cursor_dirty": False,
                 "held": set(),
             }
             return True
@@ -322,7 +323,7 @@ class PyDirectInputRobloxBackend:
                     pass
             session["held"].clear()
             cursor = session.get("cursor")
-            if cursor is not None:
+            if session.get("cursor_dirty") and cursor is not None:
                 try:
                     self._windows.move_cursor(int(cursor[0]), int(cursor[1]))
                 except Exception:
@@ -404,6 +405,7 @@ class PyDirectInputRobloxBackend:
         module = session["module"]
         try:
             module.moveTo(point[0], point[1])
+            session["cursor_dirty"] = True
             module.click(x=point[0], y=point[1], button=name)
         except Exception:
             return False

@@ -15,7 +15,7 @@ APP_SLUG = "AstroAccountManager"
 # the rename, the app continues to use it until the user explicitly migrates
 # their data.
 LEGACY_APP_SLUG = "AsteriaAccountManager"
-APP_VERSION = "4.0.3"
+APP_VERSION = "5.1.0"
 
 
 # Features that stay in the source tree but are intentionally unreachable from
@@ -69,6 +69,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
         "accent": "#7c5cff",
         "density": "comfortable",
         "reduced_motion": False,
+        "privacy_mode": False,
     },
     "accounts": {
         "remember_login_details": False,
@@ -93,6 +94,11 @@ DEFAULT_SETTINGS: dict[str, Any] = {
         "client_id": "",
         "strategy": "latest",
         "show_account": False,
+        "details_template": "{game}",
+        "state_template": "{instances} active · {account}",
+        "large_image": "",
+        "large_text": "Astro Account Manager",
+        "game_overrides": [],
     },
     "updates": {
         "auto_check": True,

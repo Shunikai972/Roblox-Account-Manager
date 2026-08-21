@@ -72,6 +72,7 @@ from app.backend.roblox import (
     RobloxAuthTools,
     RobloxClient,
     ServerRegionResolver,
+    WindowVisibilityManager,
     WindowsMultiInstanceController,
     WindowsRobloxLauncher,
     WindowsUwpRobloxManager,
@@ -84,6 +85,7 @@ from app.backend.roblox.account_utils import AccountUtils
 from app.backend.roblox.player_search import PlayerSearchService
 from app.backend.roblox.private_servers import PrivateServerHelper
 from app.backend.roblox.random_server import RandomServerSelector
+from app.backend.roblox.server_intelligence import rank_servers
 from app.backend.storage.backups import BackupError, VersionedBackupManager
 from app.backend.storage.bulk_import import BulkAccountImporter
 from app.backend.storage.metadata_transfer import MetadataTransfer, MetadataTransferError
@@ -124,6 +126,7 @@ from app.backend.watchers.resource_plan import (
 )
 from app.backend.watchers.window_positioner import RobloxWindowPositioner
 from app.backend.watchers import (
+    InstancePerformanceTelemetry,
     MonitorPollingLoop,
     RestartPolicy,
     RestartRequest,
@@ -138,6 +141,7 @@ _SETTING_ALIASES = {
     "accent": "appearance.accent",
     "density": "appearance.density",
     "reduce_motion": "appearance.reduced_motion",
+    "privacy_mode": "appearance.privacy_mode",
     "launch_behavior": "general.launch_behavior",
     "close_when_empty": "instances.close_when_empty",
     "allow_multiple_launches": "instances.allow_multiple_launches",
@@ -165,6 +169,8 @@ _SETTING_ALIASES = {
 
 _AVATAR_COLOR_TOKENS = frozenset({"violet", "mint", "coral", "blue", "amber"})
 _GROUP_COLOR_TOKENS = _AVATAR_COLOR_TOKENS | frozenset({"neutral"})
+_ROBLOX_SETTINGS_PROFILES_KEY = "roblox_settings.profiles"
+_MAX_ROBLOX_SETTINGS_PROFILES = 32
 _LEGACY_GROUP_COLOR_TOKENS = {
     "#7c5cff": "violet",
     "#9c85ff": "violet",
@@ -198,6 +204,8 @@ class ApplicationService(FleetFeaturesMixin):
         monitor: RobloxProcessMonitor | None = None,
         log_runtime: RobloxPlayerLogRuntime | Any | None = None,
         window_positioner: Any | None = None,
+        window_visibility: WindowVisibilityManager | Any | None = None,
+        performance_telemetry: InstancePerformanceTelemetry | Any | None = None,
         oauth_login: OAuthLoginCoordinator | None = None,
         client_settings: ClientSettingsPatcher | None = None,
         region_resolver: ServerRegionResolver | None = None,
@@ -259,6 +267,8 @@ class ApplicationService(FleetFeaturesMixin):
         self._rule_decisions: tuple[dict[str, Any], ...] = ()
         self._cpu_primed = False
         self.window_positioner = window_positioner or RobloxWindowPositioner
+        self.window_visibility = window_visibility or WindowVisibilityManager()
+        self.performance_telemetry = performance_telemetry or InstancePerformanceTelemetry()
         self.oauth_login = oauth_login or OAuthLoginCoordinator()
         self.backups = VersionedBackupManager(self.paths.backups, app_version=APP_VERSION)
         self.logger = logger or logging.getLogger("astro_account_manager.service")
@@ -306,7 +316,6 @@ class ApplicationService(FleetFeaturesMixin):
     def close(self) -> None:
         """Release owned external resources on application shutdown."""
 
-        update_preferences = self.get_settings()["categories"].get("updates", {})
         self._stop_nexus_server_unchecked()
         self.stop_watcher()
         self.macro_engine.stop_all()
@@ -319,7 +328,11 @@ class ApplicationService(FleetFeaturesMixin):
         self.repository.close()
         close_updater = getattr(self.update_manager, "close", None)
         apply_update = getattr(self.update_manager, "apply_pending_on_exit", None)
-        if bool(update_preferences.get("install_on_exit", False)) and callable(apply_update):
+        update_status = self.update_manager.status()
+        # ``install_on_exit`` controls automatic scheduling. Once the user has
+        # explicitly scheduled a validated update, the pending manifest is the
+        # source of truth even if that preference is off.
+        if bool(update_status.get("pending_install")) and callable(apply_update):
             apply_update()
         if callable(close_updater):
             close_updater()
@@ -335,7 +348,7 @@ class ApplicationService(FleetFeaturesMixin):
             "accounts": [self._account_payload(item) for item in self.repository.list_accounts()],
             "groups": [self._group_payload(item) for item in self.repository.list_groups()],
             "games": [self._game_payload(item) for item in self.repository.list_games(limit=30)],
-            "instances": [self._instance_payload(item) for item in scan.instances],
+            "instances": self._instance_payloads(scan.instances),
             "settings": self.get_settings(),
             "multi_instance": self.get_multi_instance_status(),
             "features": feature_flags(),
@@ -829,14 +842,74 @@ class ApplicationService(FleetFeaturesMixin):
         self._activity("game", "Game removed from local library", metadata={"place_id": normalized})
         return {"deleted": normalized}
 
-    def list_servers(self, place_id: int | str) -> list[dict[str, Any]]:
+    def list_servers(
+        self,
+        place_id: int | str,
+        options: Mapping[str, Any] | None = None,
+    ) -> list[dict[str, Any]]:
         normalized = self._positive_int(place_id, "Le PlaceId")
         try:
             page = self.roblox.list_public_servers(normalized)
         except RobloxServiceError as exc:
             raise ExternalServiceError(str(exc), retryable=getattr(exc, "retryable", False)) from exc
         rows = [self._server_payload(server) for server in page.servers]
-        return self._region_resolver_for_settings().annotate_servers(rows)
+        annotated = self._region_resolver_for_settings().annotate_servers(rows)
+        return rank_servers(
+            annotated,
+            history=self.repository.get_setting("fleet.server_history") or [],
+            blacklist=self.repository.get_setting("fleet.server_blacklist") or [],
+            options=options,
+        )
+
+    def plan_server_distribution(
+        self,
+        account_ids: list[str],
+        place_id: int | str,
+        max_per_server: int = 1,
+        options: Mapping[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        normalized = self._positive_int(place_id, "Place ID")
+        servers = self.list_servers(normalized, options)
+        eligible = [row for row in servers if row.get("eligible")]
+        plan = self.plan_coordination(
+            {
+                "mode": "spread",
+                "account_ids": account_ids,
+                "place_id": str(normalized),
+                "servers": [row["job_id"] for row in eligible],
+                "max_per_server": max_per_server,
+            }
+        )
+        plan["server_quality"] = [
+            {
+                "job_id": row["job_id"],
+                "score": row["score"],
+                "free_slots": row["free_slots"],
+                "ping": row.get("ping"),
+            }
+            for row in eligible
+        ]
+        return plan
+
+    def run_server_distribution(
+        self,
+        account_ids: list[str],
+        place_id: int | str,
+        max_per_server: int = 1,
+        options: Mapping[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        plan = self.plan_server_distribution(account_ids, place_id, max_per_server, options)
+        result = self.run_coordination(
+            {
+                "mode": "spread",
+                "account_ids": account_ids,
+                "place_id": str(self._positive_int(place_id, "Place ID")),
+                "servers": plan["servers"],
+                "max_per_server": max_per_server,
+            }
+        )
+        result["plan"]["server_quality"] = plan["server_quality"]
+        return result
 
     def _region_resolver_for_settings(self) -> ServerRegionResolver:
         try:
@@ -1182,11 +1255,158 @@ class ApplicationService(FleetFeaturesMixin):
 
     # Process monitor -------------------------------------------------------
     def list_instances(self) -> list[dict[str, Any]]:
-        return [self._instance_payload(item) for item in self.monitor.current_instances()]
+        return self._instance_payloads(self.monitor.current_instances())
 
     def refresh_instances(self) -> list[dict[str, Any]]:
         scan = self._scan_instances(allow_restarts=True)
-        return [self._instance_payload(item) for item in scan.instances]
+        return self._instance_payloads(scan.instances)
+
+    def _observed_instance(self, pid: Any) -> Any:
+        wanted = self._positive_int(pid, "PID")
+        instance = next((item for item in self.monitor.current_instances() if int(item.pid) == wanted), None)
+        if instance is None:
+            raise NotFoundError("That Roblox process is no longer observed.")
+        return instance
+
+    def get_instance_visibility(self, pid: Any = None) -> dict[str, Any]:
+        """Return visibility only for processes verified by the watcher."""
+
+        if pid not in (None, ""):
+            instance = self._observed_instance(pid)
+            return {"instances": [self.window_visibility.snapshot(instance.pid).to_dict()]}
+        instances = list(self.monitor.current_instances())
+        snapshots = self.window_visibility.snapshot_many(item.pid for item in instances)
+        return {"instances": [snapshots[item.pid].to_dict() for item in instances]}
+
+    def get_instance_performance(self, pid: Any = None, *, include_history: bool = False) -> dict[str, Any]:
+        instances = list(self.monitor.current_instances())
+        if pid not in (None, ""):
+            observed = self._observed_instance(pid)
+            instances = [observed]
+        rows = self.performance_telemetry.sample(instances)
+        payload: dict[str, Any] = {"instances": rows}
+        if include_history and len(instances) == 1:
+            payload["history"] = self.performance_telemetry.history(instances[0].pid)
+        return payload
+
+    def get_compatibility_report(self) -> dict[str, Any]:
+        """Read-only feature health after a Roblox update; never launches Roblox."""
+
+        client_status = dict(self.client_settings.status())
+        version_directory = str(client_status.get("version_directory") or "")
+        version = Path(version_directory).name if version_directory else None
+        previous = self.repository.get_setting("compatibility.last_roblox_version")
+        multi = self.get_multi_instance_status()
+        visibility = self.window_visibility.capability()
+        settings = self.get_settings()
+        watcher = settings["categories"].get("watcher", {})
+        macro_settings = settings["categories"].get("macros", {})
+        try:
+            global_settings = self.client_settings.read_global_settings()
+        except (AppError, OSError, ValueError):
+            global_settings = {"available": False, "reason": "Roblox global settings could not be parsed."}
+        checks = [
+            {
+                "id": "roblox_version",
+                "label": "Roblox installation",
+                "state": "ready" if client_status.get("available") else "unavailable",
+                "detail": version or str(client_status.get("reason") or "Roblox was not discovered."),
+            },
+            {
+                "id": "multi_instance",
+                "label": "Multi-instance",
+                "state": "ready" if multi.get("supported") and multi.get("enabled") else ("attention" if multi.get("supported") else "unavailable"),
+                "detail": str(multi.get("reason") or ("Enabled" if multi.get("enabled") else "Supported but not active.")),
+            },
+            {
+                "id": "window_control",
+                "label": "Window visibility control",
+                "state": "ready" if visibility.get("supported") else "unavailable",
+                "detail": str(visibility.get("reason") or "Win32 PID-bound visibility control is available."),
+            },
+            {
+                "id": "background_input",
+                "label": "Background macro delivery",
+                "state": "unknown" if macro_settings.get("allow_background_delivery") else "disabled",
+                "detail": "A live per-instance delivery test is still required after each Roblox update." if macro_settings.get("allow_background_delivery") else "Disabled in settings.",
+            },
+            {
+                "id": "auto_rejoin",
+                "label": "Automatic rejoin",
+                "state": "ready" if watcher.get("enabled") and watcher.get("auto_relaunch_enabled") else "disabled",
+                "detail": "Watcher and global relaunch gate are enabled." if watcher.get("enabled") and watcher.get("auto_relaunch_enabled") else "Enable both watcher and relaunch gate to arm it.",
+            },
+            {
+                "id": "roblox_settings",
+                "label": "Roblox global settings",
+                "state": "ready" if global_settings.get("available") else "unavailable",
+                "detail": str(global_settings.get("reason") or "GlobalBasicSettings_13.xml is readable."),
+            },
+        ]
+        known = [row for row in checks if row["state"] not in {"unknown", "disabled"}]
+        ready = sum(1 for row in known if row["state"] == "ready")
+        return {
+            "roblox_version": version,
+            "previous_roblox_version": previous,
+            "version_changed": bool(version and previous and version != previous),
+            "recorded": bool(previous),
+            "compatibility_percent": round(100 * ready / len(known)) if known else None,
+            "checks": checks,
+            "note": "Unknown means a real live verification is required; Astro does not convert code presence into a false pass.",
+        }
+
+    def acknowledge_roblox_version(self, *, confirm: bool = False) -> dict[str, Any]:
+        if confirm is not True:
+            raise SecurityError("Recording the current Roblox compatibility baseline requires confirmation.")
+        status = dict(self.client_settings.status())
+        directory = str(status.get("version_directory") or "")
+        version = Path(directory).name if directory else ""
+        if not version:
+            raise ValidationError("Roblox installation version could not be detected.")
+        self.repository.set_setting("compatibility.last_roblox_version", version)
+        self._activity("compatibility", f"Roblox compatibility baseline recorded: {version}")
+        return self.get_compatibility_report()
+
+    def set_instance_visibility(self, pid: Any, visible: bool) -> dict[str, Any]:
+        instance = self._observed_instance(pid)
+        snapshot = self.window_visibility.set_visible(instance.pid, visible)
+        action = "shown" if visible else "hidden"
+        self._activity(
+            "instance",
+            f"Roblox window {action}",
+            account_id=getattr(instance, "account_id", None),
+            metadata={"pid": instance.pid, "visible": visible},
+        )
+        return snapshot.to_dict()
+
+    def set_group_visibility(self, group_id: str, visible: bool) -> dict[str, Any]:
+        group = self._get_group(group_id)
+        account_ids = {
+            account.id for account in self.repository.list_accounts() if account.group_id == group.id
+        }
+        instances = [
+            item for item in self.monitor.current_instances() if getattr(item, "account_id", None) in account_ids
+        ]
+        results: list[dict[str, Any]] = []
+        failures: list[dict[str, Any]] = []
+        for instance in instances:
+            try:
+                results.append(self.window_visibility.set_visible(instance.pid, visible).to_dict())
+            except AppError as exc:
+                failures.append({"pid": instance.pid, "error": str(exc)})
+        self._activity(
+            "instance",
+            f"{len(results)} Roblox window(s) {'shown' if visible else 'hidden'} for {group.name}",
+            metadata={"group_id": group.id, "failed": len(failures)},
+        )
+        return {
+            "group_id": group.id,
+            "visible": visible,
+            "requested": len(instances),
+            "applied": len(results),
+            "failed": failures,
+            "instances": results,
+        }
 
     def get_instance_monitor(self) -> dict[str, Any]:
         """Return current local process state and bounded redacted history."""
@@ -1392,6 +1612,7 @@ class ApplicationService(FleetFeaturesMixin):
             "accent": nested["appearance"]["accent"],
             "density": nested["appearance"]["density"],
             "reduce_motion": nested["appearance"]["reduced_motion"],
+            "privacy_mode": nested["appearance"].get("privacy_mode", False),
             "watcher_enabled": nested["watcher"]["enabled"],
             "watcher_termination_enabled": nested["watcher"].get("termination_enabled", False),
             "watcher_auto_relaunch_enabled": nested["watcher"].get("auto_relaunch_enabled", False),
@@ -3547,6 +3768,8 @@ class ApplicationService(FleetFeaturesMixin):
             raise ValidationError("Interface density is invalid.")
         if not isinstance(appearance.get("reduced_motion"), bool):
             raise ValidationError("Reduced motion preference is invalid.")
+        if not isinstance(appearance.get("privacy_mode"), bool):
+            raise ValidationError("Privacy mode preference is invalid.")
         watcher = values.get("watcher", {})
         interval = watcher.get("scan_interval_seconds")
         if not isinstance(interval, int) or not 1 <= interval <= 300:
@@ -3611,6 +3834,17 @@ class ApplicationService(FleetFeaturesMixin):
             raise ValidationError("Discord Application ID is invalid.")
         if discord.get("strategy") not in {"latest", "aggregate"} or not isinstance(discord.get("show_account"), bool):
             raise ValidationError("Discord Rich Presence strategy is invalid.")
+        for key in ("details_template", "state_template", "large_image", "large_text"):
+            if not isinstance(discord.get(key), str) or len(discord.get(key)) > 256:
+                raise ValidationError("Discord Rich Presence text is invalid.")
+        overrides = discord.get("game_overrides")
+        if not isinstance(overrides, list) or len(overrides) > 50:
+            raise ValidationError("Discord per-game overrides are invalid.")
+        for row in overrides:
+            if not isinstance(row, Mapping) or not str(row.get("place_id") or "").isdigit():
+                raise ValidationError("A Discord per-game override has an invalid Place ID.")
+            if any(not isinstance(row.get(key, ""), str) or len(row.get(key, "")) > 256 for key in ("details", "state", "large_image", "large_text")):
+                raise ValidationError("A Discord per-game override is invalid.")
         if discord.get("enabled") and len(discord_id) < 5:
             raise ValidationError("A Discord Application ID is required when Rich Presence is enabled.")
         updates = values.get("updates", {})
@@ -3759,16 +3993,41 @@ class ApplicationService(FleetFeaturesMixin):
         )
         return payload
 
-    @staticmethod
-    def _instance_payload(instance: Any) -> dict[str, Any]:
+    def _instance_payloads(self, instances: Any) -> list[dict[str, Any]]:
+        rows = list(instances)
+        snapshots = self.window_visibility.snapshot_many(item.pid for item in rows)
+        performance = {row["pid"]: row for row in self.performance_telemetry.sample(rows)}
+        return [
+            self._instance_payload(
+                item,
+                visibility=snapshots.get(item.pid),
+                performance=performance.get(item.pid),
+            )
+            for item in rows
+        ]
+
+    def _instance_payload(
+        self,
+        instance: Any,
+        *,
+        visibility: Any | None = None,
+        performance: Mapping[str, Any] | None = None,
+    ) -> dict[str, Any]:
         payload = instance.to_dict()
+        sample = dict(performance or {})
+        memory_mb = sample.get("memory_mb")
+        if memory_mb is None:
+            memory_mb = round((instance.memory_bytes or 0) / (1024 * 1024))
         payload.update(
             {
                 "id": f"pid_{instance.pid}",
                 "state": instance.status,
-                "memory_mb": round((instance.memory_bytes or 0) / (1024 * 1024)),
+                "memory_mb": memory_mb,
+                "cpu_percent": sample.get("cpu_percent"),
+                "memory_leak": sample.get("memory_leak", {"probable": False}),
                 "game": "Roblox",
                 "server": "—",
+                "visibility": (visibility or self.window_visibility.snapshot(instance.pid)).to_dict(),
             }
         )
         return payload
@@ -3990,6 +4249,179 @@ class ApplicationService(FleetFeaturesMixin):
         if success:
             self._activity("client_settings", "Roblox client FPS cap removed")
         return {"success": success}
+
+    @staticmethod
+    def _roblox_settings_values(payload: Mapping[str, Any]) -> dict[str, Any]:
+        values: dict[str, Any] = {}
+        if "fps" in payload:
+            try:
+                fps = int(payload["fps"])
+            except (TypeError, ValueError) as exc:
+                raise ValidationError("Roblox FPS must be a whole number.") from exc
+            if fps != -1 and not 1 <= fps <= 1000:
+                raise ValidationError("Roblox FPS must be -1 (default) or between 1 and 1000.")
+            values["fps"] = fps
+        if "volume_percent" in payload:
+            try:
+                volume = int(payload["volume_percent"])
+            except (TypeError, ValueError) as exc:
+                raise ValidationError("Roblox volume must be a whole percentage.") from exc
+            if not 0 <= volume <= 100:
+                raise ValidationError("Roblox volume must be between 0 and 100.")
+            values["volume_percent"] = volume
+        if "graphics_quality" in payload:
+            try:
+                quality = int(payload["graphics_quality"])
+            except (TypeError, ValueError) as exc:
+                raise ValidationError("Roblox graphics quality must be a whole number.") from exc
+            if not 0 <= quality <= 10:
+                raise ValidationError("Roblox graphics quality must be between 0 (automatic) and 10.")
+            values["graphics_quality"] = quality
+        if "fullscreen" in payload:
+            if not isinstance(payload["fullscreen"], bool):
+                raise ValidationError("Roblox fullscreen must be true or false.")
+            values["fullscreen"] = payload["fullscreen"]
+        if "camera_mode" in payload:
+            try:
+                camera = int(payload["camera_mode"])
+            except (TypeError, ValueError) as exc:
+                raise ValidationError("Roblox camera mode must be a whole number.") from exc
+            if not 0 <= camera <= 10:
+                raise ValidationError("Roblox camera mode is outside its supported range.")
+            values["camera_mode"] = camera
+        advanced = payload.get("advanced")
+        if advanced is not None:
+            if not isinstance(advanced, Mapping) or len(advanced) > 20:
+                raise ValidationError("Advanced Roblox settings must be an object with at most 20 values.")
+            values["advanced"] = {str(key): value for key, value in advanced.items()}
+        if not values:
+            raise ValidationError("At least one Roblox setting is required.")
+        return values
+
+    def _roblox_settings_profiles(self) -> list[dict[str, Any]]:
+        raw = self.repository.get_setting(_ROBLOX_SETTINGS_PROFILES_KEY) or []
+        if not isinstance(raw, list):
+            return []
+        profiles: list[dict[str, Any]] = []
+        for item in raw[:_MAX_ROBLOX_SETTINGS_PROFILES]:
+            if not isinstance(item, Mapping):
+                continue
+            identifier = str(item.get("id") or "").strip()
+            name = str(item.get("name") or "").strip()
+            values = item.get("values")
+            if identifier and name and isinstance(values, Mapping):
+                profiles.append(
+                    {
+                        "id": identifier[:64],
+                        "name": name[:60],
+                        "group_id": str(item.get("group_id") or "")[:64] or None,
+                        "values": dict(values),
+                    }
+                )
+        return profiles
+
+    def get_roblox_settings_manager(self, query: str = "") -> dict[str, Any]:
+        payload = dict(self.client_settings.read_global_settings(query))
+        payload["profiles"] = self._roblox_settings_profiles()
+        payload["groups"] = [
+            {"id": str(group.get("id") or ""), "name": str(group.get("name") or "")}
+            for group in self.list_groups()
+        ]
+        payload["limits"] = {
+            "global": True,
+            "note": (
+                "Roblox stores these values globally. A group association organises profiles and applies one before "
+                "that group's launch; it is not a per-process override for clients that are already running."
+            ),
+        }
+        return payload
+
+    def save_roblox_settings_profile(self, profile: Mapping[str, Any]) -> dict[str, Any]:
+        data = self._require_mapping(profile, "Roblox settings profile")
+        name = self._required_text(data.get("name"), "Profile name")
+        if len(name) > 60:
+            raise ValidationError("A Roblox settings profile name may hold at most 60 characters.")
+        group_id = self._optional_id(data.get("group_id"))
+        if group_id:
+            self._get_group(group_id)
+        values = self._roblox_settings_values(self._require_mapping(data.get("values"), "Profile values"))
+        profiles = self._roblox_settings_profiles()
+        identifier = str(data.get("id") or "").strip()[:64] or f"rsp_{secrets.token_hex(8)}"
+        row = {"id": identifier, "name": name, "group_id": group_id, "values": values}
+        replaced = False
+        for index, existing in enumerate(profiles):
+            if existing["id"] == identifier:
+                profiles[index] = row
+                replaced = True
+                break
+        if not replaced:
+            if len(profiles) >= _MAX_ROBLOX_SETTINGS_PROFILES:
+                raise ValidationError(f"At most {_MAX_ROBLOX_SETTINGS_PROFILES} Roblox settings profiles may be saved.")
+            profiles.append(row)
+        self.repository.set_setting(_ROBLOX_SETTINGS_PROFILES_KEY, profiles)
+        self._activity("client_settings", f"Roblox settings profile saved: {name}")
+        return self.get_roblox_settings_manager()
+
+    def delete_roblox_settings_profile(self, profile_id: str) -> dict[str, Any]:
+        identifier = self._required_text(profile_id, "Profile id")
+        profiles = self._roblox_settings_profiles()
+        retained = [profile for profile in profiles if profile["id"] != identifier]
+        if len(retained) == len(profiles):
+            raise NotFoundError("That Roblox settings profile no longer exists.")
+        self.repository.set_setting(_ROBLOX_SETTINGS_PROFILES_KEY, retained)
+        self._activity("client_settings", "Roblox settings profile deleted")
+        return self.get_roblox_settings_manager()
+
+    def apply_roblox_settings(self, payload: Mapping[str, Any], *, confirm: bool = False) -> dict[str, Any]:
+        if confirm is not True:
+            raise SecurityError("Changing Roblox settings requires explicit confirmation.")
+        values = self._roblox_settings_values(self._require_mapping(payload, "Roblox settings"))
+        fps = values.get("fps")
+        xml_changes: dict[str, Any] = {}
+        if "volume_percent" in values:
+            xml_changes["MasterVolume"] = values["volume_percent"] / 100.0
+        if "graphics_quality" in values:
+            xml_changes["GraphicsQualityLevel"] = values["graphics_quality"]
+            xml_changes["SavedQualityLevel"] = values["graphics_quality"]
+        if "fullscreen" in values:
+            xml_changes["Fullscreen"] = values["fullscreen"]
+        if "camera_mode" in values:
+            xml_changes["CameraMode"] = values["camera_mode"]
+        xml_changes.update(dict(values.get("advanced") or {}))
+        previous_fps = self.client_settings.get_fps_cap() if "fps" in values else None
+        fps_touched = False
+        try:
+            if fps == -1:
+                fps_touched = True
+                if not self.client_settings.remove_fps_cap():
+                    raise ValidationError("Roblox's default FPS setting could not be restored.")
+            elif isinstance(fps, int):
+                fps_touched = True
+                if not self.client_settings.set_fps_cap(fps):
+                    raise ValidationError("The Roblox FPS setting could not be applied.")
+            if xml_changes:
+                self.client_settings.apply_global_settings(xml_changes)
+        except Exception:
+            if fps_touched:
+                try:
+                    if previous_fps is None:
+                        self.client_settings.remove_fps_cap()
+                    else:
+                        self.client_settings.set_fps_cap(int(previous_fps))
+                except Exception as rollback_error:  # noqa: BLE001 - retain the original failure
+                    self.logger.error("Roblox FPS rollback failed after a profile error: %s", rollback_error)
+            raise
+        self._activity("client_settings", "Roblox settings applied and verified")
+        return self.get_roblox_settings_manager()
+
+    def apply_roblox_settings_profile(self, profile_id: str, *, confirm: bool = False) -> dict[str, Any]:
+        identifier = self._required_text(profile_id, "Profile id")
+        profile = next((row for row in self._roblox_settings_profiles() if row["id"] == identifier), None)
+        if profile is None:
+            raise NotFoundError("That Roblox settings profile no longer exists.")
+        result = self.apply_roblox_settings(profile["values"], confirm=confirm)
+        result["applied_profile"] = {"id": profile["id"], "name": profile["name"], "group_id": profile["group_id"]}
+        return result
 
     # Batch Launcher ---------------------------------------------------------
     def _batch_launch_single_adapter(self, account_id: str, target: dict[str, Any] | None) -> dict[str, Any]:
@@ -4403,13 +4835,21 @@ class ApplicationService(FleetFeaturesMixin):
     # Extended Account Utilities & Features ----------------------------------
     def change_account_password(self, account_id: str, current_pass: str, new_pass: str) -> dict[str, Any]:
         cookie = self._get_account_cookie_raw(account_id)
-        success = self._account_utility_call(self.account_utils.change_password, cookie, current_pass, new_pass)
+        current = self._required_text(current_pass, "Current password")
+        new = self._required_text(new_pass, "New password")
+        if len(current) > 200 or len(new) > 200:
+            raise ValidationError("A Roblox password is too long.")
+        success = self._account_utility_call(self.account_utils.change_password, cookie, current, new)
         self._activity("account_utils", "Password changed", account_id=account_id)
         return {"account_id": account_id, "success": success}
 
     def change_account_email(self, account_id: str, password: str, new_email: str) -> dict[str, Any]:
         cookie = self._get_account_cookie_raw(account_id)
-        success = self._account_utility_call(self.account_utils.change_email, cookie, password, new_email)
+        current = self._required_text(password, "Current password")
+        email = self._required_text(new_email, "New email address")
+        if len(current) > 200 or len(email) > 254 or not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", email):
+            raise ValidationError("Enter a valid Roblox account email address.")
+        success = self._account_utility_call(self.account_utils.change_email, cookie, current, email)
         self._activity("account_utils", "Email change requested", account_id=account_id)
         return {"account_id": account_id, "success": success}
 
@@ -4476,7 +4916,7 @@ class ApplicationService(FleetFeaturesMixin):
         if len(normalized) != 4 or not normalized.isdigit():
             raise ValidationError("Account PIN must contain exactly four digits.")
         success = self._account_utility_call(self.account_utils.unlock_parental_pin, cookie, normalized)
-        self._activity("account_utils", "Account PIN unlock requested", account_id=account_id)
+        self._activity("account_utils", "Legacy Account PIN unlock requested", account_id=account_id)
         return {"account_id": account_id, "success": success}
 
     def get_account_blocked_list(self, account_id: str) -> list[dict[str, Any]]:
@@ -4605,7 +5045,8 @@ class ApplicationService(FleetFeaturesMixin):
         return {"closed_count": closed}
 
     def check_for_updates(self) -> dict[str, Any]:
-        result = UpdateChecker.check_for_updates()
+        checker = getattr(self.update_manager, "checker", UpdateChecker)
+        result = checker.check_for_updates()
         return {**result, "status": self.get_update_status()}
 
     # Macros, presence, updater and local launch preparation -----------------
@@ -4739,12 +5180,17 @@ class ApplicationService(FleetFeaturesMixin):
             except RepositoryError:
                 return None
 
-        instances = [self._instance_payload(item) for item in self.monitor.current_instances()]
+        instances = self._instance_payloads(self.monitor.current_instances())
         activity = self.discord_presence.activity_for_instances(
             instances,
             strategy=str(settings.get("strategy") or "latest"),
-            show_account=bool(settings.get("show_account")),
+            show_account=bool(settings.get("show_account")) and not bool(self.get_settings().get("privacy_mode")),
             game_lookup=game_name,
+            details_template=str(settings.get("details_template") or "{game}"),
+            state_template=str(settings.get("state_template") or "{instances} active · {account}"),
+            large_image=str(settings.get("large_image") or ""),
+            large_text=str(settings.get("large_text") or "Astro Account Manager"),
+            game_overrides=list(settings.get("game_overrides") or []),
         )
         try:
             return self.discord_presence.publish(client_id, activity)
@@ -4885,8 +5331,26 @@ def _activity_detail(metadata: Mapping[str, Any]) -> str:
         return ""
     from app.backend.security.redaction import is_sensitive_key
 
-    safe = {key: value for key, value in metadata.items() if not is_sensitive_key(key)}
-    return ", ".join(f"{key}: {value}" for key, value in safe.items())[:180]
+    labels = {
+        "pid": "PID",
+        "state": "State",
+        "reason": "Reason",
+        "restart_attempt": "Restart",
+        "place_id": "Place",
+        "job_id": "Server",
+        "group_id": "Group",
+    }
+    # ``occurred_at`` duplicates the activity timestamp already rendered by the
+    # frontend. None-valued watcher fields created most of the unreadable wall
+    # of text on the Dashboard, so omit both while preserving useful metadata.
+    visible: list[str] = []
+    for key, value in metadata.items():
+        if key == "occurred_at" or value is None or value == "" or is_sensitive_key(key):
+            continue
+        label = labels.get(key, str(key).replace("_", " ").title())
+        display_value = str(value).replace("_", " ") if isinstance(value, str) else value
+        visible.append(f"{label} {display_value}")
+    return " · ".join(visible)[:180]
 
 
 def _line_level(line: str) -> str:

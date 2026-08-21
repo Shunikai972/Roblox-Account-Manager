@@ -175,16 +175,19 @@ class OrbitApp {
       fleet: { groupId: '', plan: null, resources: null }, dashboard: null,
       fleetTab: 'stats', fleetData: {}, fleetWindowDays: null,
       fleetFilters: { query: '', tags: [], status: '', placeId: '' }, fleetStudio: { macroId: '', accountId: '' },
-      lastRenderHtml: null, lastOverlayHtml: null,
-      macroDraftBlocks: [{ type: 'wait', milliseconds: 1000 }, { type: 'key_press', key: 'W', milliseconds: 80 }],
+      lastRenderHtml: null, lastSidebarHtml: null, lastTopbarHtml: null, lastPageHtml: null, lastOverlayHtml: null,
+      macroDraftBlocks: [{ type: 'wait', milliseconds: 1000 }, { type: 'key_press', key: 'W', milliseconds: 80 }], macroDraftSource: '',
+      macroDraftName: '', macroDraftDescription: '', macroDraftAccountId: '',
       discordPresence: { enabled: false, connected: false }, updater: {}, robloxBackground: { running: false, count: 0, processes: [] },
       instanceMonitor: { instances: [], events: [], pending_restarts: [], last_scan_complete: null, termination_enabled: false },
       multiInstance: { supported: false, enabled: false, configured: false, restart_required: false },
+      robloxSettings: { loaded: false, available: false, reason: '', basic: {}, advanced: [], profiles: [], groups: [] },
       windowsStartup: { loaded: false, error: false, available: false, supported: null, accessible: null, registered: false, enabled: false, needs_repair: false, configured: false, reason: '' },
       accountView: 'cards', accountQuery: '', accountStatus: 'all', selected: new Set(),
       publicRefreshErrors: {}, draggedAccountId: null,
       launchingAccounts: new Set(), batchPollTimer: null, runtimePollTimer: null, runtimePollInFlight: false,
       gameQuery: '', gameId: null, gameDetail: null, servers: [], serversLoading: false, gamesLoading: false,
+      serverFilters: { sort: 'score', min_free_slots: 1, avoid_previous: false },
       settingsTab: 'general', modal: null, notificationsOpen: false, paletteOpen: false, paletteQuery: '',
       features: { nexus: false },
       nexusExecutorCode: "-- Write your Lua script here\nprint('Hello from Nexus!')\n",
@@ -237,6 +240,7 @@ class OrbitApp {
     settings.accent_raw = settings.accent;
     settings.accent = accentToken(settings.accent);
     this.state.settings = settings;
+    this.state.hideUsernames = Boolean(settings.privacy_mode || settings.categories && settings.categories.appearance && settings.categories.appearance.privacy_mode);
     this.state.multiInstance = Object.assign(
       { supported: false, enabled: false, configured: Boolean(settings.allow_multiple_launches), restart_required: false },
       unwrap(boot.multi_instance) || {}
@@ -332,6 +336,7 @@ class OrbitApp {
   }
 
   renderPublicAccountSnapshot(account, compact) {
+    const hidden = Boolean(this.state.hideUsernames);
     const userId = this.publicUserId(account);
     if (!userId) return compact ? '' : '';
     const data = this.publicAccountMetadata(account);
@@ -339,16 +344,17 @@ class OrbitApp {
     const presence = data.presence;
     const preview = this.state.mode !== 'desktop';
     const errors = (this.state.publicRefreshErrors || {})[account.id] || {};
-    const identity = !preview && profile && (profile.display_name || profile.username) || account.display_name || account.username;
-    const username = !preview && profile && profile.username || account.username;
+    const identity = hidden ? 'Account #' + String(this.state.accounts.indexOf(account) + 1).padStart(2, '0') : (!preview && profile && (profile.display_name || profile.username) || account.display_name || account.username);
+    const username = hidden ? '••••••••' : (!preview && profile && profile.username || account.username);
+    const displayUserId = hidden ? '**********' : userId;
     const profileState = preview ? 'Public profile unavailable in Preview' : profile ? (profile.refreshed_at ? 'Public profile · ' + relativeTime(profile.refreshed_at) : 'Public profile saved') : 'Public profile not refreshed';
     const verified = !preview && profile && profile.has_verified_badge ? '<span class="public-verified">' + icon('shield') + ' Verified</span>' : '';
     const presenceState = preview ? 'preview-unavailable' : String(presence && presence.state || 'not-refreshed').toLowerCase();
     const profileError = errors.profile ? '<p class="public-account-error">Profile: ' + escapeHtml(errors.profile) + '</p>' : '';
     const presenceError = errors.presence ? '<p class="public-account-error">Presence: ' + escapeHtml(errors.presence) + '</p>' : '';
-    if (compact) return '<div class="public-account-table-snapshot"><strong>' + escapeHtml(identity) + verified + '</strong><small>@' + escapeHtml(username) + ' · ID ' + escapeHtml(userId) + '</small><span class="public-presence-state ' + escapeHtml(presenceState) + '">' + icon('activity') + escapeHtml(preview ? 'Preview unavailable' : this.publicPresenceLabel(presence)) + '</span></div>';
+    if (compact) return '<div class="public-account-table-snapshot"><strong>' + escapeHtml(identity) + verified + '</strong><small>@' + escapeHtml(username) + ' · ID ' + escapeHtml(displayUserId) + '</small><span class="public-presence-state ' + escapeHtml(presenceState) + '">' + icon('activity') + escapeHtml(preview ? 'Preview unavailable' : this.publicPresenceLabel(presence)) + '</span></div>';
     const previewDetail = preview ? 'Preview never simulates public Roblox profile or presence data.' : this.publicPresenceDetail(presence);
-    return '<section class="account-public-snapshot"><div class="public-identity"><span class="public-identity-label">Roblox public identity</span><strong>' + escapeHtml(identity) + verified + '</strong><small>@' + escapeHtml(username) + ' · ID ' + escapeHtml(userId) + '</small><em>' + escapeHtml(profileState) + '</em></div><div class="public-presence-snapshot"><span class="public-presence-state ' + escapeHtml(presenceState) + '">' + icon('activity') + escapeHtml(preview ? 'Preview unavailable' : this.publicPresenceLabel(presence)) + '</span><small>' + escapeHtml(previewDetail) + '</small></div>' + profileError + presenceError + this.renderPublicAccountActions(account, false) + '</section>';
+    return '<section class="account-public-snapshot"><div class="public-identity"><span class="public-identity-label">Roblox public identity</span><strong>' + escapeHtml(identity) + verified + '</strong><small>@' + escapeHtml(username) + ' · ID ' + escapeHtml(displayUserId) + '</small><em>' + escapeHtml(profileState) + '</em></div><div class="public-presence-snapshot"><span class="public-presence-state ' + escapeHtml(presenceState) + '">' + icon('activity') + escapeHtml(preview ? 'Preview unavailable' : this.publicPresenceLabel(presence)) + '</span><small>' + escapeHtml(previewDetail) + '</small></div>' + profileError + presenceError + this.renderPublicAccountActions(account, false) + '</section>';
   }
 
   renderAccountWatcherAction(account) {
@@ -363,6 +369,7 @@ class OrbitApp {
     document.documentElement.dataset.theme = settings.theme === 'light' ? 'light' : 'dark';
     document.documentElement.dataset.accent = settings.accent || 'violet';
     document.documentElement.dataset.density = settings.density || 'comfortable';
+    document.documentElement.dataset.privacy = this.state.hideUsernames ? 'on' : 'off';
     document.documentElement.style.colorScheme = settings.theme === 'light' ? 'light' : 'dark';
     if (settings.accent === 'custom' && typeof settings.accent_raw === 'string') {
       const rgb = hexToRgb(settings.accent_raw);
@@ -461,7 +468,7 @@ class OrbitApp {
   async copyNexusLuaScript() {
     try {
       const script = await this.bridge.call('get_nexus_lua_script');
-      await this.copyText(script);
+      await this.writeClipboard(script);
       this.toast('success', 'Nexus Lua Script Copied', 'Paste this script into your Roblox client executor.');
     } catch (error) {
       this.toast('error', 'Lua Script Error', error.message);
@@ -544,6 +551,26 @@ class OrbitApp {
     }
   }
 
+  async loadRobloxSettings(announce) {
+    if (this.state.mode !== 'desktop') {
+      this.state.robloxSettings = { loaded: true, available: false, reason: 'Preview mode never reads or edits Roblox installation files.', basic: {}, advanced: [], profiles: [], groups: [] };
+      if (this.state.route === 'settings' && this.state.settingsTab === 'roblox') this.render();
+      return null;
+    }
+    try {
+      const payload = unwrap(await this.bridge.call('get_roblox_settings_manager', '')) || {};
+      this.state.robloxSettings = Object.assign({ loaded: true, basic: {}, advanced: [], profiles: [], groups: [] }, payload, { loaded: true });
+      if (this.state.route === 'settings' && this.state.settingsTab === 'roblox') this.render();
+      if (announce) this.toast('success', 'Roblox settings refreshed', asArray(payload.advanced).length + ' scalar setting(s) read from GlobalBasicSettings_13.xml.');
+      return payload;
+    } catch (error) {
+      this.state.robloxSettings = { loaded: true, available: false, reason: error.message || 'Roblox settings could not be read.', basic: {}, advanced: [], profiles: [], groups: [] };
+      if (this.state.route === 'settings' && this.state.settingsTab === 'roblox') this.render();
+      if (announce) this.toast('error', 'Could not read Roblox settings', this.state.robloxSettings.reason);
+      return null;
+    }
+  }
+
   renderWindowsStartupSetting() {
     const status = this.windowsStartupStatus();
     if (this.state.mode !== 'desktop') return this.settingRow('Start with Windows', 'Preview mode cannot inspect or simulate the current-user Windows startup registration.', '<span class="badge warning">Desktop only</span>');
@@ -594,6 +621,9 @@ class OrbitApp {
     // This replaces the document outside render(), so the markup cache must be
     // dropped or the next render would skip the rebuild and keep this screen.
     this.state.lastRenderHtml = null;
+    this.state.lastSidebarHtml = null;
+    this.state.lastTopbarHtml = null;
+    this.state.lastPageHtml = null;
   }
 
   navItem(route, label, iconName, count) {
@@ -654,7 +684,7 @@ class OrbitApp {
   render() {
     const meta = this.pageMeta();
     const unread = this.state.notifications.filter(function (item) { return !item.read; }).length;
-    const html = '<aside class="sidebar" aria-label="Main navigation">' +
+    const sidebarHtml =
       '<div class="wordmark"><span class="wordmark-mark">' + icon('orbit') + '</span><span class="wordmark-copy"><strong>astro</strong><small>account manager</small></span></div>' +
       '<nav class="nav">' +
       '<p class="nav-label">Workspace</p>' +
@@ -670,19 +700,29 @@ class OrbitApp {
       this.navItem('settings', 'Settings', 'settings') +
       '</nav><div class="sidebar-spacer"></div>' +
       (this.state.mode === 'preview' ? '<div class="sidebar-preview"><strong><span></span> Preview workspace</strong><p>Native bridge unavailable. Changes are stored only in this browser.</p></div>' : '') +
-      '<button type="button" class="profile-button" data-action="navigate" data-route="settings">' + avatar({ username: 'You', avatar_color: 'blue' }, 'sm') + '<span class="profile-copy"><strong>Local workspace</strong><small>' + (this.state.mode === 'desktop' ? 'Desktop bridge connected' : 'Preview mode') + '</small></span>' + icon('chevronRight') + '</button>' +
-      '</aside><section class="workspace"><header class="topbar"><div class="page-title"><h1>' + escapeHtml(meta[0]) + '</h1><p>' + escapeHtml(meta[1]) + '</p></div><div class="topbar-spacer"></div>' +
+      '<button type="button" class="profile-button" data-action="navigate" data-route="settings">' + avatar({ username: 'You', avatar_color: 'blue' }, 'sm') + '<span class="profile-copy"><strong>Local workspace</strong><small>' + (this.state.mode === 'desktop' ? 'Desktop bridge connected' : 'Preview mode') + '</small></span>' + icon('chevronRight') + '</button>';
+    const topbarHtml = '<div class="page-title"><h1>' + escapeHtml(meta[0]) + '</h1><p>' + escapeHtml(meta[1]) + '</p></div><div class="topbar-spacer"></div>' +
       '<button class="search-button" type="button" data-action="open-palette">' + icon('search') + '<span>Search anything</span><span class="kbd">Ctrl K</span></button>' +
       '<button class="icon-button" type="button" data-action="toggle-theme" aria-label="Toggle color theme">' + icon(this.state.settings.theme === 'light' ? 'moon' : 'sun') + '</button>' +
-      '<span class="topbar-divider"></span><button class="icon-button" type="button" data-action="toggle-notifications" aria-label="Notifications">' + icon('bell') + (unread ? '<span class="notification-pip"></span>' : '') + '</button></header>' +
-      '<main id="app-main" class="page" tabindex="-1">' + this.renderPage() + '</main></section>';
-    // The 3 s poll used to rebuild the entire document on every tick, which
-    // also reset scrolling, focus and any open dropdown.  Identical markup
-    // means there is nothing visible to update.
-    if (html !== this.state.lastRenderHtml) {
-      this.state.lastRenderHtml = html;
+      '<span class="topbar-divider"></span><button class="icon-button" type="button" data-action="toggle-notifications" aria-label="Notifications">' + icon('bell') + (unread ? '<span class="notification-pip"></span>' : '') + '</button>';
+    const pageHtml = this.renderPage();
+    const html = '<aside class="sidebar" aria-label="Main navigation">' + sidebarHtml +
+      '</aside><section class="workspace"><header class="topbar">' + topbarHtml +
+      '</header><main id="app-main" class="page" tabindex="-1">' + pageHtml + '</main></section>';
+    const sidebar = this.root.querySelector('.sidebar');
+    const topbar = this.root.querySelector('.topbar');
+    const page = this.root.querySelector('#app-main');
+    if (!sidebar || !topbar || !page) {
       this.swapHtml(this.root, html);
+    } else {
+      if (sidebarHtml !== this.state.lastSidebarHtml) this.swapHtml(sidebar, sidebarHtml);
+      if (topbarHtml !== this.state.lastTopbarHtml) this.swapHtml(topbar, topbarHtml);
+      if (pageHtml !== this.state.lastPageHtml) this.swapHtml(page, pageHtml);
     }
+    this.state.lastRenderHtml = html;
+    this.state.lastSidebarHtml = sidebarHtml;
+    this.state.lastTopbarHtml = topbarHtml;
+    this.state.lastPageHtml = pageHtml;
     this.renderOverlays();
     if (this.state.route === 'nexus' && this.nexusEnabled()) {
       this.nexusSyncLineNumbers();
@@ -747,17 +787,15 @@ class OrbitApp {
       }
       lines.push('Roblox exposes a single global frame rate cap, so per-window rates are not applied.');
     }
-    const detail = lines.length ? '<div class="panel-note"><small>' + lines.join('<br>') + '</small></div>' : '';
+    const detail = lines.length ? '<div class="fleet-control-status" role="status"><span class="fleet-control-status-icon">' + icon('activity') + '</span><p>' + lines.join('<br>') + '</p></div>' : '<div class="fleet-control-status is-idle"><span class="fleet-control-status-icon">' + icon('info') + '</span><p>Choose a group, preview the waves, then launch when the plan looks right.</p></div>';
+    const capacity = resources && resources.estimated_additional_instances !== null && resources.estimated_additional_instances !== undefined ? resources.estimated_additional_instances : '—';
+    const planned = plan ? Number(plan.planned || 0) : 0;
+    const waves = plan ? Number(plan.waves || 0) : 0;
     return '<section class="section-header"><h3>Fleet control</h3><p>Stagger launches and keep the machine breathing</p><span class="section-line"></span></section>' +
-      '<section class="dashboard-grid"><article class="panel"><div class="panel-head"><h3>' + icon('rocket') + ' Smart launch</h3></div>' +
-      '<div class="panel-body"><label class="field-label" for="fleet-group">Group</label>' +
-      '<select class="input" id="fleet-group">' + options + '</select>' +
-      '<div class="button-row">' +
-      '<button class="button button-primary" type="button" data-action="smart-launch-group">Launch group</button>' +
-      '<button class="button button-quiet" type="button" data-action="smart-launch-preview">Preview waves</button>' +
-      '<button class="button button-quiet" type="button" data-action="stop-all-macros">Stop all macros</button>' +
-      '<button class="button button-quiet" type="button" data-action="apply-resource-plan">Apply frame rates</button>' +
-      '</div>' + detail + '</div></article></section>';
+      '<section class="panel fleet-control-card"><div class="fleet-control-overview"><div class="fleet-control-copy"><span class="fleet-control-mark">' + icon('rocket') + '</span><div><span class="eyebrow">Smart launch</span><h3>Prepare a safe launch plan</h3><p>Astro spaces accounts into bounded waves and checks the current machine budget first.</p></div></div><div class="fleet-control-metrics"><span><strong>' + escapeHtml(planned) + '</strong> planned</span><span><strong>' + escapeHtml(waves) + '</strong> waves</span><span><strong>' + escapeHtml(capacity) + '</strong> capacity</span></div></div>' +
+      '<div class="fleet-control-workspace"><div class="fleet-control-picker"><label for="fleet-group">Account group</label><select class="input" id="fleet-group">' + options + '</select><small>Previewing never launches or closes a client.</small></div>' +
+      '<div class="fleet-action-grid"><button class="fleet-action is-primary" type="button" data-action="smart-launch-preview"><span>' + icon('layout') + '</span><strong>Preview waves</strong><small>See order, delays and skipped accounts</small></button><button class="fleet-action" type="button" data-action="apply-resource-plan"><span>' + icon('activity') + '</span><strong>Apply resource plan</strong><small>Use the safe global frame-rate target</small></button><button class="fleet-action is-danger" type="button" data-action="stop-all-macros"><span>' + icon('x') + '</span><strong>Stop all macros</strong><small>End automation runs without closing Roblox</small></button><button class="fleet-action is-launch" type="button" data-action="smart-launch-group"><span>' + icon('play') + '</span><strong>Launch group</strong><small>Queue the selected group after validation</small></button></div></div>' +
+      '<div class="fleet-control-foot">' + detail + '<button class="section-link" type="button" data-action="navigate" data-route="fleet">Open advanced Fleet workspace ' + icon('chevronRight') + '</button></div></section>';
   }
 
   statCard(label, value, symbol, hint) {
@@ -773,7 +811,10 @@ class OrbitApp {
   }
 
   renderMiniAccount(account) {
-    return '<button class="mini-account" type="button" data-action="edit-account" data-id="' + escapeHtml(account.id) + '">' + avatar(account, 'sm') + '<span class="mini-account-copy"><strong>' + escapeHtml(account.display_name || account.username) + '</strong><span>' + escapeHtml(account.username) + ' · ' + relativeTime(account.last_used) + '</span></span><span class="status ' + escapeHtml(account.status) + '" aria-label="' + statusText(account.status) + '"></span></button>';
+    const hidden = Boolean(this.state.hideUsernames);
+    const label = hidden ? 'Account #' + String(this.state.accounts.indexOf(account) + 1).padStart(2, '0') : (account.display_name || account.username);
+    const username = hidden ? '••••••••' : account.username;
+    return '<button class="mini-account" type="button" data-action="edit-account" data-id="' + escapeHtml(account.id) + '">' + avatar(account, 'sm') + '<span class="mini-account-copy"><strong>' + escapeHtml(label) + '</strong><span>' + escapeHtml(username) + ' · ' + relativeTime(account.last_used) + '</span></span><span class="status ' + escapeHtml(account.status) + '" aria-label="' + statusText(account.status) + '"></span></button>';
   }
 
   renderClassicRamPanel() {
@@ -917,7 +958,9 @@ class OrbitApp {
     const servers = this.state.servers;
     const placeId = escapeHtml(game.place_id);
     const favorite = Boolean(game.favorite);
-    return '<div class="game-detail-hero"><span class="badge accent">' + escapeHtml(game.category || 'Game') + '</span><h3>' + escapeHtml(game.title) + '</h3><p>' + escapeHtml(game.creator || 'Unknown creator') + '</p></div><div class="detail-meta"><div><small>Place ID</small><strong title="' + placeId + '">' + placeId + '</strong></div><div><small>Playing now</small><strong>' + formatNumber(game.players) + '</strong></div><button class="icon-button" type="button" data-action="copy-place" data-value="' + placeId + '" aria-label="Copy Place ID">' + icon('copy') + '</button><button class="favorite-star ' + (favorite ? 'is-favorite' : '') + '" type="button" data-action="toggle-game-favorite" data-id="' + placeId + '" aria-label="' + (favorite ? 'Remove game from favorites' : 'Add game to favorites') + '" title="' + (favorite ? 'Remove from favorites' : 'Add to favorites') + '">' + icon('star') + '</button><button class="icon-button" type="button" data-action="open-remove-game" data-id="' + placeId + '" aria-label="Remove ' + escapeHtml(game.title) + ' from local games" title="Remove local game">' + icon('trash') + '</button></div><div class="panel-head"><h3>' + icon('monitor') + ' Public servers</h3><span>' + (this.state.serversLoading ? 'Refreshing...' : servers.length + ' visible') + '</span><button class="button button-sm" type="button" data-action="open-region-probe"' + (servers.length ? '' : ' disabled') + '>' + icon('globe') + ' Load regions</button></div><div class="server-list">' + (this.state.serversLoading ? '<div class="empty-notices">' + icon('refresh') + '<p>Checking available servers...</p></div>' : servers.length ? servers.slice(0, 7).map(this.renderServer.bind(this)).join('') : '<div class="empty-notices">' + icon('monitor') + '<p>No server list yet.</p></div>') + '</div>';
+    const filters = this.state.serverFilters || {};
+    const serverFilters = '<div class="form-grid"><div class="field"><label>Order</label><select id="server-sort"><option value="score"' + (filters.sort === 'score' ? ' selected' : '') + '>Best quality score</option><option value="lowest_players"' + (filters.sort === 'lowest_players' ? ' selected' : '') + '>Lowest players</option><option value="lowest_ping"' + (filters.sort === 'lowest_ping' ? ' selected' : '') + '>Lowest ping</option><option value="most_players"' + (filters.sort === 'most_players' ? ' selected' : '') + '>Most players</option></select></div><div class="field"><label>Minimum free slots</label><input id="server-min-slots" type="number" min="0" max="100" value="' + escapeHtml(filters.min_free_slots || 0) + '" /></div><label class="form-check field full"><input id="server-avoid-previous" type="checkbox"' + (filters.avoid_previous ? ' checked' : '') + ' /> Avoid previously used servers</label></div>';
+    return '<div class="game-detail-hero"><span class="badge accent">' + escapeHtml(game.category || 'Game') + '</span><h3>' + escapeHtml(game.title) + '</h3><p>' + escapeHtml(game.creator || 'Unknown creator') + '</p></div><div class="detail-meta"><div><small>Place ID</small><strong title="' + placeId + '">' + placeId + '</strong></div><div><small>Playing now</small><strong>' + formatNumber(game.players) + '</strong></div><button class="icon-button" type="button" data-action="copy-place" data-value="' + placeId + '" aria-label="Copy Place ID">' + icon('copy') + '</button><button class="favorite-star ' + (favorite ? 'is-favorite' : '') + '" type="button" data-action="toggle-game-favorite" data-id="' + placeId + '" aria-label="' + (favorite ? 'Remove game from favorites' : 'Add game to favorites') + '" title="' + (favorite ? 'Remove from favorites' : 'Add to favorites') + '">' + icon('star') + '</button><button class="icon-button" type="button" data-action="open-remove-game" data-id="' + placeId + '" aria-label="Remove ' + escapeHtml(game.title) + ' from local games" title="Remove local game">' + icon('trash') + '</button></div>' + serverFilters + '<div class="panel-head"><h3>' + icon('monitor') + ' Public servers</h3><span>' + (this.state.serversLoading ? 'Refreshing...' : servers.length + ' visible') + '</span><button class="button button-sm" type="button" data-action="open-server-distribution"' + (servers.length ? '' : ' disabled') + '>Distribute</button><button class="button button-sm" type="button" data-action="open-region-probe"' + (servers.length ? '' : ' disabled') + '>' + icon('globe') + ' Load regions</button></div><div class="server-list">' + (this.state.serversLoading ? '<div class="empty-notices">' + icon('refresh') + '<p>Checking available servers...</p></div>' : servers.length ? servers.slice(0, 7).map(this.renderServer.bind(this)).join('') : '<div class="empty-notices">' + icon('monitor') + '<p>No server list yet.</p></div>') + '</div>';
   }
 
   renderGameDetailSnapshot(game) {
@@ -928,7 +971,9 @@ class OrbitApp {
 
   renderServer(server) {
     const percent = Math.min(100, Math.round(Number(server.players || 0) / Math.max(1, Number(server.capacity || 1)) * 100));
-    return '<div class="server-row"><div class="server-copy"><strong>' + escapeHtml(server.region || 'Unknown region') + (server.vip ? ' · VIP' : '') + '</strong><span>' + escapeHtml(server.ping) + ' ms · ' + escapeHtml(server.job_id || 'No JobId') + '</span></div><div class="capacity"><span>' + escapeHtml(server.players) + ' / ' + escapeHtml(server.capacity) + '</span><i><b class="' + (percent > 78 ? 'warn' : '') + '" style="width:' + percent + '%"></b></i></div><button class="button button-sm" type="button" data-action="join-server" data-server="' + escapeHtml(server.id) + '">Join</button></div>';
+    const score = server.score === null || server.score === undefined ? '—' : String(server.score) + '/100';
+    const breakdown = server.score_breakdown || {};
+    return '<div class="server-row"><div class="server-copy"><strong>' + escapeHtml(server.region || 'Unknown region') + (server.vip ? ' · VIP' : '') + ' · Score ' + escapeHtml(score) + '</strong><span title="Ping ' + escapeHtml(breakdown.ping) + ' · slots ' + escapeHtml(breakdown.free_slots) + ' · FPS ' + escapeHtml(breakdown.fps) + ' · stability ' + escapeHtml(breakdown.stability) + '">' + escapeHtml(server.ping === null || server.ping === undefined ? 'unknown' : server.ping) + ' ms · ' + escapeHtml(server.free_slots) + ' free · ' + escapeHtml(server.job_id || 'No JobId') + '</span></div><div class="capacity"><span>' + escapeHtml(server.players) + ' / ' + escapeHtml(server.capacity) + '</span><i><b class="' + (percent > 78 ? 'warn' : '') + '" style="width:' + percent + '%"></b></i></div><button class="button button-sm" type="button" data-action="join-server" data-server="' + escapeHtml(server.id) + '"' + (server.eligible === false ? ' disabled' : '') + '>Join</button></div>';
   }
 
   renderInstances() {
@@ -942,7 +987,7 @@ class OrbitApp {
     const pending = asArray(monitor.pending_restarts);
     const pendingBlock = pending.length ? '<section class="panel monitor-detail-panel"><div class="panel-head"><h3>' + icon('refresh') + ' Pending restarts</h3><span>' + pending.length + '</span></div><div class="activity-list">' + pending.slice(0, 5).map(function (request) { const account = this.findAccount(request.account_id); return '<div class="activity-row"><span class="activity-icon">' + icon('refresh') + '</span><div class="activity-copy"><strong>' + escapeHtml(account ? account.display_name || account.username : 'Account') + '</strong><small>Place ' + escapeHtml(request.place_id || 'unknown') + ' - attempt ' + escapeHtml(request.attempt || 0) + '</small></div><time class="activity-time">' + relativeTime(request.due_at) + '</time></div>'; }.bind(this)).join('') + '</div></section>' : '';
     const eventBlock = events.length ? '<section class="panel monitor-detail-panel"><div class="panel-head"><h3>' + icon('activity') + ' Recent monitor events</h3><span>' + events.length + '</span></div><div class="activity-list">' + this.renderActivity(events) + '</div></section>' : '';
-    return '<section class="page-heading"><div class="page-heading-copy"><h2>Every running session, accounted for.</h2><p>Astro Account Manager keeps launch state, process IDs, and lightweight health signals together so active accounts never become guesswork.</p></div><div class="page-heading-actions"><button class="button button-primary" type="button" data-action="refresh-instances">' + icon('refresh') + ' Refresh instances</button></div></section><section class="instance-summary"><article class="panel monitor-card"><h3>Instance watcher</h3><p>Current local process observations from the desktop bridge.</p><div class="pulse-track"><svg class="pulse-svg" preserveAspectRatio="none" viewBox="0 0 400 55"><polyline points="0,33 22,33 32,19 42,42 54,28 67,33 97,33 112,18 123,42 138,25 152,33 193,33 204,21 217,38 231,33 279,33 294,16 305,42 320,27 334,33 400,33"></polyline></svg></div><div class="monitor-footer"><span>' + escapeHtml(scanLabel) + '</span><span>' + this.state.instances.length + ' tracked process' + (this.state.instances.length === 1 ? '' : 'es') + '</span><span class="monitor-mode">' + escapeHtml(closeLabel) + '</span></div></article><article class="panel"><div class="panel-head"><h3>' + icon('shield') + ' Service health</h3><span>' + escapeHtml(this.state.diagnostics.status || 'Healthy') + '</span></div><div class="health-list">' + services.map(function (service) { return '<div class="health-row"><span class="health-symbol">' + icon(service.status === 'degraded' ? 'alert' : 'check') + '</span><span class="health-copy"><strong>' + escapeHtml(service.name) + '</strong><span>' + escapeHtml(service.detail) + '</span></span><span class="status ' + escapeHtml(service.status || 'healthy') + '"></span></div>'; }).join('') + '</div></article></section><section class="section-header"><h3>Observed instances</h3><p>Tracked locally by the desktop bridge</p><span class="section-line"></span></section>' + this.renderInstancesTable() + '<section class="monitor-detail-grid">' + pendingBlock + eventBlock + '</section>' + (this.nexusEnabled() ? this.renderNexusSection() : '');
+    return '<section class="page-heading"><div class="page-heading-copy"><h2>Every running session, accounted for.</h2><p>Astro Account Manager keeps launch state, process IDs, and lightweight health signals together so active accounts never become guesswork.</p></div><div class="page-heading-actions"><button class="button" type="button" data-action="show-all-instances">Show all</button><button class="button button-primary" type="button" data-action="refresh-instances">' + icon('refresh') + ' Refresh instances</button></div></section><section class="instance-summary"><article class="panel monitor-card"><h3>Instance watcher</h3><p>Current local process observations from the desktop bridge.</p><div class="pulse-track"><svg class="pulse-svg" preserveAspectRatio="none" viewBox="0 0 400 55"><polyline points="0,33 22,33 32,19 42,42 54,28 67,33 97,33 112,18 123,42 138,25 152,33 193,33 204,21 217,38 231,33 279,33 294,16 305,42 320,27 334,33 400,33"></polyline></svg></div><div class="monitor-footer"><span>' + escapeHtml(scanLabel) + '</span><span>' + this.state.instances.length + ' tracked process' + (this.state.instances.length === 1 ? '' : 'es') + '</span><span class="monitor-mode">' + escapeHtml(closeLabel) + '</span></div></article><article class="panel"><div class="panel-head"><h3>' + icon('shield') + ' Service health</h3><span>' + escapeHtml(this.state.diagnostics.status || 'Healthy') + '</span></div><div class="health-list">' + services.map(function (service) { return '<div class="health-row"><span class="health-symbol">' + icon(service.status === 'degraded' ? 'alert' : 'check') + '</span><span class="health-copy"><strong>' + escapeHtml(service.name) + '</strong><span>' + escapeHtml(service.detail) + '</span></span><span class="status ' + escapeHtml(service.status || 'healthy') + '"></span></div>'; }).join('') + '</div></article></section><section class="section-header"><h3>Observed instances</h3><p>Tracked locally by the desktop bridge</p><span class="section-line"></span></section>' + this.renderInstancesTable() + '<section class="monitor-detail-grid">' + pendingBlock + eventBlock + '</section>' + (this.nexusEnabled() ? this.renderNexusSection() : '');
   }
 
   renderNexusSection() {
@@ -1119,9 +1164,13 @@ class OrbitApp {
 
   renderInstancesTable() {
     if (!this.state.instances.length) return this.emptyState('monitor', 'No Roblox instances found', 'Launch an account to start watching it here.', 'Go to accounts', 'navigate-accounts');
-    return '<div class="data-table-wrap"><table class="data-table"><thead><tr><th>Account</th><th>Experience</th><th>State</th><th>Process</th><th>Memory</th><th>Started</th><th aria-label="Actions"></th></tr></thead><tbody>' + this.state.instances.map(function (instance) {
+    return '<div class="data-table-wrap"><table class="data-table"><thead><tr><th>Account</th><th>Experience</th><th>State</th><th>Process</th><th>CPU</th><th>Memory</th><th>Started</th><th aria-label="Actions"></th></tr></thead><tbody>' + this.state.instances.map(function (instance) {
       const account = this.state.accounts.find(function (item) { return String(item.id) === String(instance.account_id); }) || { username: 'Unknown', avatar_color: 'neutral' };
-      return '<tr><td><div class="table-account">' + avatar(account, 'sm') + '<span><strong>' + escapeHtml(account.display_name || account.username) + '</strong><small>@' + escapeHtml(account.username) + '</small></span></div></td><td><span>' + escapeHtml(instance.game || 'Roblox') + '</span><br /><small class="mono">' + escapeHtml(instance.server || '-') + '</small></td><td><span class="status ' + escapeHtml(instance.state || 'running') + '">' + statusText(instance.state || 'running') + '</span></td><td><span class="mono">PID ' + escapeHtml(instance.pid || '-') + '</span></td><td><span class="mono">' + escapeHtml(instance.memory_mb || '-') + ' MB</span></td><td><span class="mono">' + relativeTime(instance.started_at) + '</span></td><td><div class="table-actions">' + this.renderInstanceActions(instance) + '</div></td></tr>';
+      const hidden = Boolean(this.state.hideUsernames);
+      const label = hidden ? 'Account #' + String(this.state.accounts.indexOf(account) + 1).padStart(2, '0') : (account.display_name || account.username);
+      const username = hidden ? '••••••••' : account.username;
+      const leak = instance.memory_leak && instance.memory_leak.probable ? '<span class="badge warning" title="' + escapeHtml(instance.memory_leak.reason || '') + '">Leak?</span>' : '';
+      return '<tr><td><div class="table-account">' + avatar(account, 'sm') + '<span><strong>' + escapeHtml(label) + '</strong><small>@' + escapeHtml(username) + '</small></span></div></td><td><span>' + escapeHtml(instance.game || 'Roblox') + '</span><br /><small class="mono">' + escapeHtml(instance.server || '-') + '</small></td><td><span class="status ' + escapeHtml(instance.state || 'running') + '">' + statusText(instance.state || 'running') + '</span></td><td><span class="mono">PID ' + escapeHtml(instance.pid || '-') + '</span></td><td><span class="mono">' + escapeHtml(instance.cpu_percent === null || instance.cpu_percent === undefined ? '—' : instance.cpu_percent + '%') + '</span></td><td><span class="mono">' + escapeHtml(instance.memory_mb === null || instance.memory_mb === undefined ? '—' : instance.memory_mb + ' MB') + '</span> ' + leak + '</td><td><span class="mono">' + relativeTime(instance.started_at) + '</span></td><td><div class="table-actions">' + this.renderInstanceActions(instance) + '</div></td></tr>';
     }.bind(this)).join('') + '</tbody></table></div>';
   }
 
@@ -1130,8 +1179,10 @@ class OrbitApp {
     const canClose = Boolean(this.state.instanceMonitor && this.state.instanceMonitor.termination_enabled);
     const bind = instance.state === 'orphaned' ? '<button class="button button-sm" type="button" data-action="open-bind-instance" data-pid="' + pid + '">' + icon('users') + ' Associate</button>' : '';
     const layout = instance.account_id ? '<button class="icon-button" type="button" data-action="save-window-layout" data-pid="' + pid + '" aria-label="Save Roblox window position" title="Save window position">' + icon('database') + '</button><button class="icon-button" type="button" data-action="restore-window-layout" data-pid="' + pid + '" aria-label="Restore Roblox window position" title="Restore window position">' + icon('layout') + '</button>' : '';
+    const visibility = instance.visibility || {};
+    const visibilityAction = visibility.supported && visibility.window_found ? '<button class="button button-sm" type="button" data-action="set-instance-visibility" data-pid="' + pid + '" data-visible="' + (visibility.hidden ? 'true' : 'false') + '">' + (visibility.hidden ? 'Show' : 'Hide') + '</button>' : '';
     const close = canClose ? '<button class="icon-button" type="button" data-action="open-close-instance" data-pid="' + pid + '" aria-label="Close Roblox process ' + pid + '" title="Close instance">' + icon('x') + '</button>' : '<span class="instance-action-note" title="Enable instance closing in Settings before closing a process">Closing disabled</span>';
-    return bind + layout + close;
+    return bind + visibilityAction + layout + close;
   }
 
   renderInstancesTableSnapshot() {
@@ -1144,6 +1195,16 @@ class OrbitApp {
 
   renderMacroBlock(block, index) {
     const kind = String(block.type || 'wait');
+    const meta = {
+      wait: ['Wait', 'clock', 'Pause before the next action'],
+      key_press: ['Press key', 'command', 'Send one bounded key press'],
+      mouse_click: ['Click window', 'crosshair', 'Click at a relative position'],
+      text: ['Type text', 'terminal', 'Type a short text value'],
+      condition: ['Condition', 'filter', 'Continue only when a check matches'],
+      launch: ['Launch', 'rocket', 'Open the assigned account'],
+      teleport: ['Teleport', 'globe', 'Move to a PlaceId or JobId'],
+      restart: ['Restart', 'refresh', 'Restart and continue this run']
+    }[kind] || [kind, 'zap', 'Macro action'];
     let fields = '';
     if (kind === 'wait') fields = '<label>Milliseconds<input data-block-field="milliseconds" type="number" min="0" max="60000" value="' + escapeHtml(block.milliseconds || 0) + '" /></label>';
     if (kind === 'key_press') fields = '<label>Key<input data-block-field="key" maxlength="24" value="' + escapeHtml(block.key || 'W') + '" /></label><label>Hold ms<input data-block-field="milliseconds" type="number" min="1" max="10000" value="' + escapeHtml(block.milliseconds || 80) + '" /></label>';
@@ -1152,17 +1213,22 @@ class OrbitApp {
     if (kind === 'condition') fields = '<label>Check<select data-block-field="check">' + ['runtime_above', 'runtime_below', 'checkpoint_reached', 'checkpoint_missing', 'variable_equals', 'variable_missing', 'account_running', 'account_stopped'].map(function (name) { return '<option value="' + name + '"' + (String(block.check || 'runtime_above') === name ? ' selected' : '') + '>' + name.replace(/_/g, ' ') + '</option>'; }).join('') + '</select></label><label>Value<input data-block-field="value" maxlength="120" value="' + escapeHtml(block.value || '') + '" placeholder="seconds, name or VAR value" /></label><label>Then<select data-block-field="then"><option value="stop"' + (String(block.then || 'stop') === 'stop' ? ' selected' : '') + '>Stop the macro</option><option value="launch"' + (block.then === 'launch' ? ' selected' : '') + '>Launch the client</option><option value="restart"' + (block.then === 'restart' ? ' selected' : '') + '>Restart the client</option></select></label>';
     if (kind === 'teleport') fields = '<label>Place id<input data-block-field="place_id" maxlength="20" value="' + escapeHtml(block.place_id || '') + '" /></label><label>JobId (optional)<input data-block-field="job_id" maxlength="64" value="' + escapeHtml(block.job_id || '') + '" /></label>';
     if (kind === 'launch' || kind === 'restart') fields = '<label><small>' + (kind === 'launch' ? 'Launches this account, then re-pins the run to the new client.' : 'Closes this account and relaunches it, then continues.') + '</small></label>';
-    return '<div class="macro-block" data-block-index="' + index + '" data-block-type="' + escapeHtml(kind) + '"><span class="macro-block-grip">⋮⋮</span><strong>' + escapeHtml({ wait: 'Wait', key_press: 'Press key', mouse_click: 'Click window', text: 'Type text', condition: 'If', launch: 'Launch', teleport: 'Teleport', restart: 'Restart' }[kind] || kind) + '</strong>' + fields + '<button class="icon-button" type="button" data-action="remove-macro-block" data-index="' + index + '" aria-label="Remove block">' + icon('x') + '</button></div>';
+    return '<article class="macro-block" data-block-index="' + index + '" data-block-type="' + escapeHtml(kind) + '"><header class="macro-block-head"><span class="macro-step-number">' + (index + 1) + '</span><span class="macro-block-icon">' + icon(meta[1]) + '</span><div><strong>' + escapeHtml(meta[0]) + '</strong><small>' + escapeHtml(meta[2]) + '</small></div><div class="macro-block-order"><button class="icon-button macro-move-up" type="button" data-action="move-macro-block" data-index="' + index + '" data-direction="-1" aria-label="Move step up"' + (index === 0 ? ' disabled' : '') + '>' + icon('chevronDown') + '</button><button class="icon-button" type="button" data-action="move-macro-block" data-index="' + index + '" data-direction="1" aria-label="Move step down"' + (index === this.state.macroDraftBlocks.length - 1 ? ' disabled' : '') + '>' + icon('chevronDown') + '</button><button class="icon-button danger" type="button" data-action="remove-macro-block" data-index="' + index + '" aria-label="Remove step">' + icon('trash') + '</button></div></header><div class="macro-block-fields">' + fields + '</div></article>';
   }
 
   renderMacros() {
-    const accountOptions = '<option value="">Any matched account</option>' + this.state.accounts.map(function (account) { return '<option value="' + escapeHtml(account.id) + '">' + escapeHtml(account.display_name || account.username) + '</option>'; }).join('');
+    const accountOptions = '<option value="">Any matched account</option>' + this.state.accounts.map(function (account) { return '<option value="' + escapeHtml(account.id) + '"' + (String(account.id) === String(this.state.macroDraftAccountId || '') ? ' selected' : '') + '>' + escapeHtml(account.display_name || account.username) + '</option>'; }.bind(this)).join('');
     const singleInstancePid = this.state.instances.length === 1 ? String(this.state.instances[0].pid) : '';
     const instanceOptions = this.state.instances.map(function (instance) { const account = this.findAccount(instance.account_id); return '<option value="' + escapeHtml(instance.pid) + '"' + (String(instance.pid) === singleInstancePid ? ' selected' : '') + '>PID ' + escapeHtml(instance.pid) + ' · ' + escapeHtml(account ? account.display_name || account.username : 'Unassigned Roblox') + '</option>'; }.bind(this)).join('');
-    const runs = this.state.macroRuns.length ? this.state.macroRuns.map(function (run) { const delivery = run.delivery_mode === 'minimized_input' ? 'Minimized / invisible' : 'Foreground input'; return '<div class="activity-row"><div class="activity-copy"><strong>' + escapeHtml(run.macro_name) + '</strong><small>PID ' + escapeHtml(run.pid) + ' · ' + escapeHtml(run.state) + ' · step ' + escapeHtml(run.current_step || 0) + ' · ' + escapeHtml(delivery) + '</small></div>' + (['running', 'starting'].includes(run.state) ? '<button class="button button-sm button-danger" type="button" data-action="stop-macro" data-id="' + escapeHtml(run.run_id) + '">Stop</button>' : '') + '</div>'; }).join('') : '<div class="empty-notices">' + icon('activity') + '<p>No macro is running.</p></div>';
-    const cards = this.state.macros.length ? this.state.macros.map(function (macro) { const account = this.findAccount(macro.account_id); return '<article class="panel macro-card"><div><span class="badge accent">' + escapeHtml(macro.mode === 'dsl' ? 'Direct DSL' : 'Blocks') + '</span><h3>' + escapeHtml(macro.name) + '</h3><p>' + escapeHtml(macro.description || 'No description') + '</p><small>' + escapeHtml(account ? 'Assigned to ' + (account.display_name || account.username) : 'Usable on any matched account') + '</small></div><div class="macro-card-actions"><select id="macro-target-' + escapeHtml(macro.id) + '" aria-label="Target Roblox instance"><option value=""' + (singleInstancePid ? '' : ' selected') + '>Choose an instance…</option>' + instanceOptions + '</select><button class="button button-sm button-primary" type="button" data-action="start-macro" data-id="' + escapeHtml(macro.id) + '"' + (instanceOptions ? '' : ' disabled') + '>' + icon('play') + ' Run</button><button class="icon-button" type="button" data-action="delete-macro" data-id="' + escapeHtml(macro.id) + '" aria-label="Delete macro">' + icon('trash') + '</button></div></article>'; }.bind(this)).join('') : this.emptyInline('zap', 'No saved macros', 'Create one with visual blocks or the direct Astro DSL.');
-    const blockEditor = this.state.macroEditorMode === 'blocks' ? '<div class="macro-toolbox"><button type="button" class="button button-sm" data-action="add-macro-block" data-kind="wait">+ Wait</button><button type="button" class="button button-sm" data-action="add-macro-block" data-kind="key_press">+ Key</button><button type="button" class="button button-sm" data-action="add-macro-block" data-kind="mouse_click">+ Click</button><button type="button" class="button button-sm" data-action="add-macro-block" data-kind="text">+ Text</button><button type="button" class="button button-sm" data-action="add-macro-block" data-kind="condition">+ Condition</button><button type="button" class="button button-sm" data-action="add-macro-block" data-kind="launch">+ Launch</button><button type="button" class="button button-sm" data-action="add-macro-block" data-kind="teleport">+ Teleport</button><button type="button" class="button button-sm" data-action="add-macro-block" data-kind="restart">+ Restart</button></div><div class="macro-block-list">' + this.state.macroDraftBlocks.map(this.renderMacroBlock.bind(this)).join('') + '</div>' : '<div class="field full"><label for="macro-source">Direct Astro DSL</label><textarea id="macro-source" name="source" rows="12" spellcheck="false" placeholder="PRESS W 120&#10;WAIT 1000&#10;CLICK 0.5 0.5&#10;TEXT &quot;hello&quot;"></textarea><span class="mono">Commands: WAIT, PRESS, DOWN, UP, CLICK, TEXT, REPEAT/END, IF/END, LAUNCH, TELEPORT, RESTART, STOP. No eval or arbitrary process execution.</span></div>';
-    return '<section class="page-heading"><div class="page-heading-copy"><h2>Automate each instance independently.</h2><p>Every run is pinned to one verified PID and creation time. A minimized Roblox client stays invisible: keyboard input is delivered while it remains iconified, and coordinate clicks use a 1/255-alpha Windows surface for only the input instant before returning to the taskbar. Nexus is not used by macros.</p></div><div class="page-heading-actions"><button class="button" type="button" data-action="refresh-macros">' + icon('refresh') + ' Refresh</button></div></section><section class="macro-layout"><div><section class="panel settings-section"><header class="settings-section-head"><div><h3>Macro maker</h3><p>Visual blocks and direct coding compile to the same bounded action tree.</p></div></header><form data-form="macro"><div class="modal-body"><p class="form-error" hidden></p><div class="form-grid"><div class="field"><label>Name</label><input name="name" required maxlength="120" /></div><div class="field"><label>Assigned account</label><select name="account_id">' + accountOptions + '</select></div><div class="field full"><label>Description</label><input name="description" maxlength="500" /></div><div class="field"><label>Editor</label><select id="macro-editor-mode" name="mode"><option value="blocks"' + (this.state.macroEditorMode === 'blocks' ? ' selected' : '') + '>Scratch-like blocks</option><option value="dsl"' + (this.state.macroEditorMode === 'dsl' ? ' selected' : '') + '>Direct DSL</option></select></div></div>' + blockEditor + '</div><footer class="modal-foot"><button class="button button-primary" type="submit">' + icon('check') + ' Save macro</button></footer></form></section><section class="section-header"><h3>Saved macros</h3><span class="section-line"></span></section><div class="macro-cards">' + cards + '</div></div><aside class="panel macro-runs"><div class="panel-head"><h3>' + icon('activity') + ' Concurrent runs</h3></div><div class="activity-list">' + runs + '</div></aside></section>';
+    const runs = this.state.macroRuns.length ? this.state.macroRuns.map(function (run) { const delivery = run.delivery_mode === 'minimized_input' ? 'Background delivery' : 'Foreground delivery'; const running = ['running', 'starting'].includes(run.state); return '<article class="macro-run"><span class="macro-run-state ' + (running ? 'is-live' : '') + '"></span><div><strong>' + escapeHtml(run.macro_name) + '</strong><small>PID ' + escapeHtml(run.pid) + ' · step ' + escapeHtml(run.current_step || 0) + '</small><span>' + escapeHtml(delivery) + '</span></div><span class="badge">' + escapeHtml(run.state) + '</span>' + (running ? '<button class="button button-xs button-danger" type="button" data-action="stop-macro" data-id="' + escapeHtml(run.run_id) + '">Stop</button>' : '') + '</article>'; }).join('') : '<div class="macro-empty-run">' + icon('activity') + '<strong>No active run</strong><p>Start a saved macro on a verified instance. Its progress will appear here.</p></div>';
+    const cards = this.state.macros.length ? this.state.macros.map(function (macro) { const account = this.findAccount(macro.account_id); const steps = asArray(macro.actions).length; return '<article class="panel macro-card"><div class="macro-card-copy"><div class="macro-card-meta"><span class="badge accent">' + escapeHtml(macro.mode === 'dsl' ? 'DSL' : 'Visual') + '</span><span>' + escapeHtml(steps) + ' step' + (steps === 1 ? '' : 's') + '</span></div><h3>' + escapeHtml(macro.name) + '</h3><p>' + escapeHtml(macro.description || 'No description yet.') + '</p><small>' + escapeHtml(account ? 'Assigned to ' + (account.display_name || account.username) : 'Available for any matched account') + '</small></div><div class="macro-card-actions"><label for="macro-target-' + escapeHtml(macro.id) + '">Run on</label><select id="macro-target-' + escapeHtml(macro.id) + '" aria-label="Target Roblox instance"><option value=""' + (singleInstancePid ? '' : ' selected') + '>Choose a verified instance…</option>' + instanceOptions + '</select><button class="button button-primary" type="button" data-action="start-macro" data-id="' + escapeHtml(macro.id) + '"' + (instanceOptions ? '' : ' disabled') + '>' + icon('play') + ' Run macro</button><button class="icon-button" type="button" data-action="delete-macro" data-id="' + escapeHtml(macro.id) + '" aria-label="Delete macro">' + icon('trash') + '</button></div></article>'; }.bind(this)).join('') : this.emptyInline('zap', 'No saved macros', 'Build your first sequence above, save it, then choose a verified instance.');
+    const tools = [
+      ['wait', 'clock', 'Wait', 'Pause the sequence'], ['key_press', 'command', 'Key', 'Press and release'], ['mouse_click', 'crosshair', 'Click', 'Relative window point'], ['text', 'terminal', 'Text', 'Type a value'],
+      ['condition', 'filter', 'Condition', 'Branch on state'], ['launch', 'rocket', 'Launch', 'Open the account'], ['teleport', 'globe', 'Teleport', 'Change destination'], ['restart', 'refresh', 'Restart', 'Recover and continue']
+    ].map(function (tool) { return '<button type="button" class="macro-tool" data-action="add-macro-block" data-kind="' + tool[0] + '"><span>' + icon(tool[1]) + '</span><strong>' + tool[2] + '</strong><small>' + tool[3] + '</small></button>'; }).join('');
+    const blockEditor = this.state.macroEditorMode === 'blocks' ? '<section class="macro-builder"><div class="macro-builder-head"><div><h4>Action library</h4><p>Add steps, then reorder them with the arrows.</p></div><span class="badge accent">' + this.state.macroDraftBlocks.length + ' step' + (this.state.macroDraftBlocks.length === 1 ? '' : 's') + '</span></div><div class="macro-tool-grid">' + tools + '</div><div class="macro-sequence-head"><span>Sequence</span><small>Runs from top to bottom</small></div><div class="macro-block-list">' + (this.state.macroDraftBlocks.length ? this.state.macroDraftBlocks.map(this.renderMacroBlock.bind(this)).join('') : '<div class="macro-sequence-empty">' + icon('plus') + '<strong>Your sequence is empty</strong><p>Choose an action above to add the first step.</p></div>') + '</div></section>' : '<section class="macro-code-editor"><header><div><h4>Astro DSL</h4><p>Write the same bounded actions directly.</p></div><span class="badge">No arbitrary code</span></header><textarea id="macro-source" name="source" rows="16" spellcheck="false" placeholder="PRESS W 120&#10;WAIT 1000&#10;CLICK 0.5 0.5&#10;TEXT &quot;hello&quot;">' + escapeHtml(this.state.macroDraftSource) + '</textarea><div class="macro-command-strip"><span>WAIT</span><span>PRESS</span><span>DOWN / UP</span><span>CLICK</span><span>TEXT</span><span>REPEAT</span><span>IF</span><span>LAUNCH</span><span>TELEPORT</span><span>RESTART</span><span>STOP</span></div></section>';
+    const visualActive = this.state.macroEditorMode === 'blocks';
+    return '<section class="page-heading macro-page-heading"><div class="page-heading-copy"><span class="eyebrow">Per-instance automation</span><h2>Build a sequence. Pick an instance. Run.</h2><p>Visual steps and Astro DSL use the same bounded engine. Each run is pinned to the verified process you choose.</p></div><div class="page-heading-actions"><button class="button" type="button" data-action="refresh-macros">' + icon('refresh') + ' Refresh</button></div></section><section class="macro-workflow" aria-label="Macro workflow"><span class="is-active"><b>1</b> Define</span><i></i><span class="is-active"><b>2</b> Build actions</span><i></i><span><b>3</b> Save &amp; run</span></section><section class="macro-layout"><div class="macro-main"><section class="panel macro-editor-panel"><form data-form="macro"><header class="macro-editor-head"><div><h3>New macro</h3><p>Give this sequence a clear purpose and optional account scope.</p></div><div class="macro-mode-switch" role="group" aria-label="Macro editor mode"><button type="button" class="' + (visualActive ? 'is-active' : '') + '" data-action="set-macro-editor-mode" data-mode="blocks">' + icon('layout') + ' Visual</button><button type="button" class="' + (!visualActive ? 'is-active' : '') + '" data-action="set-macro-editor-mode" data-mode="dsl">' + icon('code') + ' DSL</button></div></header><div class="macro-editor-body"><p class="form-error" hidden></p><input type="hidden" name="mode" value="' + (visualActive ? 'blocks' : 'dsl') + '" /><div class="macro-setup-grid"><div class="field"><label for="macro-draft-name">Name</label><input id="macro-draft-name" name="name" required maxlength="120" value="' + escapeHtml(this.state.macroDraftName) + '" placeholder="Daily rewards" /></div><div class="field"><label for="macro-draft-account">Assigned account</label><select id="macro-draft-account" name="account_id">' + accountOptions + '</select></div><div class="field full"><label for="macro-draft-description">Description</label><input id="macro-draft-description" name="description" maxlength="500" value="' + escapeHtml(this.state.macroDraftDescription) + '" placeholder="What this macro does and when to use it" /></div></div>' + blockEditor + '</div><footer class="macro-editor-foot"><span>' + icon('shield') + ' Local, bounded and tied to a verified PID</span><button class="button button-primary" type="submit">' + icon('check') + ' Save macro</button></footer></form></section><section class="section-header"><h3>Saved macros</h3><p>' + escapeHtml(this.state.macros.length) + ' available</p><span class="section-line"></span></section><div class="macro-cards">' + cards + '</div></div><aside class="panel macro-runs"><div class="panel-head"><h3>' + icon('activity') + ' Live runs</h3><span class="badge">' + escapeHtml(this.state.macroRuns.filter(function (run) { return ['running', 'starting'].includes(run.state); }).length) + ' active</span></div><div class="macro-run-list">' + runs + '</div></aside></section>';
   }
 
   maybeWarnRunningRoblox() {
@@ -1270,8 +1336,9 @@ class OrbitApp {
       if (wanted === 'health') data.health = unwrap(await this.bridge.call('get_account_health', { tags: filters.tags, status: filters.status, query: filters.query })) || {};
       if (wanted === 'servers') data.servers = unwrap(await this.bridge.call('get_server_registry', filters.placeId || '')) || {};
       if (wanted === 'comfort') {
-        data.comfort = unwrap(await this.bridge.call('get_comfort_overview', null)) || {};
-        data.wave = unwrap(await this.bridge.call('get_wave_status')) || {};
+        const comfortPayloads = await Promise.all([this.bridge.call('get_comfort_overview', null), this.bridge.call('get_wave_status')]);
+        data.comfort = unwrap(comfortPayloads[0]) || {};
+        data.wave = unwrap(comfortPayloads[1]) || {};
       }
       if (wanted === 'alerts') data.alerts = unwrap(await this.bridge.call('get_alert_settings')) || {};
       if (wanted === 'rules') data.rules = unwrap(await this.bridge.call('get_rules_overview')) || {};
@@ -1311,13 +1378,15 @@ class OrbitApp {
     const days = stats.window_days || 28;
     const peak = heatmap.peak ? heatmap.peak.day + ' ' + heatmap.peak.hour + 'h (' + heatmap.peak.minutes + ' min)' : 'no peak yet';
     const ceiling = Math.max(1, Number(heatmap.peak_minutes || 0));
+    const hourAxis = Array.from({ length: 24 }, function (_, hour) { return '<span>' + (hour % 3 === 0 ? String(hour).padStart(2, '0') : '') + '</span>'; }).join('');
     const grid = asArray(heatmap.rows).map(function (row) {
       const cells = asArray(row.hours).map(function (value, hour) {
         const ratio = Math.min(1, Number(value || 0) / ceiling);
         const tint = ratio === 0 ? 'transparent' : 'rgba(99, 102, 241, ' + (0.12 + ratio * 0.78).toFixed(2) + ')';
-        return '<span class="heat-cell" title="' + escapeHtml(row.day + ' ' + hour + 'h: ' + value + ' min') + '" style="background:' + tint + '"></span>';
+        const label = row.day + ' at ' + String(hour).padStart(2, '0') + ':00 · ' + value + ' minute' + (Number(value) === 1 ? '' : 's');
+        return '<span class="heat-cell" role="img" aria-label="' + escapeHtml(label) + '" title="' + escapeHtml(label) + '" style="background:' + tint + '"></span>';
       }).join('');
-      return '<div class="heat-row"><small>' + escapeHtml(row.day) + '</small><div class="heat-cells">' + cells + '</div><small>' + escapeHtml(row.total_minutes) + 'm</small></div>';
+      return '<div class="heat-row"><strong>' + escapeHtml(String(row.day || '').slice(0, 3)) + '</strong><div class="heat-cells">' + cells + '</div><small>' + escapeHtml(row.total_minutes) + 'm</small></div>';
     }).join('');
     const reliability = asArray(stats.reliability).slice(0, 12).map(function (row) {
       const score = row.score === null || row.score === undefined ? '—' : row.score + '%';
@@ -1339,7 +1408,7 @@ class OrbitApp {
       this.statCard('Crashes', totals.crashes || 0, 'shield', totals.crash_rate === null || totals.crash_rate === undefined ? 'No sessions yet' : totals.crash_rate + '% of sessions') +
       this.statCard('Macro success', macros.success_rate === null || macros.success_rate === undefined ? '—' : macros.success_rate + '%', 'zap', (macros.completed || 0) + ' of ' + (macros.total || 0) + ' runs') +
       '</section>' +
-      '<section class="panel"><div class="panel-head"><h3>' + icon('activity') + ' Hourly heatmap</h3><div class="macro-toolbox"><button type="button" class="button button-sm" data-action="fleet-stats-window" data-days="7">7 days</button><button type="button" class="button button-sm" data-action="fleet-stats-window" data-days="28">28 days</button><button type="button" class="button button-sm" data-action="fleet-stats-window" data-days="90">90 days</button></div></div><p class="mono">Peak: ' + escapeHtml(peak) + ' · ' + escapeHtml(heatmap.total_minutes || 0) + ' minutes measured</p><div class="heatmap">' + (grid || '<p class="mono">No session has been recorded yet.</p>') + '</div></section>' +
+      '<section class="panel heatmap-panel"><div class="panel-head"><div><h3>' + icon('activity') + ' Hourly activity</h3><p>Minutes with a tracked Roblox session, grouped by weekday and hour.</p></div><div class="segmented-control" aria-label="Statistics window"><button type="button" class="' + (days === 7 ? 'is-active' : '') + '" data-action="fleet-stats-window" data-days="7">7 days</button><button type="button" class="' + (days === 28 ? 'is-active' : '') + '" data-action="fleet-stats-window" data-days="28">28 days</button><button type="button" class="' + (days === 90 ? 'is-active' : '') + '" data-action="fleet-stats-window" data-days="90">90 days</button></div></div><div class="heatmap-summary"><span><small>Peak</small><strong>' + escapeHtml(peak) + '</strong></span><span><small>Measured</small><strong>' + escapeHtml(heatmap.total_minutes || 0) + ' min</strong></span><div class="heatmap-legend"><small>Less</small><i></i><i></i><i></i><i></i><i></i><small>More</small></div></div><div class="heatmap-scroll"><div class="heat-axis"><span></span><div>' + hourAxis + '</div><span>total</span></div><div class="heatmap">' + (grid || '<div class="macro-sequence-empty">' + icon('activity') + '<strong>No activity recorded</strong><p>Tracked session minutes will appear here automatically.</p></div>') + '</div></div></section>' +
       '<section class="data-table-wrap"><table class="data-table"><thead><tr><th>Account</th><th>Sessions</th><th>Crashes</th><th>Played</th><th>Reliability</th></tr></thead><tbody>' + (reliability || '<tr><td colspan="5">No account has a recorded session yet.</td></tr>') + '</tbody></table></section>' +
       '<section class="macro-layout"><section class="panel"><div class="panel-head"><h3>' + icon('zap') + ' Macro success rate</h3></div><div class="activity-list">' + byMacro + '</div></section>' +
       '<section class="panel"><div class="panel-head"><h3>' + icon('users') + ' Session comparison</h3></div><div class="form-grid"><div class="field"><label for="fleet-compare-account">Account</label><select id="fleet-compare-account"><option value="">Choose an account…</option>' + this.fleetAccountOptions('') + '</select></div><div class="field"><label>&nbsp;</label><button class="button button-sm button-primary" type="button" data-action="fleet-compare">Compare last two</button></div></div>' + compare + '</section></section>';
@@ -1839,11 +1908,11 @@ class OrbitApp {
 
   renderDiagnostics() {
     const diagnostics = this.state.diagnostics || { services: [], logs: [] };
-    return '<section class="page-heading"><div class="page-heading-copy"><h2>Quietly verify the machinery.</h2><p>Health signals are written for people first, with recent technical context available when you need to investigate an issue.</p></div><div class="page-heading-actions"><button class="button" type="button" data-action="refresh-diagnostics">' + icon('refresh') + ' Refresh status</button><button class="button" type="button" data-action="export-metadata">' + icon('upload') + ' Export metadata</button><button class="button" type="button" data-action="open-import-metadata">' + icon('download') + ' Import metadata</button><button class="button" type="button" data-action="open-restore">' + icon('upload') + ' Restore backup</button><button class="button button-primary" type="button" data-action="backup">' + icon('database') + ' Back up data</button></div></section><section class="stats-grid"><article class="stat-card"><span class="stat-card-label">' + icon('shield') + ' Overall health</span><strong>' + escapeHtml(diagnostics.status === 'healthy' ? 'Good' : diagnostics.status || 'Check') + '</strong><small><em>Checked ' + relativeTime(diagnostics.checked_at) + '</em></small></article><article class="stat-card"><span class="stat-card-label">' + icon('monitor') + ' Active instances</span><strong>' + this.state.instances.length + '</strong><small>Processes matched to accounts</small></article><article class="stat-card"><span class="stat-card-label">' + icon('database') + ' Account vault</span><strong>Ready</strong><small>Secure data service available</small></article><article class="stat-card"><span class="stat-card-label">' + icon('activity') + ' Event history</span><strong>' + this.state.activity.length + '</strong><small>Recent workspace events</small></article></section><section class="section-header"><h3>Service checks</h3><span class="section-line"></span></section><section class="data-table-wrap"><table class="data-table"><thead><tr><th>Service</th><th>Status</th><th>Detail</th></tr></thead><tbody>' + (diagnostics.services || []).map(function (service) { return '<tr><td><strong>' + escapeHtml(service.name) + '</strong></td><td><span class="status ' + escapeHtml(service.status || 'healthy') + '">' + statusText(service.status || 'healthy') + '</span></td><td><span class="mono">' + escapeHtml(service.detail || '') + '</span></td></tr>'; }).join('') + '</tbody></table></section><section class="section-header"><h3>Recent diagnostics</h3><p>Technical entries are local to this device.</p><span class="section-line"></span></section><section class="panel"><div class="diagnostic-box"><pre>' + escapeHtml((diagnostics.logs || []).map(function (row) { return '[' + new Date(row.at || Date.now()).toLocaleTimeString() + '] ' + (row.level || 'INFO') + '  ' + (row.message || ''); }).join('\n') || 'No diagnostic entries available.') + '</pre></div></section>';
+    return '<section class="page-heading"><div class="page-heading-copy"><h2>Quietly verify the machinery.</h2><p>Health signals are written for people first, with recent technical context available when you need to investigate an issue.</p></div><div class="page-heading-actions"><button class="button" type="button" data-action="open-compatibility-check">System check</button><button class="button" type="button" data-action="refresh-diagnostics">' + icon('refresh') + ' Refresh status</button><button class="button" type="button" data-action="export-metadata">' + icon('upload') + ' Export metadata</button><button class="button" type="button" data-action="open-import-metadata">' + icon('download') + ' Import metadata</button><button class="button" type="button" data-action="open-restore">' + icon('upload') + ' Restore backup</button><button class="button button-primary" type="button" data-action="backup">' + icon('database') + ' Back up data</button></div></section><section class="stats-grid"><article class="stat-card"><span class="stat-card-label">' + icon('shield') + ' Overall health</span><strong>' + escapeHtml(diagnostics.status === 'healthy' ? 'Good' : diagnostics.status || 'Check') + '</strong><small><em>Checked ' + relativeTime(diagnostics.checked_at) + '</em></small></article><article class="stat-card"><span class="stat-card-label">' + icon('monitor') + ' Active instances</span><strong>' + this.state.instances.length + '</strong><small>Processes matched to accounts</small></article><article class="stat-card"><span class="stat-card-label">' + icon('database') + ' Account vault</span><strong>Ready</strong><small>Secure data service available</small></article><article class="stat-card"><span class="stat-card-label">' + icon('activity') + ' Event history</span><strong>' + this.state.activity.length + '</strong><small>Recent workspace events</small></article></section><section class="section-header"><h3>Service checks</h3><span class="section-line"></span></section><section class="data-table-wrap"><table class="data-table"><thead><tr><th>Service</th><th>Status</th><th>Detail</th></tr></thead><tbody>' + (diagnostics.services || []).map(function (service) { return '<tr><td><strong>' + escapeHtml(service.name) + '</strong></td><td><span class="status ' + escapeHtml(service.status || 'healthy') + '">' + statusText(service.status || 'healthy') + '</span></td><td><span class="mono">' + escapeHtml(service.detail || '') + '</span></td></tr>'; }).join('') + '</tbody></table></section><section class="section-header"><h3>Recent diagnostics</h3><p>Technical entries are local to this device.</p><span class="section-line"></span></section><section class="panel"><div class="diagnostic-box"><pre>' + escapeHtml((diagnostics.logs || []).map(function (row) { return '[' + new Date(row.at || Date.now()).toLocaleTimeString() + '] ' + (row.level || 'INFO') + '  ' + (row.message || ''); }).join('\n') || 'No diagnostic entries available.') + '</pre></div></section>';
   }
 
   renderSettings() {
-    const tabs = [['general', 'General'], ['performance', 'Performance & FPS'], ['appearance', 'Appearance'], ['accounts', 'Accounts'], ['oauth', 'Roblox sign-in'], ['instances', 'Instances'], ['network', 'Network'], ['integrations', 'Discord & updates'], ['notifications', 'Notifications'], ['advanced', 'Advanced']];
+    const tabs = [['general', 'General'], ['performance', 'Performance & FPS'], ['roblox', 'Roblox settings'], ['appearance', 'Appearance'], ['accounts', 'Accounts'], ['oauth', 'Roblox sign-in'], ['instances', 'Instances'], ['network', 'Network'], ['integrations', 'Discord & updates'], ['notifications', 'Notifications'], ['advanced', 'Advanced']];
     return '<section class="page-heading"><div class="page-heading-copy"><h2>Make the workspace yours.</h2><p>Settings are applied immediately and stay deliberately compact. The desktop bridge persists them securely when it is available.</p></div><div class="page-heading-actions"><button class="button" type="button" data-action="open-settings-reset">' + icon('refresh') + ' Reset settings</button><button class="button" type="button" data-action="backup">' + icon('database') + ' Create backup</button></div></section><section class="settings-layout"><nav class="panel settings-nav" aria-label="Settings categories">' + tabs.map(function (tab) { return '<button type="button" data-action="settings-tab" data-tab="' + tab[0] + '" class="' + (this.state.settingsTab === tab[0] ? 'is-active' : '') + '">' + tab[1] + '</button>'; }.bind(this)).join('') + '</nav><div class="settings-content">' + this.renderSettingsPanel() + '</div></section>';
   }
 
@@ -1855,6 +1924,20 @@ class OrbitApp {
     return '<label class="switch"><input type="checkbox" data-setting="' + key + '"' + (checked ? ' checked' : '') + ' /><span></span></label>';
   }
 
+  renderRobloxSettingsPanel() {
+    const manager = this.state.robloxSettings || {};
+    if (!manager.loaded) return '<section class="panel settings-section"><header class="settings-section-head"><div><h3>Roblox settings manager</h3><p>Reading GlobalBasicSettings_13.xml…</p></div></header></section>';
+    if (!manager.available) return '<section class="panel settings-section"><header class="settings-section-head"><div><h3>Roblox settings manager</h3><p>' + escapeHtml(manager.reason || 'The Roblox settings file is unavailable.') + '</p></div><button class="button button-sm" type="button" data-action="refresh-roblox-settings">' + icon('refresh') + ' Retry</button></header></section>';
+    const basic = manager.basic || {};
+    const camera = Number.isFinite(Number(basic.camera_mode)) ? Number(basic.camera_mode) : 0;
+    const profiles = asArray(manager.profiles);
+    const groups = asArray(manager.groups);
+    const groupOptions = '<option value="">No group</option>' + groups.map(function (group) { return '<option value="' + escapeHtml(group.id) + '">' + escapeHtml(group.name) + '</option>'; }).join('');
+    const fields = '<div class="form-grid"><div class="field"><label>FPS cap</label><input name="fps" type="number" min="-1" max="1000" required value="' + escapeHtml(basic.fps === null || basic.fps === undefined ? -1 : basic.fps) + '" /><span class="mono">-1 restores Roblox default.</span></div><div class="field"><label>Master volume (%)</label><input name="volume_percent" type="number" min="0" max="100" required value="' + escapeHtml(basic.volume_percent === null || basic.volume_percent === undefined ? 100 : basic.volume_percent) + '" /></div><div class="field"><label>Graphics quality</label><input name="graphics_quality" type="number" min="0" max="10" required value="' + escapeHtml(basic.graphics_quality === null || basic.graphics_quality === undefined ? 0 : basic.graphics_quality) + '" /></div><div class="field"><label>Camera mode token</label><input name="camera_mode" type="number" min="0" max="10" required value="' + escapeHtml(camera) + '" /></div><label class="form-check field full"><input type="checkbox" name="fullscreen"' + (basic.fullscreen ? ' checked' : '') + ' /> Fullscreen</label><div class="field full"><label>Advanced overrides (JSON object, optional)</label><textarea name="advanced_json" rows="4" placeholder="{&quot;SomeExistingScalarSetting&quot;: 1}"></textarea><span class="mono">Only existing scalar XML fields are accepted; unknown names and invalid types are rejected.</span></div></div>';
+    const cards = profiles.length ? profiles.map(function (profile) { const group = groups.find(function (item) { return String(item.id) === String(profile.group_id); }); return '<div class="activity-row"><div class="activity-copy"><strong>' + escapeHtml(profile.name) + '</strong><small>' + escapeHtml(group ? group.name : 'Global') + ' · ' + escapeHtml(JSON.stringify(profile.values || {})) + '</small></div><div class="setting-buttons"><button class="button button-sm button-primary" type="button" data-action="apply-roblox-profile" data-id="' + escapeHtml(profile.id) + '">Apply</button><button class="button button-sm button-danger" type="button" data-action="delete-roblox-profile" data-id="' + escapeHtml(profile.id) + '">Delete</button></div></div>'; }).join('') : '<p class="empty-copy">No saved Roblox settings profile yet.</p>';
+    return '<section class="panel settings-section"><header class="settings-section-head"><div><h3>Global Roblox settings</h3><p>Typed, atomic edits with read-back verification. These values are global to Roblox, not per running process.</p></div><button class="button button-sm" type="button" data-action="refresh-roblox-settings">' + icon('refresh') + ' Refresh</button></header><form data-form="roblox-global-settings"><div class="modal-body"><p class="form-error" hidden></p>' + fields + '<label class="form-check restore-confirm-check"><input type="checkbox" name="confirm" required /> I confirm Roblox global settings may be changed.</label></div><footer class="modal-foot"><button class="button button-primary" type="submit">' + icon('check') + ' Apply & verify</button></footer></form></section><section class="panel settings-section"><header class="settings-section-head"><div><h3>Profiles by group</h3><p>A group association organises the preset. Astro applies global settings; Roblox does not expose independent XML settings per running process.</p></div></header><div class="activity-list">' + cards + '</div><form data-form="roblox-settings-profile"><div class="modal-body"><p class="form-error" hidden></p><div class="form-grid"><div class="field"><label>Profile name</label><input name="name" maxlength="60" required placeholder="LOW RESOURCE FARM" /></div><div class="field"><label>Group</label><select name="group_id">' + groupOptions + '</select></div></div>' + fields + '</div><footer class="modal-foot"><button class="button button-primary" type="submit">Save profile</button></footer></form></section>';
+  }
+
   renderSettingsPanel() {
     const s = this.state.settings;
     const categories = s.categories || {};
@@ -1863,11 +1946,13 @@ class OrbitApp {
     if (this.state.settingsTab === 'performance') return '<section class="panel settings-section"><header class="settings-section-head"><div><h3>Performance & FPS</h3><p>FPS Frame Unlocker cap and Potato Graphics mode for low-end hardware.</p></div></header>' +
       this.settingRow('Frame Unlocker (FPS Target)', 'Frame rate cap target for Roblox clients (DFIntTaskSchedulerTargetFps).', '<select class="setting-select" data-setting="global_max_fps"><option value="0"' + (s.global_max_fps == 0 ? ' selected' : '') + '>Roblox Default</option><option value="60"' + (s.global_max_fps == 60 ? ' selected' : '') + '>60 FPS</option><option value="120"' + (s.global_max_fps == 120 ? ' selected' : '') + '>120 FPS</option><option value="144"' + (s.global_max_fps == 144 ? ' selected' : '') + '>144 FPS</option><option value="240"' + (s.global_max_fps == 240 ? ' selected' : '') + '>240 FPS (Recommended)</option><option value="360"' + (s.global_max_fps == 360 ? ' selected' : '') + '>360 FPS</option></select>') +
       this.settingRow('Potato Graphics Mode 🥔', 'Extreme graphics reduction (textures, shadows, post-fx, materials) via FastFlags for maximum accounts on low-end hardware.', this.toggleSetting('potato_graphics', s.potato_graphics)) + '</section>';
+    if (this.state.settingsTab === 'roblox') return this.renderRobloxSettingsPanel();
     if (this.state.settingsTab === 'appearance') return '<section class="panel settings-section"><header class="settings-section-head"><div><h3>Appearance</h3><p>Theme, color and comfortable visual density.</p></div></header>' +
       this.settingRow('Color theme', 'Switch between the premium dark and bright light canvas.', '<select class="setting-select" data-setting="theme"><option value="dark"' + (s.theme !== 'light' ? ' selected' : '') + '>Dark</option><option value="light"' + (s.theme === 'light' ? ' selected' : '') + '>Light</option></select>') +
       this.settingRow('Accent color', 'A focused color used for selection, status, and primary actions.', '<div class="color-options"><button class="color-option ' + (s.accent === 'violet' ? 'is-active' : '') + '" type="button" data-action="set-accent" data-accent="violet" aria-label="Violet accent"><i></i></button><button class="color-option mint ' + (s.accent === 'mint' ? 'is-active' : '') + '" type="button" data-action="set-accent" data-accent="mint" aria-label="Mint accent"><i></i></button><button class="color-option coral ' + (s.accent === 'coral' ? 'is-active' : '') + '" type="button" data-action="set-accent" data-accent="coral" aria-label="Coral accent"><i></i></button><button class="color-option blue ' + (s.accent === 'blue' ? 'is-active' : '') + '" type="button" data-action="set-accent" data-accent="blue" aria-label="Blue accent"><i></i></button><button class="color-option amber ' + (s.accent === 'amber' ? 'is-active' : '') + '" type="button" data-action="set-accent" data-accent="amber" aria-label="Amber accent"><i></i></button></div>') +
       this.settingRow('Interface density', 'Use compact spacing when you manage a larger collection.', '<select class="setting-select" data-setting="density"><option value="comfortable"' + (s.density !== 'compact' ? ' selected' : '') + '>Comfortable</option><option value="compact"' + (s.density === 'compact' ? ' selected' : '') + '>Compact</option></select>') +
-      this.settingRow('Reduced motion', 'Disable non-essential transitions and animated status details.', this.toggleSetting('reduce_motion', s.reduce_motion)) + '</section>';
+      this.settingRow('Reduced motion', 'Disable non-essential transitions and animated status details.', this.toggleSetting('reduce_motion', s.reduce_motion)) +
+      this.settingRow('Streamer privacy mode', 'Persistently replace usernames and Roblox User IDs, and blur avatars while streaming.', this.toggleSetting('privacy_mode', Boolean(s.privacy_mode))) + '</section>';
     if (this.state.settingsTab === 'accounts') return '<section class="panel settings-section"><header class="settings-section-head"><div><h3>Accounts</h3><p>Set defaults for adding and launching accounts.</p></div></header>' +
       this.settingRow('Launch confirmation', 'Choose whether a launch is verified before Roblox opens.', '<select class="setting-select" data-setting="launch_behavior"><option value="confirm"' + (s.launch_behavior === 'confirm' ? ' selected' : '') + '>Ask each time</option><option value="direct"' + (s.launch_behavior === 'direct' ? ' selected' : '') + '>Launch directly</option></select>') +
       this.settingRow('Close unused sessions', 'Offer cleanup when no managed account is using an instance.', this.toggleSetting('close_when_empty', s.close_when_empty)) +
@@ -1901,10 +1986,10 @@ class OrbitApp {
       this.settingRow('In-app notifications', 'Surface launch results, backup outcomes, and watcher events.', this.toggleSetting('notifications', s.notifications)) +
       this.settingRow('Notification center', 'Review and dismiss messages from the top bar.', '<button class="button button-sm" type="button" data-action="toggle-notifications">' + icon('bell') + ' Open notifications</button>') + '</section>';
     if (this.state.settingsTab === 'integrations') {
-      const discord = categories.discord || { enabled: false, client_id: '', strategy: 'latest', show_account: false };
+      const discord = categories.discord || { enabled: false, client_id: '', strategy: 'latest', show_account: false, details_template: '{game}', state_template: '{instances} active · {account}', large_image: '', large_text: 'Astro Account Manager', game_overrides: [] };
       const updates = categories.updates || { auto_check: true, auto_download: false, install_on_exit: false };
       const updateStatus = this.state.updater || {};
-      return '<section class="panel settings-section"><header class="settings-section-head"><div><h3>Discord Rich Presence</h3><p>Publish one redacted activity for the latest game or an aggregate of active instances.</p></div><span class="badge ' + (this.state.discordPresence.connected ? 'success' : 'warning') + '">' + (this.state.discordPresence.connected ? 'Connected' : 'Idle') + '</span></header><form data-form="discord-settings"><div class="modal-body"><p class="form-error" hidden></p><div class="form-grid"><label class="form-check field full"><input type="checkbox" name="enabled"' + (discord.enabled ? ' checked' : '') + ' /> Enable Discord Rich Presence</label><div class="field"><label>Discord Application ID</label><input name="client_id" inputmode="numeric" maxlength="32" value="' + escapeHtml(discord.client_id || '') + '" placeholder="Numeric application ID" /></div><div class="field"><label>Multiple instances</label><select name="strategy"><option value="latest"' + (discord.strategy !== 'aggregate' ? ' selected' : '') + '>Latest active game</option><option value="aggregate"' + (discord.strategy === 'aggregate' ? ' selected' : '') + '>Aggregate count</option></select></div><label class="form-check field full"><input type="checkbox" name="show_account"' + (discord.show_account ? ' checked' : '') + ' /> Show the local account alias in Discord status</label></div></div><footer class="modal-foot"><button class="button button-primary" type="submit">' + icon('check') + ' Save & refresh presence</button></footer></form></section><section class="panel settings-section"><header class="settings-section-head"><div><h3>Application updates</h3><p>Only the fixed GitHub release asset is downloaded, size-checked, PE-validated and hashed before staging.</p></div><span class="badge">' + escapeHtml(updateStatus.pending_install ? 'Install pending' : updateStatus.staged ? 'Downloaded' : 'Current') + '</span></header>' + this.settingRow('Check automatically', 'Check the official releases endpoint in the background at startup.', this.toggleSetting('updates_auto_check', updates.auto_check !== false)) + this.settingRow('Download automatically', 'Stage a newer verified release asset when one exists.', this.toggleSetting('updates_auto_download', Boolean(updates.auto_download))) + this.settingRow('Install on exit', 'Replace only the packaged EXE after Astro has closed; the previous EXE is kept beside it.', this.toggleSetting('updates_install_on_exit', Boolean(updates.install_on_exit))) + this.settingRow('Updater actions', 'Check, download, schedule, or remove the staged update.', '<div class="setting-buttons"><button class="button button-sm" type="button" data-action="check-updates">Check</button><button class="button button-sm" type="button" data-action="download-update">Download</button><button class="button button-sm button-primary" type="button" data-action="install-update">Install on exit</button><button class="button button-sm button-danger" type="button" data-action="cancel-update">Cancel staged</button></div>') + this.settingRow('Support report', 'Create a redacted ZIP with logs, diagnostics and public settings. Vault sessions, database and macro contents are excluded.', '<button class="button button-sm" type="button" data-action="export-support-bundle">' + icon('download') + ' Create support ZIP</button>') + '</section>';
+      return '<section class="panel settings-section"><header class="settings-section-head"><div><h3>Discord Rich Presence</h3><p>Publish one redacted activity with stable elapsed time, correct Discord assets, and optional per-game text.</p></div><span class="badge ' + (this.state.discordPresence.connected ? 'success' : 'warning') + '">' + (this.state.discordPresence.connected ? 'Connected' : 'Idle') + '</span></header><form data-form="discord-settings"><div class="modal-body"><p class="form-error" hidden></p><div class="form-grid"><label class="form-check field full"><input type="checkbox" name="enabled"' + (discord.enabled ? ' checked' : '') + ' /> Enable Discord Rich Presence</label><div class="field"><label>Discord Application ID</label><input name="client_id" inputmode="numeric" maxlength="32" value="' + escapeHtml(discord.client_id || '') + '" placeholder="Numeric application ID" /></div><div class="field"><label>Multiple instances</label><select name="strategy"><option value="latest"' + (discord.strategy !== 'aggregate' ? ' selected' : '') + '>Latest active game</option><option value="aggregate"' + (discord.strategy === 'aggregate' ? ' selected' : '') + '>Aggregate count</option></select></div><label class="form-check field full"><input type="checkbox" name="show_account"' + (discord.show_account ? ' checked' : '') + ' /> Show the local account alias (automatically suppressed in privacy mode)</label><div class="field"><label>Details template</label><input name="details_template" maxlength="256" value="' + escapeHtml(discord.details_template || '{game}') + '" /></div><div class="field"><label>State template</label><input name="state_template" maxlength="256" value="' + escapeHtml(discord.state_template || '{instances} active · {account}') + '" /></div><div class="field"><label>Large image asset key</label><input name="large_image" maxlength="128" value="' + escapeHtml(discord.large_image || '') + '" placeholder="Configured Discord asset key" /></div><div class="field"><label>Large image text</label><input name="large_text" maxlength="256" value="' + escapeHtml(discord.large_text || 'Astro Account Manager') + '" /></div><div class="field full"><label>Per-game overrides (JSON array)</label><textarea name="game_overrides" rows="5" placeholder="[{&quot;place_id&quot;:&quot;123&quot;,&quot;details&quot;:&quot;Farming {game}&quot;}]">' + escapeHtml(JSON.stringify(discord.game_overrides || [], null, 2)) + '</textarea><span class="mono">Available placeholders: {game}, {place_id}, {account}, {instances}.</span></div></div></div><footer class="modal-foot"><button class="button button-primary" type="submit">' + icon('check') + ' Save & refresh presence</button></footer></form></section><section class="panel settings-section"><header class="settings-section-head"><div><h3>Application updates</h3><p>Only the fixed GitHub release asset is downloaded, size-checked, PE-validated and hashed before staging.</p></div><span class="badge">' + escapeHtml(updateStatus.pending_install ? (updateStatus.ready_to_install === false ? 'Update needs re-download' : 'Install pending') : updateStatus.staged ? (updateStatus.staged_valid === false ? 'Invalid download' : 'Downloaded') : 'Current') + '</span></header>' + this.settingRow('Check automatically', 'Check the official releases endpoint in the background at startup.', this.toggleSetting('updates_auto_check', updates.auto_check !== false)) + this.settingRow('Download automatically', 'Stage a newer verified release asset when one exists.', this.toggleSetting('updates_auto_download', Boolean(updates.auto_download))) + this.settingRow('Install on exit', 'Replace only the packaged EXE after Astro has closed; the previous EXE is kept beside it.', this.toggleSetting('updates_install_on_exit', Boolean(updates.install_on_exit))) + this.settingRow('Updater actions', 'Check, download, schedule, or remove the staged update.', '<div class="setting-buttons"><button class="button button-sm" type="button" data-action="check-updates">Check</button><button class="button button-sm" type="button" data-action="download-update">Download</button><button class="button button-sm button-primary" type="button" data-action="install-update">Install on exit</button><button class="button button-sm button-danger" type="button" data-action="cancel-update">Cancel staged</button></div>') + this.settingRow('Support report', 'Create a redacted ZIP with logs, diagnostics and public settings. Vault sessions, database and macro contents are excluded.', '<button class="button button-sm" type="button" data-action="export-support-bundle">' + icon('download') + ' Create support ZIP</button>') + '</section>';
     }
     if (this.state.settingsTab === 'advanced') {
       const api = (s.categories && s.categories.api) || { enabled: false, port: 7963, allow_external: false, allow_get_cookie: false, allow_launch_account: false, allow_account_editing: false, allow_import_cookie: false, allow_get_accounts: false, legacy_password_auth_enabled: false };
@@ -1945,7 +2030,13 @@ class OrbitApp {
     let body = '';
     let title = '';
     let sub = '';
-    if (modal.kind === 'roblox-background') {
+    if (modal.kind === 'compatibility') {
+      const report = modal.report || { checks: [] };
+      title = 'Roblox feature compatibility';
+      sub = report.roblox_version ? 'Detected ' + report.roblox_version : 'Roblox version was not detected.';
+      const rows = asArray(report.checks).map(function (check) { return '<div class="health-row"><span class="health-symbol">' + icon(check.state === 'ready' ? 'check' : check.state === 'unknown' ? 'info' : 'alert') + '</span><span class="health-copy"><strong>' + escapeHtml(check.label) + '</strong><span>' + escapeHtml(check.detail) + '</span></span><span class="badge ' + (check.state === 'ready' ? 'success' : 'warning') + '">' + escapeHtml(check.state) + '</span></div>'; }).join('');
+      body = '<div class="modal-body"><p class="restore-warning">Compatibility ' + escapeHtml(report.compatibility_percent === null || report.compatibility_percent === undefined ? 'unknown' : report.compatibility_percent + '%') + '. ' + escapeHtml(report.note || '') + '</p>' + (report.version_changed ? '<p class="form-error">Roblox changed from ' + escapeHtml(report.previous_roblox_version) + ' to ' + escapeHtml(report.roblox_version) + '. Re-test unknown features before acknowledging it.</p>' : '') + '<div class="health-list">' + rows + '</div></div><footer class="modal-foot"><button class="button" type="button" data-action="close-modal">Close</button><button class="button button-primary" type="button" data-action="acknowledge-roblox-version"' + (report.roblox_version ? '' : ' disabled') + '>Record tested version</button></footer>';
+    } else if (modal.kind === 'roblox-background') {
       const status = modal.status || { count: 0, processes: [] };
       title = 'Roblox is already running';
       sub = status.count + ' client' + (status.count === 1 ? ' was' : 's were') + ' detected before Multi Roblox setup.';
@@ -2040,6 +2131,12 @@ class OrbitApp {
       title = 'Choose the account to join';
       sub = 'This public server launch uses exactly the account selected below.';
       body = '<form data-form="server-launch" data-server="' + escapeHtml(server.id || '') + '"><div class="modal-body"><p class="form-error" hidden></p><p class="oauth-help">Place <strong>' + escapeHtml(this.state.gameId || '') + '</strong> · Job <span class="mono">' + escapeHtml(server.job_id || '') + '</span></p><div class="field full"><label for="server-launch-account">Roblox account</label><select id="server-launch-account" name="account_id" required' + (candidates.length ? '' : ' disabled') + '><option value="">Choose an account…</option>' + options + '</select><span class="mono">Astro will not silently choose the first account anymore.</span></div></div><footer class="modal-foot"><button class="button" type="button" data-action="close-modal">Cancel</button><button class="button button-primary" type="submit"' + (candidates.some(function (account) { return !['in_game', 'running'].includes(account.status); }) ? '' : ' disabled') + '>' + icon('play') + ' Join with this account</button></footer></form>';
+    } else if (modal.kind === 'server-distribution') {
+      const candidates = this.state.accounts.filter(function (account) { return account.has_session && !['in_game', 'running', 'launching'].includes(account.status); });
+      const options = candidates.map(function (account) { return '<option value="' + escapeHtml(account.id) + '">' + escapeHtml(account.display_name || account.username) + ' (@' + escapeHtml(account.username) + ')</option>'; }).join('');
+      title = 'Smart server distribution';
+      sub = 'Assign each selected account to the best eligible live servers without destination bleed.';
+      body = '<form data-form="server-distribution"><div class="modal-body"><p class="form-error" hidden></p><div class="field full"><label>Accounts</label><select name="account_ids" multiple size="8" required>' + options + '</select></div><div class="field"><label>Maximum accounts per server</label><input name="max_per_server" type="number" min="1" max="20" value="1" required /></div><label class="form-check restore-confirm-check"><input type="checkbox" name="confirm" required /> I confirm these accounts may be queued using the displayed live server filters.</label></div><footer class="modal-foot"><button class="button" type="button" data-action="close-modal">Cancel</button><button class="button button-primary" type="submit"' + (candidates.length ? '' : ' disabled') + '>Distribute & launch</button></footer></form>';
     } else if (modal.kind === 'region-probe') {
       const candidates = this.state.accounts.filter(function (account) { return account.has_session; });
       const options = candidates.map(function (account) { return '<option value="' + escapeHtml(account.id) + '">' + escapeHtml(account.display_name || account.username) + ' (@' + escapeHtml(account.username) + ')</option>'; }).join('');
@@ -2197,7 +2294,7 @@ class OrbitApp {
         '<option value="unblock">Unblock user</option>' +
         '<option value="unblock_all">Unblock ALL users</option>' +
         '<option value="privacy">Follow privacy (All / Followers / Following / Friends / NoOne)</option>' +
-        '<option value="unlock_pin">Unlock account PIN (4 digits)</option>' +
+        '<option value="unlock_pin">Legacy PIN unlock (retired by Roblox)</option>' +
         '<option value="avatar">Wear avatar assets (comma-separated IDs)</option>' +
         '<option value="outfits">List user outfits (User ID)</option>' +
         '<option value="wear_outfit">Wear saved outfit (Outfit ID)</option>' +
@@ -2267,6 +2364,17 @@ class OrbitApp {
       const defaults = { wait: { type: 'wait', milliseconds: 1000 }, key_press: { type: 'key_press', key: 'W', milliseconds: 80 }, mouse_click: { type: 'mouse_click', x: 0.5, y: 0.5, button: 'left' }, text: { type: 'text', value: 'hello' }, condition: { type: 'condition', check: 'runtime_above', value: '300', then: 'stop' }, launch: { type: 'launch' }, teleport: { type: 'teleport', place_id: '', job_id: '' }, restart: { type: 'restart' } };
       this.state.macroDraftBlocks.push(defaults[button.dataset.kind] || defaults.wait); this.render(); return;
     }
+    if (action === 'set-macro-editor-mode') { this.state.macroEditorMode = button.dataset.mode === 'dsl' ? 'dsl' : 'blocks'; this.render(); return; }
+    if (action === 'move-macro-block') {
+      const from = Number(button.dataset.index);
+      const to = from + Number(button.dataset.direction || 0);
+      if (Number.isInteger(from) && Number.isInteger(to) && from >= 0 && from < this.state.macroDraftBlocks.length && to >= 0 && to < this.state.macroDraftBlocks.length) {
+        const moved = this.state.macroDraftBlocks.splice(from, 1)[0];
+        this.state.macroDraftBlocks.splice(to, 0, moved);
+        this.render();
+      }
+      return;
+    }
     if (action === 'remove-macro-block') { this.state.macroDraftBlocks.splice(Number(button.dataset.index), 1); this.render(); return; }
     if (action === 'refresh-macros') { this.state.macros = asArray(await this.bridge.call('list_macros')); this.state.macroRuns = asArray(await this.bridge.call('list_macro_runs')); this.render(); return; }
     if (action === 'start-macro') {
@@ -2322,7 +2430,24 @@ class OrbitApp {
       this.openModal({ kind: 'region-probe' });
       return;
     }
-    if (action === 'toggle-hide-usernames') { this.state.hideUsernames = !this.state.hideUsernames; this.render(); return; }
+    if (action === 'open-server-distribution') {
+      this.openModal({ kind: 'server-distribution' });
+      return;
+    }
+    if (action === 'toggle-hide-usernames') {
+      const previous = this.state.hideUsernames;
+      const requested = !previous;
+      this.state.hideUsernames = requested;
+      this.applyTheme();
+      this.render();
+      const saved = await this.updateSettings({ privacy_mode: requested }, false);
+      if (!saved) {
+        this.state.hideUsernames = previous;
+        this.applyTheme();
+        this.render();
+      }
+      return;
+    }
     if (action === 'toggle-uwp') {
       try {
         const inventory = unwrap(await this.bridge.call('list_uwp_packages')) || { available: false, packages: [] };
@@ -2498,6 +2623,22 @@ class OrbitApp {
       } catch (error) { this.toast('error', 'Could not restore window position', error.message); }
       return;
     }
+    if (action === 'set-instance-visibility') {
+      try {
+        await this.bridge.call('set_instance_visibility', Number(button.dataset.pid), button.dataset.visible === 'true');
+        await this.refreshInstances();
+      } catch (error) { this.toast('error', 'Could not change window visibility', error.message); }
+      return;
+    }
+    if (action === 'show-all-instances') {
+      const targets = this.state.instances.filter(function (instance) { return instance.visibility && instance.visibility.window_found && instance.visibility.hidden; });
+      try {
+        await Promise.all(targets.map(function (instance) { return this.bridge.call('set_instance_visibility', Number(instance.pid), true); }.bind(this)));
+        await this.refreshInstances();
+        this.toast('success', 'Roblox windows shown', targets.length + ' hidden window(s) restored without activation.');
+      } catch (error) { this.toast('error', 'Could not show every window', error.message); }
+      return;
+    }
     if (action === 'create-group') { this.openModal({ kind: 'group' }); return; }
     if (action === 'edit-group') { const group = this.groupFor(button.dataset.id); if (group) this.openModal({ kind: 'group', group: group }); return; }
     if (action === 'delete-group') { const group = this.groupFor(button.dataset.id); if (group) this.openModal({ kind: 'delete-group', group: group }); return; }
@@ -2585,13 +2726,33 @@ class OrbitApp {
     }
     if (action === 'refresh-instances') { await this.refreshInstances(); return; }
     if (action === 'refresh-diagnostics') { await this.refreshDiagnostics(); return; }
+    if (action === 'open-compatibility-check') {
+      try { this.openModal({ kind: 'compatibility', report: unwrap(await this.bridge.call('get_compatibility_report')) || {} }); } catch (error) { this.toast('error', 'Compatibility check failed', error.message); }
+      return;
+    }
+    if (action === 'acknowledge-roblox-version') {
+      if (!window.confirm('Record this Roblox version only after reviewing the compatibility checks?')) return;
+      try { const report = unwrap(await this.bridge.call('acknowledge_roblox_version', true)) || {}; this.openModal({ kind: 'compatibility', report: report }); this.toast('success', 'Roblox baseline recorded', report.roblox_version || 'Current version'); } catch (error) { this.toast('error', 'Could not record Roblox version', error.message); }
+      return;
+    }
     if (action === 'open-restore') { await this.openRestoreModal(); return; }
     if (action === 'export-metadata') { await this.exportMetadata(); return; }
     if (action === 'open-import-metadata') { this.openModal({ kind: 'import-metadata' }); return; }
     if (action === 'backup') { await this.backup(); return; }
     if (action === 'migrate') { this.openModal({ kind: 'migrate' }); return; }
-    if (action === 'settings-tab') { this.state.settingsTab = button.dataset.tab; this.render(); if (this.state.settingsTab === 'general') void this.loadWindowsStartupStatus(false); return; }
-    if (action === 'copy-place') { await this.copyText(button.dataset.value); return; }
+    if (action === 'settings-tab') { this.state.settingsTab = button.dataset.tab; this.render(); if (this.state.settingsTab === 'general') void this.loadWindowsStartupStatus(false); if (this.state.settingsTab === 'roblox') void this.loadRobloxSettings(false); return; }
+    if (action === 'refresh-roblox-settings') { await this.loadRobloxSettings(true); return; }
+    if (action === 'apply-roblox-profile') {
+      if (!window.confirm('Apply this profile to Roblox global settings now?')) return;
+      try { this.state.robloxSettings = unwrap(await this.bridge.call('apply_roblox_settings_profile', button.dataset.id, true)) || this.state.robloxSettings; this.state.robloxSettings.loaded = true; this.render(); this.toast('success', 'Roblox profile applied', 'The XML and FPS settings were written and read back.'); } catch (error) { this.toast('error', 'Could not apply Roblox profile', error.message); }
+      return;
+    }
+    if (action === 'delete-roblox-profile') {
+      if (!window.confirm('Delete this saved Roblox settings profile?')) return;
+      try { this.state.robloxSettings = unwrap(await this.bridge.call('delete_roblox_settings_profile', button.dataset.id)) || this.state.robloxSettings; this.state.robloxSettings.loaded = true; this.render(); this.toast('success', 'Roblox profile deleted', 'The active Roblox settings were not changed.'); } catch (error) { this.toast('error', 'Could not delete Roblox profile', error.message); }
+      return;
+    }
+    if (action === 'copy-place') { await this.copyText(button.dataset.value, 'Place ID'); return; }
     if (action === 'dismiss-notification') { await this.dismissNotification(button.dataset.id); return; }
     if (action === 'clear-account-filter') { this.state.accountQuery = ''; this.state.accountStatus = 'all'; this.render(); return; }
     if (action === 'clear-game-filter') { this.state.gameQuery = ''; this.render(); void this.loadGames(); return; }
@@ -2667,7 +2828,7 @@ class OrbitApp {
         } else if (actionKind === 'outfits') {
           if (!/^[1-9][0-9]*$/.test(payload)) throw new Error('Enter a positive Roblox User ID.');
           const rows = await this.bridge.call('list_user_outfits', payload);
-          await this.copyText(JSON.stringify(rows, null, 2));
+          await this.writeClipboard(JSON.stringify(rows, null, 2));
           this.toast('success', 'Outfits copied', asArray(rows).length + ' outfit record(s) copied as JSON.');
         } else if (actionKind === 'wear_outfit') {
           if (!/^[1-9][0-9]*$/.test(payload)) throw new Error('Enter a positive Outfit ID.');
@@ -2676,7 +2837,7 @@ class OrbitApp {
         } else if (actionKind === 'universe') {
           if (!/^[1-9][0-9]*$/.test(payload)) throw new Error('Enter a positive Universe ID.');
           const rows = await this.bridge.call('list_universe_places', payload);
-          await this.copyText(JSON.stringify(rows, null, 2));
+          await this.writeClipboard(JSON.stringify(rows, null, 2));
           this.toast('success', 'Universe places copied', asArray(rows).length + ' place record(s) copied as JSON.');
         } else if (actionKind === 'open_browser') {
           await this.bridge.call('open_account_browser', accountId, payload || 'https://www.roblox.com/home');
@@ -2687,11 +2848,11 @@ class OrbitApp {
           this.toast('success', 'Group joined', 'Roblox accepted the join request.');
         } else if (actionKind === 'saved_password') {
           const result = await this.bridge.call('get_account_saved_password', accountId);
-          await this.copyText(result.password || '');
+          await this.writeClipboard(result.password || '');
           this.toast('warning', 'Saved password copied', 'The plaintext value is now in the Windows clipboard.');
         } else if (actionKind === 'get_cookie') {
           const res = await this.bridge.call('get_account_cookie', accountId);
-          await this.copyText(res.cookie || '');
+          await this.writeClipboard(res.cookie || '');
           this.toast('success', 'Cookie Copied', '.ROBLOSECURITY cookie copied to clipboard!');
         } else if (actionKind === 'refresh_session') {
           await this.bridge.call('refresh_account_session', accountId);
@@ -2704,13 +2865,13 @@ class OrbitApp {
           this.toast('warning', 'Raw Session Exported', (res.filename || res.path || 'Export created') + ' contains a plaintext session.');
         } else if (actionKind === 'auth_ticket') {
           const res = await this.bridge.call('generate_auth_ticket', accountId);
-          await this.copyText(res.ticket || '');
+          await this.writeClipboard(res.ticket || '');
           this.toast('success', 'Authentication Ticket Copied', 'The short-lived Roblox authentication ticket was copied.');
         } else if (actionKind === 'rbx_link') {
           const parts = payload.split(':');
           if (!/^[1-9][0-9]*$/.test(parts[0] || '') || parts.length > 2) throw new Error('Use PlaceId or PlaceId:JobId.');
           const res = await this.bridge.call('generate_rbx_player_link', accountId, Number(parts[0]), parts[1] || null);
-          await this.copyText(res.link || '');
+          await this.writeClipboard(res.link || '');
           this.toast('success', 'rbx-player Link Copied', 'The authenticated local launch link was copied.');
         }
         this.closeModal();
@@ -2739,9 +2900,54 @@ class OrbitApp {
         }
         await this.bridge.call('save_macro', { name: values.name, description: values.description || '', account_id: values.account_id || null, mode: mode, source: values.source || '', actions: actions });
         this.state.macros = asArray(await this.bridge.call('list_macros'));
+        this.state.macroDraftName = '';
+        this.state.macroDraftDescription = '';
         this.render(); this.toast('success', 'Macro saved', values.name + ' is ready for a verified instance.');
+      } else if (form.dataset.form === 'roblox-global-settings' || form.dataset.form === 'roblox-settings-profile') {
+        const advancedText = String(values.advanced_json || '').trim();
+        let advanced = {};
+        if (advancedText) {
+          try { advanced = JSON.parse(advancedText); } catch (_) { throw new Error('Advanced overrides must be a valid JSON object.'); }
+          if (!advanced || Array.isArray(advanced) || typeof advanced !== 'object') throw new Error('Advanced overrides must be a JSON object.');
+        }
+        const settingsValues = {
+          fps: Number(values.fps),
+          volume_percent: Number(values.volume_percent),
+          graphics_quality: Number(values.graphics_quality),
+          camera_mode: Number(values.camera_mode),
+          fullscreen: new FormData(form).get('fullscreen') === 'on',
+          advanced: advanced
+        };
+        if (!Number.isInteger(settingsValues.fps) || (settingsValues.fps !== -1 && (settingsValues.fps < 1 || settingsValues.fps > 1000))) throw new Error('FPS must be -1 or a whole number from 1 to 1000.');
+        if (!Number.isInteger(settingsValues.volume_percent) || settingsValues.volume_percent < 0 || settingsValues.volume_percent > 100) throw new Error('Volume must be a whole number from 0 to 100.');
+        if (!Number.isInteger(settingsValues.graphics_quality) || settingsValues.graphics_quality < 0 || settingsValues.graphics_quality > 10) throw new Error('Graphics quality must be a whole number from 0 to 10.');
+        if (!Number.isInteger(settingsValues.camera_mode) || settingsValues.camera_mode < 0 || settingsValues.camera_mode > 10) throw new Error('Camera mode must be a whole number from 0 to 10.');
+        if (form.dataset.form === 'roblox-global-settings') {
+          if (new FormData(form).get('confirm') !== 'on') throw new Error('Confirm the Roblox global settings change.');
+          this.state.robloxSettings = unwrap(await this.bridge.call('apply_roblox_settings', settingsValues, true)) || this.state.robloxSettings;
+          this.toast('success', 'Roblox settings applied', 'GlobalBasicSettings_13.xml and the FPS configuration were written and verified.');
+        } else {
+          this.state.robloxSettings = unwrap(await this.bridge.call('save_roblox_settings_profile', { name: values.name, group_id: values.group_id || null, values: settingsValues })) || this.state.robloxSettings;
+          this.toast('success', 'Roblox profile saved', String(values.name || '') + ' is ready to apply.');
+          form.reset();
+        }
+        this.state.robloxSettings.loaded = true;
+        this.render();
       } else if (form.dataset.form === 'discord-settings') {
-        const payload = { categories: { discord: { enabled: new FormData(form).get('enabled') === 'on', client_id: String(values.client_id || '').trim(), strategy: values.strategy || 'latest', show_account: new FormData(form).get('show_account') === 'on' } } };
+        let gameOverrides;
+        try { gameOverrides = JSON.parse(String(values.game_overrides || '[]')); } catch (_) { throw new Error('Discord per-game overrides must be valid JSON.'); }
+        if (!Array.isArray(gameOverrides)) throw new Error('Discord per-game overrides must be a JSON array.');
+        const payload = { categories: { discord: {
+          enabled: new FormData(form).get('enabled') === 'on',
+          client_id: String(values.client_id || '').trim(),
+          strategy: values.strategy || 'latest',
+          show_account: new FormData(form).get('show_account') === 'on',
+          details_template: String(values.details_template || '{game}'),
+          state_template: String(values.state_template || '{instances} active · {account}'),
+          large_image: String(values.large_image || '').trim(),
+          large_text: String(values.large_text || 'Astro Account Manager'),
+          game_overrides: gameOverrides
+        } } };
         const result = unwrap(await this.bridge.call('update_settings', payload)) || {};
         this.state.settings = Object.assign({}, this.state.settings, result);
         if (payload.categories.discord.enabled) this.state.discordPresence = unwrap(await this.bridge.call('refresh_discord_presence')) || {};
@@ -2769,6 +2975,17 @@ class OrbitApp {
         this.closeModal();
         this.render();
         this.toast(result.resolved ? 'success' : 'warning', 'Server region probe finished', (result.resolved || 0) + ' of ' + jobIds.length + ' region(s) resolved.');
+      } else if (form.dataset.form === 'server-distribution') {
+        if (values.confirm !== 'on') throw new Error('Confirm the server distribution before launching.');
+        if (!this.state.gameId) throw new Error('Select a Roblox game first.');
+        const accountIds = new FormData(form).getAll('account_ids').map(String);
+        const maxPerServer = Number(values.max_per_server);
+        if (!accountIds.length) throw new Error('Select at least one account.');
+        if (!Number.isInteger(maxPerServer) || maxPerServer < 1 || maxPerServer > 20) throw new Error('Maximum accounts per server must be between 1 and 20.');
+        const result = unwrap(await this.bridge.call('run_server_distribution', accountIds, this.state.gameId, maxPerServer, this.state.serverFilters)) || {};
+        this.closeModal();
+        this.trackBatchLaunch();
+        this.toast('success', 'Server distribution queued', asArray(result.plan && result.plan.steps).length + ' account(s) received isolated server destinations.');
       } else if (form.dataset.form === 'server-launch') {
         const modal = this.state.modal;
         const server = modal && modal.kind === 'server-launch' ? modal.server : null;
@@ -3104,6 +3321,9 @@ class OrbitApp {
     if (input.id === 'game-filter') { this.state.gameQuery = input.value; this.filterGameRows(); this.scheduleGameSearch(); return; }
     if (input.id === 'palette-input') { this.state.paletteQuery = input.value; this.renderOverlays(); const next = $('#palette-input'); if (next) { next.focus(); next.setSelectionRange(next.value.length, next.value.length); } }
     if (input.id === 'nexus-code-editor') { this.state.nexusExecutorCode = input.value; this.nexusSyncLineNumbers(); }
+    if (input.id === 'macro-source') { this.state.macroDraftSource = input.value; return; }
+    if (input.id === 'macro-draft-name') { this.state.macroDraftName = input.value; return; }
+    if (input.id === 'macro-draft-description') { this.state.macroDraftDescription = input.value; return; }
     const macroBlock = input.closest && input.closest('.macro-block');
     if (macroBlock && input.dataset.blockField) {
       const index = Number(macroBlock.dataset.blockIndex);
@@ -3116,6 +3336,16 @@ class OrbitApp {
     if (target.id === 'account-status') { this.state.accountStatus = target.value; this.render(); return; }
     if (target.id === 'nexus-exec-target') { this.state.nexusExecutorTarget = target.value; return; }
     if (target.id === 'macro-editor-mode') { this.state.macroEditorMode = target.value === 'dsl' ? 'dsl' : 'blocks'; this.render(); return; }
+    if (target.id === 'macro-draft-account') { this.state.macroDraftAccountId = target.value; return; }
+    if (target.id === 'server-sort' || target.id === 'server-min-slots' || target.id === 'server-avoid-previous') {
+      this.state.serverFilters = {
+        sort: target.id === 'server-sort' ? target.value : this.state.serverFilters.sort,
+        min_free_slots: target.id === 'server-min-slots' ? Math.max(0, Math.min(100, Number(target.value) || 0)) : this.state.serverFilters.min_free_slots,
+        avoid_previous: target.id === 'server-avoid-previous' ? Boolean(target.checked) : this.state.serverFilters.avoid_previous
+      };
+      await this.loadGame(this.state.gameId, false);
+      return;
+    }
     if (target.dataset.setting) {
       const value = target.type === 'checkbox' ? target.checked : target.value;
       if (target.dataset.setting === 'allow_multiple_launches') {
@@ -3319,6 +3549,7 @@ class OrbitApp {
       if (this.state.gameId && !this.state.gameDetail) void this.loadGame(this.state.gameId, false);
     }
     if (route === 'settings' && this.state.settingsTab === 'general') void this.loadWindowsStartupStatus(false);
+    if (route === 'settings' && this.state.settingsTab === 'roblox') void this.loadRobloxSettings(false);
   }
 
   openModal(value) { if (value && value.kind === 'send-nexus' && !this.nexusEnabled()) return; this.state.modal = value; this.renderOverlays(); window.setTimeout(function () { const autofocus = $('[autofocus], .modal input'); if (autofocus) autofocus.focus(); }, 10); }
@@ -3529,12 +3760,17 @@ class OrbitApp {
        if (values.accent) { next.accent = values.accent; next.accent_raw = bridgeValues.accent; }
        else { next.accent_raw = next.accent; next.accent = accentToken(next.accent); }
        this.state.settings = next;
+       if (Object.prototype.hasOwnProperty.call(values, 'privacy_mode')) this.state.hideUsernames = Boolean(values.privacy_mode);
        if (Object.prototype.hasOwnProperty.call(values, 'watcher_termination_enabled')) {
          this.state.instanceMonitor = Object.assign({}, this.state.instanceMonitor, { termination_enabled: Boolean(values.watcher_termination_enabled) });
        }
        this.applyTheme(); this.render();
       if (announce !== false) this.toast('success', 'Settings saved', 'Your preference was applied.');
-    } catch (error) { this.toast('error', 'Could not save settings', error.message); }
+      return true;
+    } catch (error) {
+      this.toast('error', 'Could not save settings', error.message);
+      return false;
+    }
   }
 
   async setMultiInstance(enabled) {
@@ -3610,7 +3846,7 @@ class OrbitApp {
   }
 
   async refreshRuntimeSilently() {
-    if (this.state.runtimePollInFlight || this.state.loading || this.state.modal || this.state.paletteOpen) return;
+    if (this.state.runtimePollInFlight || this.state.loading || this.state.modal || this.state.paletteOpen || this.state.draggedAccountId) return;
     if (typeof document.visibilityState === 'string' && document.visibilityState === 'hidden') return;
     this.state.runtimePollInFlight = true;
     try {
@@ -3618,8 +3854,13 @@ class OrbitApp {
         // One joined snapshot instead of three polls that could disagree.
         this.applyDashboard(unwrap(await this.bridge.call('get_dashboard')) || {});
       } else {
-        this.applyInstanceMonitor(unwrap(await this.bridge.call('get_instance_monitor')) || {});
-        if (this.state.route === 'macros') this.state.macroRuns = asArray(await this.bridge.call('list_macro_runs'));
+        if (this.state.route === 'macros') {
+          const runtimePayloads = await Promise.all([this.bridge.call('get_instance_monitor'), this.bridge.call('list_macro_runs')]);
+          this.applyInstanceMonitor(unwrap(runtimePayloads[0]) || {});
+          this.state.macroRuns = asArray(runtimePayloads[1]);
+        } else {
+          this.applyInstanceMonitor(unwrap(await this.bridge.call('get_instance_monitor')) || {});
+        }
       }
       if (['dashboard', 'accounts', 'instances', 'macros'].includes(this.state.route)) this.render();
     } catch (_) {
@@ -3680,7 +3921,7 @@ class OrbitApp {
     this.state.serversLoading = true;
     if (this.state.route === 'games') this.render();
     try {
-      const result = await Promise.all([this.bridge.call('get_game', targetId), this.bridge.call('list_servers', targetId)]);
+      const result = await Promise.all([this.bridge.call('get_game', targetId), this.bridge.call('list_servers', targetId, this.state.serverFilters)]);
       // Discard stale response if user selected a different game while loading
       if (String(this.state.gameId) !== targetId) return;
       this.state.gameDetail = unwrap(result[0]);
@@ -3746,10 +3987,22 @@ class OrbitApp {
     } catch (error) { this.toast('error', 'Could not dismiss notification', error.message); }
   }
 
-  async copyText(value) {
+  async writeClipboard(value) {
+    if (!navigator.clipboard || typeof navigator.clipboard.writeText !== 'function') {
+      throw new Error('Clipboard access is unavailable.');
+    }
+    await navigator.clipboard.writeText(String(value));
+  }
+
+  async copyText(value, label) {
     try {
-      await navigator.clipboard.writeText(String(value)); this.toast('success', 'Copied Place ID', String(value) + ' is on your clipboard.');
-    } catch (_) { this.toast('error', 'Clipboard unavailable', 'Select the Place ID manually to copy it.'); }
+      await this.writeClipboard(value);
+      this.toast('success', String(label || 'Value') + ' copied', 'Copied to the clipboard.');
+      return true;
+    } catch (_) {
+      this.toast('error', 'Clipboard unavailable', 'Copy the value manually.');
+      return false;
+    }
   }
 
   async executePalette(data) {

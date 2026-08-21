@@ -115,6 +115,7 @@ def _backend(
         "module": module,
         "previous": 0,
         "cursor": (0, 0),
+        "cursor_dirty": False,
         "held": set(),
     }
     return backend, windows
@@ -199,6 +200,30 @@ def test_end_run_releases_keys_left_held() -> None:
 
     assert module.calls == [("keyDown", "w"), ("keyUp", "w")]
     assert threading.get_ident() not in backend._sessions
+
+
+def test_keyboard_only_run_does_not_move_the_users_cursor() -> None:
+    module = _FakePyDirectInput()
+    backend, windows = _backend(module)
+    target = {"hwnd": windows.hwnd}
+    assert backend.key(target, "W", True) is True
+
+    backend._input_lock.acquire()
+    backend.end_run(target)
+
+    assert windows.moved == []
+
+
+def test_click_run_restores_the_cursor_after_macro_mouse_input() -> None:
+    module = _FakePyDirectInput()
+    backend, windows = _backend(module)
+    target = {"hwnd": windows.hwnd}
+    assert backend.click(target, 0.5, 0.5, "left") is True
+
+    backend._input_lock.acquire()
+    backend.end_run(target)
+
+    assert windows.moved == [(0, 0)]
 
 
 # Focus and target drift ---------------------------------------------------

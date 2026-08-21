@@ -43,6 +43,8 @@ class DiscordPresenceManager:
         self._last_error: str | None = None
         self._connected = False
         self._updated_at: float | None = None
+        self._activity_signature: tuple[Any, ...] | None = None
+        self._activity_started_at: int | None = None
 
     def close(self) -> None:
         with self._lock:
@@ -109,20 +111,55 @@ class DiscordPresenceManager:
         strategy: str = "latest",
         show_account: bool = False,
         game_lookup: Callable[[int], str | None] | None = None,
+        details_template: str = "{game}",
+        state_template: str = "{instances} active · {account}",
+        large_image: str = "",
+        large_text: str = "Astro Account Manager",
+        game_overrides: Sequence[Mapping[str, Any]] = (),
     ) -> dict[str, Any] | None:
         rows = [row for row in instances if isinstance(row, Mapping) and row.get("place_id")]
         if not rows:
             return None
         if strategy == "aggregate" and len(rows) > 1:
-            return {"details": f"Managing {len(rows)} Roblox instances", "state": "Astro Account Manager"}
+            signature = ("aggregate", len(rows))
+            started = self._started_at(signature)
+            return {
+                "details": f"Managing {len(rows)} Roblox instances",
+                "state": "Astro Account Manager",
+                "timestamps": {"start": started},
+                "large_image": large_image,
+                "large_text": large_text,
+            }
         row = rows[-1]
         place_id = int(row["place_id"])
         game_name = game_lookup(place_id) if game_lookup else None
-        details = str(game_name or f"Roblox Place {place_id}")[:128]
-        state = "Astro Account Manager"
-        if show_account and row.get("account_username"):
-            state = f"@{str(row['account_username'])[:100]}"
-        return {"details": details, "state": state, "timestamps": {"start": int(time.time())}}
+        account = f"@{str(row.get('account_username') or '')[:100]}" if show_account and row.get("account_username") else "Astro Account Manager"
+        context = {
+            "game": str(game_name or f"Roblox Place {place_id}"),
+            "place_id": str(place_id),
+            "account": account,
+            "instances": str(len(rows)),
+        }
+        override = next((dict(item) for item in game_overrides if str(item.get("place_id") or "") == str(place_id)), {})
+        details = _render_template(str(override.get("details") or details_template), context)
+        state = _render_template(str(override.get("state") or state_template), context)
+        image = str(override.get("large_image") or large_image)
+        image_text = _render_template(str(override.get("large_text") or large_text), context)
+        signature = (place_id, row.get("account_id") if show_account else None, details, state)
+        return {
+            "details": details,
+            "state": state,
+            "timestamps": {"start": self._started_at(signature)},
+            "large_image": image,
+            "large_text": image_text,
+            "buttons": [{"label": "View game", "url": f"https://www.roblox.com/games/{place_id}"}],
+        }
+
+    def _started_at(self, signature: tuple[Any, ...]) -> int:
+        if signature != self._activity_signature or self._activity_started_at is None:
+            self._activity_signature = signature
+            self._activity_started_at = int(time.time())
+        return self._activity_started_at
 
     def _write(self, opcode: int, payload: Mapping[str, Any]) -> None:
         if self._stream is None:
@@ -152,17 +189,41 @@ def _sanitize_activity(activity: Mapping[str, Any] | None) -> dict[str, Any] | N
     if activity is None:
         return None
     allowed: dict[str, Any] = {}
-    for key in ("details", "state", "large_image", "large_text", "small_image", "small_text"):
+    for key in ("details", "state"):
         if key in activity and activity[key] is not None:
             text = str(activity[key]).strip()
             if text:
                 allowed[key] = text[:128]
+    assets: dict[str, str] = {}
+    for key in ("large_image", "large_text", "small_image", "small_text"):
+        text = str(activity.get(key) or "").strip()
+        if text:
+            assets[key] = text[:128]
+    if assets:
+        allowed["assets"] = assets
     timestamps = activity.get("timestamps")
     if isinstance(timestamps, Mapping):
         values = {key: int(timestamps[key]) for key in ("start", "end") if isinstance(timestamps.get(key), (int, float))}
         if values:
             allowed["timestamps"] = values
+    buttons: list[dict[str, str]] = []
+    for item in list(activity.get("buttons") or [])[:2]:
+        if not isinstance(item, Mapping):
+            continue
+        label = str(item.get("label") or "").strip()[:32]
+        url = str(item.get("url") or "").strip()[:512]
+        if label and url.startswith("https://"):
+            buttons.append({"label": label, "url": url})
+    if buttons:
+        allowed["buttons"] = buttons
     return allowed or None
+
+
+def _render_template(template: str, context: Mapping[str, str]) -> str:
+    text = str(template or "")[:256]
+    for key, value in context.items():
+        text = text.replace("{" + key + "}", str(value))
+    return text[:128]
 
 
 def _read_exact(stream: BinaryIO, length: int) -> bytes:

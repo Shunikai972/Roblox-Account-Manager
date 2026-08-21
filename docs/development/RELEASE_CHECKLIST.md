@@ -1,10 +1,10 @@
-# Checklist de livraison — 4.0.3
+# Checklist de livraison — 5.1.0
 
-Cette checklist concerne la livraison Windows `4.0.3`. Ne distribuez pas l’artefact si une étape de blocage échoue.
+Cette checklist concerne la livraison Windows `5.1.0`. Ne distribuez pas l’artefact si une étape de blocage échoue.
 
 ## 1. Préparer un checkout propre
 
-- [ ] Confirmer la version `4.0.3` dans `pyproject.toml` et `CHANGELOG.md`.
+- [ ] Confirmer la version `5.1.0` dans `pyproject.toml`, `app/backend/core/config.py` et `CHANGELOG.md`.
 - [ ] Vérifier que les fichiers legacy sont hors des sorties `build/` et `dist/` et n’ont pas été modifiés.
 - [ ] Installer les dépendances de développement : `python -m pip install ".[dev]"`.
 - [ ] Utiliser Windows 10/11 64 bits, Python 3.12+ et le runtime WebView2 Evergreen.
@@ -49,7 +49,7 @@ Get-FileHash .\dist\AstroAccountManager.exe -Algorithm SHA256
 
 ## 5. Préparer la distribution
 
-- [ ] Relire [SECURITY.md](SECURITY.md), [MIGRATION.md](MIGRATION.md) et [FEATURE_MATRIX.md](FEATURE_MATRIX.md) avec le périmètre réellement livré.
+- [ ] Relire [SECURITY.md](../troubleshooting/SECURITY.md), [MIGRATION.md](MIGRATION.md) et [FEATURE_MATRIX.md](../user-guide/FEATURE_MATRIX.md) avec le périmètre réellement livré.
 - [ ] Inclure `README.md`, `CHANGELOG.md`, `INSTALLATION.md`, `MIGRATION.md`, `SECURITY.md` et cette checklist avec l’artefact.
 - [ ] Signer l’exécutable avec un certificat Authenticode de publication valide, si une diffusion externe est prévue.
 - [ ] Soumettre l’artefact final au scan antimalware organisationnel et vérifier le hash publié après signature.

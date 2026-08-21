@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 from pathlib import Path
 import shutil
@@ -18,6 +19,18 @@ logger = logging.getLogger("astro.client_settings")
 
 class ClientSettingsPatcher:
     """Manages ClientAppSettings.json in Roblox LocalAppData folder."""
+
+    GLOBAL_SCALAR_TYPES = frozenset({"bool", "int", "float", "token", "string"})
+    GLOBAL_BASIC_FIELDS = {
+        "FramerateCap": ("int", -1, 1000),
+        "MasterVolume": ("float", 0.0, 1.0),
+        "GraphicsQualityLevel": ("int", 0, 21),
+        "SavedQualityLevel": ("token", 0, 10),
+        "Fullscreen": ("bool", None, None),
+        "CameraMode": ("token", 0, 10),
+    }
+    MAX_GLOBAL_SETTINGS_BYTES = 8 * 1024 * 1024
+    MAX_GLOBAL_CHANGES = 50
 
     def __init__(self, local_app_data: Path | str | None = None) -> None:
         self.available = True
@@ -329,9 +342,193 @@ class ClientSettingsPatcher:
         if not backup.is_file():
             return
         try:
-            shutil.copy2(backup, self.global_settings_file)
-        except OSError as exc:
+            backup_tree = self._read_global_tree(backup)
+            current_tree = self._read_global_tree(self.global_settings_file)
+            backup_values = self._global_scalar_values(backup_tree)
+            current_values = self._global_scalar_values(current_tree)
+            backup_cap = backup_values.get("FramerateCap")
+            current_without_cap = {key: value for key, value in current_values.items() if key != "FramerateCap"}
+            backup_without_cap = {key: value for key, value in backup_values.items() if key != "FramerateCap"}
+            if current_without_cap == backup_without_cap:
+                # Preserve the user's original bytes when FPS was Astro's only
+                # edit. Existing comments/formatting survive exactly.
+                shutil.copy2(backup, self.global_settings_file)
+                return
+            if backup_cap is None:
+                return
+            cap = self._global_elements(current_tree).get("FramerateCap")
+            if cap is None:
+                return
+            cap.text = backup_cap[1]
+            self._write_global_tree(current_tree)
+        except (OSError, ET.ParseError, ValidationError) as exc:
             raise ValidationError("Roblox's original frame-rate setting could not be restored.") from exc
+
+    def _read_global_tree(self, path: Path | None = None) -> ET.ElementTree:
+        target = path or self.global_settings_file
+        try:
+            if not target.is_file():
+                raise ValidationError("GlobalBasicSettings_13.xml does not exist yet. Launch Roblox once, then retry.")
+            if target.stat().st_size > self.MAX_GLOBAL_SETTINGS_BYTES:
+                raise ValidationError("GlobalBasicSettings_13.xml is unexpectedly large; Astro left it unchanged.")
+            return ET.parse(target)
+        except ValidationError:
+            raise
+        except (OSError, ET.ParseError) as exc:
+            raise ValidationError("GlobalBasicSettings_13.xml is unreadable; Astro left it unchanged.") from exc
+
+    @classmethod
+    def _global_elements(cls, tree: ET.ElementTree) -> dict[str, ET.Element]:
+        elements: dict[str, ET.Element] = {}
+        for element in tree.getroot().iter():
+            kind = element.tag.rsplit("}", 1)[-1]
+            name = str(element.attrib.get("name") or "").strip()
+            if kind not in cls.GLOBAL_SCALAR_TYPES or not name or list(element):
+                continue
+            elements.setdefault(name, element)
+        return elements
+
+    @classmethod
+    def _global_scalar_values(cls, tree: ET.ElementTree) -> dict[str, tuple[str, str]]:
+        return {
+            name: (element.tag.rsplit("}", 1)[-1], str(element.text or ""))
+            for name, element in cls._global_elements(tree).items()
+        }
+
+    @classmethod
+    def _coerce_global_value(cls, name: str, kind: str, value: Any) -> str:
+        expected = cls.GLOBAL_BASIC_FIELDS.get(name)
+        if expected is not None and expected[0] != kind:
+            raise ValidationError(f"Roblox setting {name} has an unexpected XML type.")
+        if kind == "bool":
+            if isinstance(value, bool):
+                normalized: Any = value
+            elif str(value).strip().casefold() in {"true", "false"}:
+                normalized = str(value).strip().casefold() == "true"
+            else:
+                raise ValidationError(f"Roblox setting {name} must be true or false.")
+            return "true" if normalized else "false"
+        if kind in {"int", "token"}:
+            if isinstance(value, bool):
+                raise ValidationError(f"Roblox setting {name} must be a whole number.")
+            try:
+                normalized = int(str(value).strip())
+            except (TypeError, ValueError) as exc:
+                raise ValidationError(f"Roblox setting {name} must be a whole number.") from exc
+            minimum, maximum = (-1_000_000, 1_000_000)
+            if expected is not None:
+                minimum, maximum = expected[1], expected[2]
+            if (minimum is not None and normalized < minimum) or (maximum is not None and normalized > maximum):
+                raise ValidationError(f"Roblox setting {name} is outside its supported range.")
+            return str(normalized)
+        if kind == "float":
+            if isinstance(value, bool):
+                raise ValidationError(f"Roblox setting {name} must be a number.")
+            try:
+                normalized = float(str(value).strip())
+            except (TypeError, ValueError) as exc:
+                raise ValidationError(f"Roblox setting {name} must be a number.") from exc
+            if not math.isfinite(normalized):
+                raise ValidationError(f"Roblox setting {name} must be finite.")
+            minimum, maximum = (-1_000_000.0, 1_000_000.0)
+            if expected is not None:
+                minimum, maximum = expected[1], expected[2]
+            if (minimum is not None and normalized < minimum) or (maximum is not None and normalized > maximum):
+                raise ValidationError(f"Roblox setting {name} is outside its supported range.")
+            return format(normalized, ".12g")
+        text = str(value)
+        if len(text) > 500 or any(ord(char) < 32 and char not in "\t\r\n" for char in text):
+            raise ValidationError(f"Roblox setting {name} contains an invalid string value.")
+        return text
+
+    def _write_global_tree(self, tree: ET.ElementTree) -> None:
+        target = self.global_settings_file
+        temporary = target.with_name("GlobalBasicSettings_13.astro-tmp.xml")
+        try:
+            tree.write(temporary, encoding="utf-8", xml_declaration=True)
+            os.replace(temporary, target)
+        finally:
+            temporary.unlink(missing_ok=True)
+
+    def read_global_settings(self, query: str = "") -> dict[str, Any]:
+        """Read bounded scalar settings plus a stable basic-control summary."""
+
+        if not self.global_settings_file.is_file():
+            return {
+                "available": False,
+                "reason": "GlobalBasicSettings_13.xml does not exist yet. Launch Roblox once, then retry.",
+                "basic": {},
+                "advanced": [],
+            }
+        tree = self._read_global_tree()
+        wanted = str(query or "").strip().casefold()[:100]
+        rows: list[dict[str, Any]] = []
+        values: dict[str, Any] = {}
+        for name, element in self._global_elements(tree).items():
+            if wanted and wanted not in name.casefold():
+                continue
+            kind = element.tag.rsplit("}", 1)[-1]
+            raw = str(element.text or "")
+            if kind == "bool":
+                value: Any = raw.strip().casefold() == "true"
+            elif kind in {"int", "token"}:
+                try:
+                    value = int(raw.strip())
+                except ValueError:
+                    value = raw
+            elif kind == "float":
+                try:
+                    value = float(raw.strip())
+                except ValueError:
+                    value = raw
+            else:
+                value = raw
+            values[name] = value
+            rows.append({"name": name, "type": kind, "value": value, "managed": name in self.GLOBAL_BASIC_FIELDS})
+        rows.sort(key=lambda row: str(row["name"]).casefold())
+        volume = values.get("MasterVolume")
+        quality = values.get("SavedQualityLevel", values.get("GraphicsQualityLevel"))
+        return {
+            "available": True,
+            "reason": None,
+            "basic": {
+                "fps": values.get("FramerateCap"),
+                "volume_percent": round(float(volume) * 100) if isinstance(volume, (int, float)) else None,
+                "graphics_quality": quality,
+                "fullscreen": values.get("Fullscreen"),
+                "camera_mode": values.get("CameraMode"),
+            },
+            "advanced": rows[:500],
+            "total": len(rows),
+        }
+
+    def apply_global_settings(self, changes: dict[str, Any]) -> dict[str, Any]:
+        """Atomically edit existing scalar XML values and verify the readback."""
+
+        if not isinstance(changes, dict) or not changes:
+            raise ValidationError("At least one Roblox setting is required.")
+        if len(changes) > self.MAX_GLOBAL_CHANGES:
+            raise ValidationError(f"At most {self.MAX_GLOBAL_CHANGES} Roblox settings may be changed at once.")
+        with self._lock:
+            tree = self._read_global_tree()
+            elements = self._global_elements(tree)
+            expected: dict[str, str] = {}
+            for raw_name, value in changes.items():
+                name = str(raw_name or "").strip()
+                element = elements.get(name)
+                if element is None:
+                    raise ValidationError(f"Roblox setting {name or '(empty)'} does not exist in this installation.")
+                kind = element.tag.rsplit("}", 1)[-1]
+                normalized = self._coerce_global_value(name, kind, value)
+                element.text = normalized
+                expected[name] = normalized
+            if not self.global_settings_backup_file.exists():
+                shutil.copy2(self.global_settings_file, self.global_settings_backup_file)
+            self._write_global_tree(tree)
+            verified = self._global_scalar_values(self._read_global_tree())
+            if any(verified.get(name, (None, None))[1] != value for name, value in expected.items()):
+                raise ValidationError("Roblox settings could not be verified after writing.")
+        return self.read_global_settings()
 
     def _write_one(
         self,

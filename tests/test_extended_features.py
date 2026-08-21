@@ -125,6 +125,31 @@ def test_account_utils(mock_post, mock_patch):
         utils.quick_log_in(cookie, "123")
 
 
+def test_authenticated_json_post_retries_csrf_without_changing_content_type(monkeypatch) -> None:
+    first = MagicMock(status_code=403, headers={"x-csrf-token": "csrf-value"})
+    second = MagicMock(status_code=200, headers={})
+    session = MagicMock()
+    session.headers = {}
+    session.post.side_effect = [first, second]
+    monkeypatch.setattr("app.backend.roblox.account_utils.requests.Session", lambda: session)
+
+    assert AccountUtils().change_password("opaque-cookie", "old", "new") is True
+    assert session.post.call_count == 2
+    for call in session.post.call_args_list:
+        assert call.args[0] == "https://auth.roblox.com/v2/passwords/change"
+        assert call.kwargs["json"] == {"currentPassword": "old", "newPassword": "new"}
+        assert "data" not in call.kwargs
+    assert session.headers["x-csrf-token"] == "csrf-value"
+    session.close.assert_called_once()
+
+
+def test_retired_parental_pin_endpoint_reports_the_real_platform_state(monkeypatch) -> None:
+    response = MagicMock(status_code=404, headers={})
+    monkeypatch.setattr(AccountUtils, "_session_post_form", staticmethod(lambda *args, **kwargs: response))
+    with pytest.raises(Exception, match="retired"):
+        AccountUtils().unlock_parental_pin("opaque-cookie", "1234")
+
+
 def test_extended_service_and_bridge_integration(tmp_path: Path):
     paths = _paths(tmp_path)
     repo = SQLiteRepository(paths.database)

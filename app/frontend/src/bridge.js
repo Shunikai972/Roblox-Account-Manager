@@ -8,15 +8,15 @@ const CONTRACT_METHODS = [
   'delete_accounts', 'get_public_profile', 'refresh_account_public_profile', 'get_public_presence', 'refresh_account_presence',
   'start_oauth_login', 'poll_oauth_login', 'cancel_oauth_login',
   'refresh_oauth_account', 'disconnect_oauth_account', 'list_groups', 'create_group', 'update_group', 'delete_group', 'move_accounts', 'reorder_accounts', 'list_games',
-  'search_games', 'list_recent_games', 'list_favorite_games', 'get_game', 'set_game_favorite', 'remove_game', 'list_servers',
+  'search_games', 'list_recent_games', 'list_favorite_games', 'get_game', 'set_game_favorite', 'remove_game', 'list_servers', 'plan_server_distribution', 'run_server_distribution',
   'resolve_server_region', 'probe_server_regions', 'launch_account', 'list_uwp_packages', 'launch_uwp_package', 'create_uwp_account_clone', 'unregister_uwp_account_clone', 'list_instances',
-  'refresh_instances', 'get_instance_monitor', 'close_instance', 'bind_instance', 'configure_account_watcher', 'get_settings', 'update_settings', 'reset_settings',
+  'refresh_instances', 'get_instance_monitor', 'get_instance_visibility', 'get_instance_performance', 'get_compatibility_report', 'acknowledge_roblox_version', 'set_instance_visibility', 'set_group_visibility', 'close_instance', 'bind_instance', 'configure_account_watcher', 'get_settings', 'update_settings', 'reset_settings',
   'get_windows_startup_status', 'set_windows_startup', 'get_activity',
   'get_notifications', 'dismiss_notification', 'backup_data', 'list_backups',
   'restore_backup', 'export_metadata', 'import_metadata', 'migrate_legacy', 'get_diagnostics',
   'start_nexus_server', 'stop_nexus_server', 'get_nexus_status', 'send_nexus_command', 'get_nexus_lua_script',
   'get_multi_instance_status', 'set_multi_instance',
-  'get_fps_cap', 'set_fps_cap', 'remove_fps_cap', 'start_batch_launch', 'cancel_batch_launch', 'get_batch_launch_status',
+  'get_fps_cap', 'set_fps_cap', 'remove_fps_cap', 'get_roblox_settings_manager', 'save_roblox_settings_profile', 'delete_roblox_settings_profile', 'apply_roblox_settings', 'apply_roblox_settings_profile', 'start_batch_launch', 'cancel_batch_launch', 'get_batch_launch_status',
   'generate_auth_ticket', 'get_account_csrf_token', 'generate_rbx_player_link', 'get_account_cookie', 'refresh_account_session', 'export_account_sessions', 'import_bulk_accounts', 'position_instance_window', 'capture_instance_window', 'restore_instance_window',
   'change_account_password', 'change_account_email', 'logout_all_account_sessions', 'set_account_display_name',
   'send_account_friend_request', 'block_account_user', 'unblock_account_user', 'quick_log_in_account',
@@ -398,11 +398,16 @@ class PreviewBridge {
         id: 'srv_' + game.place_id + '_' + index, place_id: game.place_id,
         job_id: 'a' + (7831 + index) + '-b71f-' + (940 + index) + '-c' + (200 + index),
         players: playing, capacity: capacity, ping: 31 + index * 11,
-        region: regions[index % regions.length], vip: index === 8, uptime: (index + 1) * 14
+        region: regions[index % regions.length], vip: index === 8, uptime: (index + 1) * 14,
+        free_slots: capacity - playing, score: Math.max(0, 96 - index * 3), eligible: playing < capacity,
+        score_breakdown: { ping: Math.max(0, 96 - index * 4), free_slots: Math.round(100 * (capacity - playing) / capacity), fps: 50, stability: 75, previous_failures: 100 }
       });
     }
     return output;
   }
+
+  async plan_server_distribution() { return this.desktopOperationUnavailable('Planning live server distribution'); }
+  async run_server_distribution() { return this.desktopOperationUnavailable('Launching a live server distribution'); }
 
   async resolve_server_region() {
     return this.desktopOperationUnavailable('Resolving a live server region');
@@ -452,6 +457,13 @@ class PreviewBridge {
   async get_instance_monitor() {
     return { instances: clone(this.state.instances), events: [], pending_restarts: [], last_scan_complete: true, termination_enabled: false };
   }
+
+  async get_instance_visibility() { return this.desktopOperationUnavailable('Inspecting Roblox window visibility'); }
+  async get_instance_performance() { return this.desktopOperationUnavailable('Reading Roblox process performance'); }
+  async get_compatibility_report() { return this.desktopOperationUnavailable('Checking Roblox compatibility'); }
+  async acknowledge_roblox_version() { return this.desktopOperationUnavailable('Recording a Roblox compatibility baseline'); }
+  async set_instance_visibility() { return this.desktopOperationUnavailable('Changing Roblox window visibility'); }
+  async set_group_visibility() { return this.desktopOperationUnavailable('Changing group window visibility'); }
 
   async close_instance(pid, confirm) {
     if (!confirm) throw new Error('Closing an instance requires confirmation.');
@@ -682,6 +694,12 @@ class PreviewBridge {
   async remove_fps_cap() {
     return this.desktopOperationUnavailable('Removing the Roblox FPS cap');
   }
+
+  async get_roblox_settings_manager() { return this.desktopOperationUnavailable('Reading Roblox global settings'); }
+  async save_roblox_settings_profile() { return this.desktopOperationUnavailable('Saving a Roblox settings profile'); }
+  async delete_roblox_settings_profile() { return this.desktopOperationUnavailable('Deleting a Roblox settings profile'); }
+  async apply_roblox_settings() { return this.desktopOperationUnavailable('Changing Roblox global settings'); }
+  async apply_roblox_settings_profile() { return this.desktopOperationUnavailable('Applying a Roblox settings profile'); }
 
   async start_batch_launch(account_ids, target, delay_seconds) {
     return this.desktopOperationUnavailable('Launching Roblox accounts');

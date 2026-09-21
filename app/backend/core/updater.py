@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-import logging
 import hashlib
+import hmac
 import json
+import logging
 import os
 from pathlib import Path
 import re
@@ -140,27 +141,37 @@ class UpdateManager:
         self.staged_path = self.directory / EXPECTED_ASSET
         self.manifest_path = self.directory / "staged-update.json"
         self.pending_path = self.directory / "pending-install.json"
+        self._staged_hash_cache: tuple[tuple[int, int, int, int], str] | None = None
 
     def close(self) -> None:
         self.session.close()
 
     def status(self) -> dict[str, Any]:
         manifest = self._read_manifest(self.manifest_path)
-        staged_exists = self.staged_path.is_file()
-        staged_size = self.staged_path.stat().st_size if staged_exists else None
+        staged_file = self._staged_file_digest()
+        staged_exists = staged_file is not None
+        staged_size, staged_digest = staged_file or (None, None)
         declared_size = manifest.get("size") if manifest else None
+        declared_digest = str(manifest.get("sha256") or "").upper() if manifest else ""
+        integrity_verified = bool(
+            staged_digest
+            and re.fullmatch(r"[A-F0-9]{64}", declared_digest)
+            and hmac.compare_digest(staged_digest, declared_digest)
+        )
         staged_valid = bool(
             manifest
             and staged_exists
             and isinstance(declared_size, int)
             and declared_size == staged_size
             and _version_key(str(manifest.get("version") or "")) is not None
+            and integrity_verified
         )
         pending_exists = self.pending_path.is_file()
         return {
             "frozen": self.runtime_is_frozen,
             "staged": bool(manifest and staged_exists),
             "staged_valid": staged_valid,
+            "integrity_verified": integrity_verified,
             "pending_install": pending_exists,
             "ready_to_install": bool(pending_exists and staged_valid),
             "version": manifest.get("version") if manifest else None,
@@ -200,6 +211,7 @@ class UpdateManager:
         temporary = self.directory / f".{EXPECTED_ASSET}.part"
         temporary.write_bytes(raw)
         os.replace(temporary, self.staged_path)
+        self._staged_hash_cache = None
         manifest = {
             "version": str(release.get("latest_version") or ""),
             "sha256": digest,
@@ -238,7 +250,35 @@ class UpdateManager:
                 path.unlink(missing_ok=True)
             except OSError as exc:
                 raise UpdateError("The staged update could not be removed.") from exc
+        self._staged_hash_cache = None
         return self.status()
+
+    def _staged_file_digest(self) -> tuple[int, str] | None:
+        """Hash the current staged file, caching only an unchanged file identity."""
+
+        try:
+            with self.staged_path.open("rb") as staged:
+                before = os.fstat(staged.fileno())
+                fingerprint = _file_fingerprint(before)
+                cached = self._staged_hash_cache
+                if cached is not None and cached[0] == fingerprint:
+                    digest = cached[1]
+                else:
+                    hasher = hashlib.sha256()
+                    for chunk in iter(lambda: staged.read(1024 * 1024), b""):
+                        hasher.update(chunk)
+                    digest = hasher.hexdigest().upper()
+                after = os.fstat(staged.fileno())
+            current = self.staged_path.stat()
+        except OSError:
+            self._staged_hash_cache = None
+            return None
+
+        if fingerprint != _file_fingerprint(after) or fingerprint != _file_fingerprint(current):
+            self._staged_hash_cache = None
+            return None
+        self._staged_hash_cache = (fingerprint, digest)
+        return fingerprint[0], digest
 
     def apply_pending_on_exit(self) -> bool:
         """Start a fixed helper that waits for this process, then swaps the EXE."""
@@ -348,6 +388,17 @@ def _validate_pe(raw: bytes) -> None:
     offset = struct.unpack_from("<I", raw, 0x3C)[0]
     if offset < 0x40 or offset + 4 > len(raw) or raw[offset : offset + 4] != b"PE\x00\x00":
         raise UpdateError("The release asset has an invalid PE header.")
+
+
+def _file_fingerprint(metadata: os.stat_result) -> tuple[int, int, int, int]:
+    """Identify unchanged file contents for the staged-hash cache."""
+
+    return (
+        metadata.st_size,
+        metadata.st_mtime_ns,
+        metadata.st_dev,
+        metadata.st_ino,
+    )
 
 
 def _checksum_for_asset(text: str, filename: str) -> str | None:

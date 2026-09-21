@@ -1,5 +1,38 @@
 # Changelog
 
+## 5.1.1 - 2026-09-21
+
+- Replaced the destructive Multi Roblox compatibility path with a dedicated
+  mutex-owner thread that queue-waits safely and never invalidates handles in
+  an already running Roblox client.
+- Added live PlaceId and full JobId propagation from Roblox Player logs to the
+  process monitor, plus one-click actions to join another account's exact
+  active server.
+- Added safe expansion of unique shortened JobId fragments from trusted local
+  instance and log observations. Unknown or ambiguous fragments are rejected
+  before Roblox opens instead of producing a misleading unavailable-server
+  screen.
+- Added a saved default JobId to the account editor with clearer validation and
+  direct selection from another active account.
+- Hardened explicit Roblox shutdown to include launchers and crash helpers,
+  terminate child processes and let the Multi Roblox holder acquire ownership
+  without a disable/re-enable race.
+- Reworked batch launch workers around isolated per-run state so cancelling one
+  wave cannot corrupt or stop a later batch.
+- Fixed macro launch, teleport and restart actions to release their previous
+  input session, support immediate cancellation and re-pin keyboard input to
+  the replacement PID and window.
+- Restricted Roblox `/share` parsing to the real share route instead of
+  accepting an unrelated URL that happened to contain a `code` parameter.
+- Revalidates the staged updater executable's SHA-256 against its manifest on
+  every unchanged file identity, detecting replacement or tampering after the
+  initial download.
+- Rebuilt and smoke-tested the Windows onefile/windowed executable
+  (22,523,402 bytes; SHA-256
+  `D2CE127E2E26F1DC7741EA4692D22C3D1FE39BABA68FBB299CA379718781A1D1`).
+- Validation: 837 passed, 2 platform-conditional skips; Python compilation,
+  focused Windows startup smoke test and `git diff --check` passed.
+
 ## 5.1.0 - 2026-08-21
 
 - Rebuilt the Windows onefile/windowed artifact from the 5.1.0 sources

@@ -11,7 +11,13 @@ import psutil
 from app.backend.core.errors import ValidationError
 
 
-_NAMES = {"robloxplayerbeta.exe", "robloxplayer.exe"}
+_NAMES = {
+    "robloxplayerbeta.exe",
+    "robloxplayer.exe",
+    "robloxcrashhandler.exe",
+    "robloxcrashtracker.exe",
+    "robloxplayerlauncher.exe",
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -53,18 +59,52 @@ class RobloxBackgroundManager:
         for identity in snapshot:
             try:
                 process = self._process_factory(identity.pid)
-                if str(process.name()).casefold() != identity.name or abs(float(process.create_time()) - identity.created_at) > 0.01:
+                if str(process.name()).casefold() != identity.name or abs(float(process.create_time()) - identity.created_at) > 1.0:
                     continue
+                # Terminate any child processes first
+                children_fn = getattr(process, "children", None)
+                if callable(children_fn):
+                    try:
+                        for child in children_fn(recursive=True):
+                            try:
+                                child.terminate()
+                            except (psutil.Error, OSError):
+                                pass
+                    except (psutil.Error, OSError):
+                        pass
                 process.terminate()
                 requested.append(process)
             except (psutil.Error, OSError, TypeError, ValueError):
                 continue
         deadline = time.monotonic() + max(0.1, min(float(timeout_seconds), 30.0))
         closed = 0
+        still_alive: list[Any] = []
         for process in requested:
             try:
-                process.wait(timeout=max(0.0, deadline - time.monotonic()))
+                remaining_time = max(0.05, deadline - time.monotonic())
+                process.wait(timeout=remaining_time)
                 closed += 1
             except (psutil.Error, OSError, TimeoutError):
-                continue
+                still_alive.append(process)
+
+        # Escalate to kill for stubborn processes that did not terminate
+        for process in still_alive:
+            try:
+                kill_fn = getattr(process, "kill", None)
+                if callable(kill_fn):
+                    kill_fn()
+                process.wait(timeout=0.5)
+                closed += 1
+            except (psutil.Error, OSError, TimeoutError):
+                try:
+                    import subprocess
+                    proc_pid = getattr(process, "pid", None)
+                    if proc_pid:
+                        subprocess.run(
+                            ["taskkill", "/F", "/T", "/PID", str(proc_pid)],
+                            capture_output=True,
+                            timeout=1.0,
+                        )
+                except Exception:
+                    pass
         return {"requested": len(requested), "closed": closed, "remaining": len(self.list_running())}

@@ -5,11 +5,27 @@ from __future__ import annotations
 import logging
 import math
 import threading
+from dataclasses import dataclass, field
 from typing import Any, Callable
 
 from app.backend.core.errors import ConflictError, ValidationError
 
 logger = logging.getLogger("astro.batch_launcher")
+
+
+@dataclass
+class _BatchRun:
+    """State owned by one worker and never reused by a later batch."""
+
+    queue: tuple[str, ...]
+    target: dict[str, Any] | None
+    per_account_targets: dict[str, dict[str, Any] | None]
+    delay_seconds: float
+    wave_size: int
+    wave_pause_seconds: float
+    ready_check: Callable[[], dict[str, Any]] | None
+    status: dict[str, Any]
+    cancel_event: threading.Event = field(default_factory=threading.Event)
 
 
 class BatchLauncher:
@@ -22,6 +38,7 @@ class BatchLauncher:
         self.launch_single_fn = launch_single_fn
         self._lock = threading.RLock()
         self._thread: threading.Thread | None = None
+        self._active_run: _BatchRun | None = None
         self._cancelled = False
         self._cancel_event = threading.Event()
         self.queue: list[str] = []
@@ -96,35 +113,52 @@ class BatchLauncher:
             if ready_check is not None and not callable(ready_check):
                 raise ValidationError("The launch readiness check is invalid.")
 
-            self.queue = normalized
-            self.target = dict(target) if target is not None else None
-            self.per_account_targets = normalized_targets
-            self.delay_seconds = normalized_delay
-            self.wave_size = normalized_wave
-            self.wave_pause_seconds = normalized_pause
-            self.ready_check = ready_check
-            self._cancelled = False
-            self._cancel_event.clear()
-            self.status = {
+            run_status = {
                 "in_progress": True,
-                "total": len(self.queue),
+                "total": len(normalized),
                 "launched": 0,
                 "failed": 0,
                 "current_account": None,
                 "wave": 1 if normalized_wave else 0,
-                "waves": math.ceil(len(self.queue) / normalized_wave) if normalized_wave else 1,
+                "waves": math.ceil(len(normalized) / normalized_wave) if normalized_wave else 1,
                 "waiting_for_wave": False,
                 "wave_reason": "",
             }
+            run = _BatchRun(
+                queue=tuple(normalized),
+                target=dict(target) if target is not None else None,
+                per_account_targets=normalized_targets,
+                delay_seconds=normalized_delay,
+                wave_size=normalized_wave,
+                wave_pause_seconds=normalized_pause,
+                ready_check=ready_check,
+                status=run_status,
+            )
 
-            self._thread = threading.Thread(target=self._run_batch, daemon=True)
+            # Keep these attributes as mirrors of the latest batch for callers
+            # that inspect the launcher, while workers use their private run.
+            self.queue = list(run.queue)
+            self.target = run.target
+            self.per_account_targets = run.per_account_targets
+            self.delay_seconds = run.delay_seconds
+            self.wave_size = run.wave_size
+            self.wave_pause_seconds = run.wave_pause_seconds
+            self.ready_check = run.ready_check
+            self._cancelled = False
+            self._cancel_event = run.cancel_event
+            self._active_run = run
+            self.status = run.status
+
+            self._thread = threading.Thread(target=self._run_batch, args=(run,), daemon=True)
             self._thread.start()
             return dict(self.status)
 
     def cancel_batch(self) -> dict[str, Any]:
         with self._lock:
             self._cancelled = True
-            self._cancel_event.set()
+            run = self._active_run
+            if run is not None:
+                run.cancel_event.set()
             self.status["in_progress"] = False
             return dict(self.status)
 
@@ -132,7 +166,7 @@ class BatchLauncher:
         with self._lock:
             return dict(self.status)
 
-    def _wait_for_wave(self, index: int) -> None:
+    def _wait_for_wave(self, run: _BatchRun, index: int) -> None:
         """Hold the queue between waves, then wait until the machine is ready.
 
         The fixed pause always applies.  When a readiness check is wired the
@@ -141,16 +175,16 @@ class BatchLauncher:
         """
 
         with self._lock:
-            self.status["waiting_for_wave"] = True
-            self.status["wave_reason"] = "Pausing between waves."
-        pause = self.wave_pause_seconds if self.wave_pause_seconds else self.delay_seconds
-        self._cancel_event.wait(pause)
+            run.status["waiting_for_wave"] = True
+            run.status["wave_reason"] = "Pausing between waves."
+        pause = run.wave_pause_seconds if run.wave_pause_seconds else run.delay_seconds
+        run.cancel_event.wait(pause)
 
-        check = self.ready_check
+        check = run.ready_check
         if check is not None:
             deadline = 0.0
             reason = ""
-            while deadline < self._MAX_WAVE_WAIT_SECONDS and not self._cancel_event.is_set():
+            while deadline < self._MAX_WAVE_WAIT_SECONDS and not run.cancel_event.is_set():
                 try:
                     verdict = check() or {}
                 except Exception:  # noqa: BLE001 - a probe must not break a batch
@@ -162,50 +196,50 @@ class BatchLauncher:
                     break
                 reason = str(verdict.get("reason") or "Waiting for the machine to free up.")
                 with self._lock:
-                    self.status["wave_reason"] = reason
-                self._cancel_event.wait(self._WAVE_POLL_SECONDS)
+                    run.status["wave_reason"] = reason
+                run.cancel_event.wait(self._WAVE_POLL_SECONDS)
                 deadline += self._WAVE_POLL_SECONDS
             if reason and deadline >= self._MAX_WAVE_WAIT_SECONDS:
                 logger.info("Wave gate timed out: %s", reason)
 
         with self._lock:
-            self.status["waiting_for_wave"] = False
-            self.status["wave_reason"] = ""
-            if self.wave_size:
-                self.status["wave"] = (index + 1) // self.wave_size + 1
+            run.status["waiting_for_wave"] = False
+            run.status["wave_reason"] = ""
+            if run.wave_size and not run.cancel_event.is_set():
+                run.status["wave"] = (index + 1) // run.wave_size + 1
 
-    def _run_batch(self) -> None:
-        for idx, account_id in enumerate(self.queue):
+    def _run_batch(self, run: _BatchRun) -> None:
+        for idx, account_id in enumerate(run.queue):
             with self._lock:
-                if self._cancelled:
+                if run.cancel_event.is_set():
                     logger.info("Batch launch cancelled by user.")
                     break
-                self.status["current_account"] = account_id
+                run.status["current_account"] = account_id
 
             try:
-                logger.info("Launching queued Roblox account %d/%d", idx + 1, len(self.queue))
-                target = self.per_account_targets.get(account_id, self.target)
+                logger.info("Launching queued Roblox account %d/%d", idx + 1, len(run.queue))
+                target = run.per_account_targets.get(account_id, run.target)
                 result = self.launch_single_fn(account_id, target)
                 with self._lock:
                     if isinstance(result, dict) and result.get("accepted") is False:
-                        self.status["failed"] += 1
+                        run.status["failed"] += 1
                     else:
-                        self.status["launched"] += 1
+                        run.status["launched"] += 1
             except Exception:
                 logger.warning("Queued Roblox launch failed", exc_info=True)
                 with self._lock:
-                    self.status["failed"] += 1
+                    run.status["failed"] += 1
 
-            if idx >= len(self.queue) - 1:
+            if idx >= len(run.queue) - 1:
                 continue
             # A wave boundary is where the machine gets to breathe: the whole
             # point of launching 20 alts three at a time.
-            if self.wave_size and (idx + 1) % self.wave_size == 0:
-                self._wait_for_wave(idx)
+            if run.wave_size and (idx + 1) % run.wave_size == 0:
+                self._wait_for_wave(run, idx)
             else:
-                self._cancel_event.wait(self.delay_seconds)
+                run.cancel_event.wait(run.delay_seconds)
 
         with self._lock:
-            self.status["in_progress"] = False
-            self.status["current_account"] = None
+            run.status["in_progress"] = False
+            run.status["current_account"] = None
             logger.info("Batch launch completed.")

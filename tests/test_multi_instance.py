@@ -44,6 +44,12 @@ def test_multi_instance_controller_lifecycle():
         assert status_enabled["mutex_held"] is True
         assert status_enabled["handle_count"] == len(status_enabled["held_objects"])
         assert status_enabled["holder_thread_alive"] is True
+    elif sys.platform == "win32":
+        # Another Roblox/Astro process may already own the mutex. The safe
+        # behaviour is to stay queued without closing that process's handle.
+        assert status_enabled["waiting_for_mutex"] is True
+        assert status_enabled["mutex_held"] is True
+        assert status_enabled["holder_thread_alive"] is True
     else:
         assert status_enabled["handle_count"] == 0
 

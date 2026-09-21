@@ -117,6 +117,26 @@ def test_links_from_other_sites_are_still_refused() -> None:
     assert PrivateServerHelper.parse_vip_link("https://www.roblox.com/share?code=short") is None
 
 
+def test_modern_share_codes_are_only_accepted_on_the_share_path() -> None:
+    query = f"?code={SHARE_CODE}&type=Server"
+
+    assert PrivateServerHelper.parse_vip_link("https://www.roblox.com/users/1/profile" + query) is None
+    assert PrivateServerHelper.parse_vip_link("https://www.roblox.com/share/invite" + query) is None
+    assert PrivateServerHelper.parse_vip_link("https://www.roblox.com/not-share" + query) is None
+
+
+def test_share_path_allows_case_and_trailing_slash_normalization() -> None:
+    parsed = PrivateServerHelper.parse_vip_link(
+        f"https://www.roblox.com/SHARE/?code={SHARE_CODE}&type=Server"
+    )
+
+    assert parsed == {
+        "share_code": SHARE_CODE,
+        "link_type": "server",
+        "needs_resolution": True,
+    }
+
+
 def test_roblox_answers_are_read_into_a_place_and_a_code() -> None:
     resolved = read_private_server_invite(
         {

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, patch
@@ -198,6 +199,59 @@ def test_update_status_only_marks_a_valid_pending_payload_ready(tmp_path: Path) 
     assert status["pending_install"] is True
     assert status["staged_valid"] is False
     assert status["ready_to_install"] is False
+
+
+def test_update_status_rejects_same_size_staged_tampering(tmp_path: Path) -> None:
+    executable = _pe_bytes(1200)
+    checker, payloads = _checker(executable)
+    target = tmp_path / "AstroAccountManager.exe"
+    target.write_bytes(_pe_bytes())
+    manager = UpdateManager(
+        tmp_path / "updates",
+        checker=checker,
+        session=_Session(payloads),
+        runtime_executable=target,
+        runtime_is_frozen=True,
+    )
+    manager.download_latest(confirm=True)
+    manager.install_on_exit(confirm=True)
+
+    initial = manager.status()
+    assert initial["integrity_verified"] is True
+    assert initial["ready_to_install"] is True
+
+    original_stat = manager.staged_path.stat()
+    damaged = bytearray(manager.staged_path.read_bytes())
+    damaged[-1] ^= 0xFF
+    manager.staged_path.write_bytes(damaged)
+    os.utime(
+        manager.staged_path,
+        ns=(original_stat.st_atime_ns, original_stat.st_mtime_ns + 2_000_000_000),
+    )
+
+    status = manager.status()
+    assert status["staged"] is True
+    assert status["integrity_verified"] is False
+    assert status["staged_valid"] is False
+    assert status["ready_to_install"] is False
+
+
+def test_update_status_reuses_hash_for_an_unchanged_staged_file(tmp_path: Path) -> None:
+    executable = _pe_bytes(1200)
+    checker, payloads = _checker(executable)
+    manager = UpdateManager(
+        tmp_path / "updates",
+        checker=checker,
+        session=_Session(payloads),
+        runtime_is_frozen=False,
+    )
+    manager.download_latest(confirm=True)
+
+    with patch("app.backend.core.updater.hashlib.sha256", wraps=hashlib.sha256) as sha256:
+        assert manager.status()["integrity_verified"] is True
+        assert manager.status()["integrity_verified"] is True
+
+    assert sha256.call_count == 1
 
 
 def test_pending_update_refuses_a_tampered_staged_file_before_spawning(tmp_path: Path) -> None:

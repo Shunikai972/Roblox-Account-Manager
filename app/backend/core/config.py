@@ -15,7 +15,7 @@ APP_SLUG = "AstroAccountManager"
 # the rename, the app continues to use it until the user explicitly migrates
 # their data.
 LEGACY_APP_SLUG = "AsteriaAccountManager"
-APP_VERSION = "5.1.0"
+APP_VERSION = "5.1.1"
 
 
 # Features that stay in the source tree but are intentionally unreachable from

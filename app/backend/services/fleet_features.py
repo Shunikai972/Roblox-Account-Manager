@@ -11,6 +11,7 @@ already knows with the bounded engines under ``app/backend``.
 from __future__ import annotations
 
 from datetime import datetime
+import threading
 import time
 from typing import Any, Mapping
 
@@ -1596,15 +1597,27 @@ class ServiceMacroController:
                 created_at = None
         return {"pid": pid, "created_at": created_at}
 
-    def _wait_for_client(self, account_id: str, *, ignore_pid: int | None = None) -> dict[str, Any] | None:
+    def _wait_for_client(
+        self,
+        account_id: str,
+        *,
+        ignore_pid: int | None = None,
+        cancel: threading.Event | None = None,
+    ) -> dict[str, Any] | None:
         """Wait for a verified client, rescanning instead of guessing."""
 
         deadline = time.time() + MACRO_CONTROL_TIMEOUT_SECONDS
         while time.time() < deadline:
+            if cancel is not None and cancel.is_set():
+                return None
             instance = self._instance_for(account_id)
             if instance is not None and int(getattr(instance, "pid", 0) or 0) != (ignore_pid or -1):
                 return self._descriptor(instance)
-            time.sleep(MACRO_CONTROL_POLL_SECONDS)
+            if cancel is not None:
+                if cancel.wait(MACRO_CONTROL_POLL_SECONDS):
+                    return None
+            else:
+                time.sleep(MACRO_CONTROL_POLL_SECONDS)
             try:
                 self._service._scan_instances(allow_restarts=False)
             except Exception:  # noqa: BLE001 - a failed scan is retried, never fatal
@@ -1613,7 +1626,11 @@ class ServiceMacroController:
 
     # Protocol ---------------------------------------------------------------
 
-    def launch(self, account_id: str) -> dict[str, Any] | None:
+    def launch(
+        self, account_id: str, *, cancel: threading.Event | None = None
+    ) -> dict[str, Any] | None:
+        if cancel is not None and cancel.is_set():
+            return None
         existing = self._instance_for(account_id)
         if existing is not None:
             # Already playing: the macro re-pins instead of opening a twin.
@@ -1624,9 +1641,18 @@ class ServiceMacroController:
             return None
         if not result.get("accepted"):
             return None
-        return self._wait_for_client(str(account_id))
+        return self._wait_for_client(str(account_id), cancel=cancel)
 
-    def teleport(self, account_id: str, place_id: str, job_id: str) -> dict[str, Any] | None:
+    def teleport(
+        self,
+        account_id: str,
+        place_id: str,
+        job_id: str,
+        *,
+        cancel: threading.Event | None = None,
+    ) -> dict[str, Any] | None:
+        if cancel is not None and cancel.is_set():
+            return None
         target: dict[str, Any] = {"place_id": str(place_id or "")}
         if job_id:
             target["job_id"] = str(job_id)
@@ -1638,9 +1664,11 @@ class ServiceMacroController:
             return None
         # Roblox hands the join to the client that is already open, so the pid
         # usually stays the same; the run re-pins either way.
-        return self._wait_for_client(str(account_id))
+        return self._wait_for_client(str(account_id), cancel=cancel)
 
-    def restart(self, account_id: str) -> dict[str, Any] | None:
+    def restart(
+        self, account_id: str, *, cancel: threading.Event | None = None
+    ) -> dict[str, Any] | None:
         """Close this account's client, then start it again.
 
         This is the only place a macro closes a window, and only because a
@@ -1648,6 +1676,8 @@ class ServiceMacroController:
         rules never do this.
         """
 
+        if cancel is not None and cancel.is_set():
+            return None
         current = self._instance_for(account_id)
         previous_pid = int(getattr(current, "pid", 0) or 0) if current is not None else None
         if current is not None:
@@ -1655,14 +1685,22 @@ class ServiceMacroController:
                 self._service.close_instance(previous_pid, confirm=True)
             except AppError:
                 return None
-            time.sleep(MACRO_CONTROL_POLL_SECONDS)
+            if cancel is not None:
+                if cancel.wait(MACRO_CONTROL_POLL_SECONDS):
+                    return None
+            else:
+                time.sleep(MACRO_CONTROL_POLL_SECONDS)
+        if cancel is not None and cancel.is_set():
+            return None
         try:
             result = self._service.launch_account(str(account_id))
         except AppError:
             return None
         if not result.get("accepted"):
             return None
-        return self._wait_for_client(str(account_id), ignore_pid=previous_pid)
+        return self._wait_for_client(
+            str(account_id), ignore_pid=previous_pid, cancel=cancel
+        )
 
     def is_running(self, account_id: str) -> bool:
         return self._instance_for(account_id) is not None

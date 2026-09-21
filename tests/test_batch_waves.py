@@ -6,6 +6,7 @@ smallest delay the product actually allows instead of weakening the rule.
 
 from __future__ import annotations
 
+import threading
 import time
 
 import pytest
@@ -123,6 +124,54 @@ def test_cancelling_during_a_wave_pause_stops_the_batch() -> None:
     launcher.cancel_batch()
     _wait_until_done(launcher, timeout=5.0)
     assert len(launched) < 4
+
+
+def _run_cancel_restart_race() -> tuple[list[str], dict[str, object]]:
+    calls: list[str] = []
+    old_started = threading.Event()
+    new_started = threading.Event()
+    release_old = threading.Event()
+
+    def _launch(account_id: str, target: object) -> dict[str, object]:
+        calls.append(account_id)
+        if account_id == "old1":
+            old_started.set()
+            assert release_old.wait(timeout=5.0)
+        elif account_id == "new":
+            new_started.set()
+        return {"accepted": True}
+
+    launcher = BatchLauncher(_launch)
+    launcher.start_batch(["old1", "old2"], delay_seconds=MIN_DELAY)
+    old_thread = launcher._thread
+    assert old_thread is not None
+    assert old_started.wait(timeout=2.0)
+
+    launcher.cancel_batch()
+    launcher.start_batch(["new"], delay_seconds=MIN_DELAY)
+    new_thread = launcher._thread
+    assert new_thread is not None
+    assert new_started.wait(timeout=2.0)
+
+    release_old.set()
+    old_thread.join(timeout=2.0)
+    new_thread.join(timeout=2.0)
+    assert not old_thread.is_alive()
+    assert not new_thread.is_alive()
+    return calls, launcher.get_status()
+
+
+def test_a_cancelled_worker_cannot_resume_after_a_new_batch_starts() -> None:
+    calls, _status = _run_cancel_restart_race()
+    assert calls == ["old1", "new"]
+
+
+def test_a_cancelled_worker_cannot_increment_the_new_batch_counters() -> None:
+    _calls, status = _run_cancel_restart_race()
+    assert status["total"] == 1
+    assert status["launched"] == 1
+    assert status["failed"] == 0
+    assert status["launched"] + status["failed"] <= status["total"]
 
 
 def test_impossible_wave_settings_are_refused() -> None:

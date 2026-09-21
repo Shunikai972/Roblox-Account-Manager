@@ -144,6 +144,7 @@ def test_multi_instance_status_is_reported_for_the_ui() -> None:
     for key in (
         "supported",
         "enabled",
+        "waiting_for_mutex",
         "handle_count",
         "held_objects",
         "owned_objects",
@@ -202,25 +203,22 @@ def test_multi_instance_releases_ownership_before_closing() -> None:
     assert release.index("release_mutex(handle)") < release.index("close_handle(handle)")
 
 
-def test_multi_instance_retries_an_object_it_could_not_create() -> None:
+def test_multi_instance_retries_a_local_event_it_could_not_create() -> None:
     source = MULTI_PY.read_text(encoding="utf-8")
     heal = source[source.index("def _heal") : source.index("def _release_objects")]
-    assert "_create_mutex" in heal
     assert "_create_event" in heal
     assert "reacquisitions" in heal
 
 
 def test_multi_instance_prepares_current_clients_before_every_launch() -> None:
-    """Current clients retain a singleton event even while Astro owns the mutex."""
+    """Preparation must observe clients without invalidating their handles."""
 
     source = MULTI_PY.read_text(encoding="utf-8")
     prepare = source[source.index("def prepare_for_launch") : source.index("def disable_multi_instance")]
-    assert "robloxplayerbeta.exe" in prepare.casefold()
-    assert "_close_remote_singleton_event_handles" in prepare
-    close_remote = source[source.index("def _close_remote_singleton_event_handles") :]
-    assert "SYSTEM_EXTENDED_HANDLE_INFORMATION" in close_remote
-    assert "DUPLICATE_CLOSE_SOURCE" in close_remote
-    assert "endswith(self.EVENT_NAME.casefold())" in close_remote
+    assert "_roblox_player_pids" in prepare
+    assert "DUPLICATE_CLOSE_SOURCE" not in source
+    assert "DuplicateHandle" not in source
+    assert "_close_remote_singleton" not in source
 
     service = SERVICE_PY.read_text(encoding="utf-8")
     launch = service[service.index("def launch_account") : service.index("# UWP packages")]

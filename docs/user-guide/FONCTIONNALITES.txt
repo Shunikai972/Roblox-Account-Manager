@@ -1,5 +1,5 @@
 ================================================================================
-ASTRO ACCOUNT MANAGER 5.1.0 - LISTE DES FONCTIONNALITES EXISTANTES
+ASTRO ACCOUNT MANAGER 5.1.1 - LISTE DES FONCTIONNALITES EXISTANTES
 ================================================================================
 Genere le 18/08/2026 a partir d'une analyse du code source, pas de memoire.
 Chaque ligne indique entre crochets le fichier et le symbole qui la prouve.
@@ -8,9 +8,9 @@ CHIFFRES MESURES SUR LE DEPOT
   - 176 methodes exposees au frontend (pont backend <-> UI)
   - 9 ecrans dans la barre laterale, dont 1 ecran "Fleet" a 10 onglets
   - 137 actions cliquables declarees, 0 sans gestionnaire
-  - 59 fichiers de tests, 666 fonctions de test
+  - 67 fichiers de tests, 729 fonctions de test
   - 91 fonctionnalites verifiees automatiquement par scripts/feature_inventory.py
-  - Derniere validation Windows complete : 760 tests passes / 762, 0 echec
+  - Derniere validation Windows complete : 837 tests passes / 839, 0 echec
 
 
 ================================================================================

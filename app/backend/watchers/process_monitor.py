@@ -1163,6 +1163,29 @@ class RobloxProcessMonitor:
         # metadata.  Refuse to act rather than guessing which identity is live.
         return matches[0] if len(matches) == 1 else None
 
+    def update_process_game(
+        self,
+        pid: int,
+        *,
+        place_id: int | None = None,
+        job_id: str | None = None,
+    ) -> bool:
+        """Update live game or server assignment for a tracked process."""
+
+        with self._lock:
+            tracked = self._tracked_for_pid(pid)
+            if tracked is None:
+                return False
+            kwargs: dict[str, Any] = {}
+            if place_id is not None:
+                kwargs["place_id"] = int(place_id)
+            if job_id is not None:
+                kwargs["job_id"] = str(job_id)
+            if kwargs:
+                self._tracked[tracked.identity] = replace(tracked, **kwargs)
+                return True
+            return False
+
     def _matches_tracked_identity(self, process: object, tracked: _TrackedProcess) -> bool:
         try:
             name_method = getattr(process, "name")

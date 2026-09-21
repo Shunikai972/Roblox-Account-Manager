@@ -2065,6 +2065,46 @@ class OrbitApp {
       const groupOptions = '<option value="">No group (Ungrouped)</option>' + this.state.groups.map(function (group) { return '<option value="' + escapeHtml(group.id) + '"' + (String(account.group_id || '') === String(group.id) ? ' selected' : '') + '>' + escapeHtml(group.name) + '</option>'; }).join('');
       const userId = account.user_id === undefined || account.user_id === null ? '' : String(account.user_id);
       const placeId = account.saved_place_id === undefined || account.saved_place_id === null ? '' : String(account.saved_place_id);
+      const savedJobId = account.saved_job_id === undefined || account.saved_job_id === null ? '' : String(account.saved_job_id);
+      const otherActiveInstances = (this.state.instances || []).filter(function (inst) {
+        if (!inst.account_id || String(inst.account_id) === String(account.id)) return false;
+        if (!inst.job_id) return false;
+        const otherAccount = this.findAccount(inst.account_id);
+        const instPlace = String(inst.place_id || (otherAccount && otherAccount.saved_place_id) || '');
+        return placeId && instPlace === String(placeId);
+      }, this);
+
+      let otherServersHtml = '';
+      if (otherActiveInstances.length > 0) {
+        const serverRows = otherActiveInstances.map(function (inst) {
+          const otherAccount = this.findAccount(inst.account_id);
+          const name = otherAccount ? (otherAccount.display_name || otherAccount.username) : (inst.account_username || 'Roblox');
+          const uName = otherAccount ? otherAccount.username : (inst.account_username || '');
+          const shortJob = inst.job_id.length > 28 ? inst.job_id.substring(0, 26) + '…' : inst.job_id;
+          return '<div class="activity-row" style="display:flex;align-items:center;justify-content:space-between;gap:8px;padding:8px 12px;background:var(--card-bg, rgba(255,255,255,0.03));border:1px solid var(--line);border-radius:6px;margin-top:6px">' +
+            '<div class="activity-copy">' +
+              '<strong>' + escapeHtml(name) + ' (@' + escapeHtml(uName) + ')</strong>' +
+              '<small style="display:block;opacity:0.75">Serveur actif : <code class="mono">' + escapeHtml(shortJob) + '</code> (PID ' + escapeHtml(inst.pid) + ')</small>' +
+            '</div>' +
+            '<div style="display:flex;gap:6px;flex-shrink:0">' +
+              '<button class="button button-sm button-primary" type="button" data-action="join-account-server" data-account-id="' + escapeHtml(account.id) + '" data-place-id="' + escapeHtml(placeId) + '" data-job-id="' + escapeHtml(inst.job_id) + '" title="Rejoindre immédiatement ce serveur avec ce compte">' +
+                icon('play') + ' Rejoindre ce serveur' +
+              '</button>' +
+              '<button class="button button-sm" type="button" data-action="set-target-job-id" data-job-id="' + escapeHtml(inst.job_id) + '" title="Copier ce Job ID dans le champ Default Server Job ID">' +
+                icon('copy') + ' Utiliser ce Job ID' +
+              '</button>' +
+            '</div>' +
+          '</div>';
+        }, this).join('');
+
+        otherServersHtml = '<div class="field full" style="margin-top:6px">' +
+          '<label style="display:flex;align-items:center;gap:6px;font-weight:600;color:var(--accent, #7c5cff)">' +
+            icon('link') + ' Serveur actif d\'un autre compte sur ce jeu' +
+          '</label>' +
+          serverRows +
+        '</div>';
+      }
+
       const launchOpts = (account.metadata && account.metadata.launch_options) || {};
       const maxFps = Number(launchOpts.max_fps || 0);
       const potatoChecked = Boolean(launchOpts.potato_graphics);
@@ -2080,6 +2120,8 @@ class OrbitApp {
           '<div class="field"><label for="account-display">Display name</label><input id="account-display" name="display_name" maxlength="80" value="' + escapeHtml(account.display_name || '') + '" placeholder="Display name" /></div>' +
           '<div class="field"><label for="account-group">Group</label><select id="account-group" name="group_id">' + groupOptions + '</select></div>' +
           '<div class="field"><label for="account-place-id">Default Game ID (Place ID)</label><input id="account-place-id" name="saved_place_id" type="number" min="1" step="1" value="' + escapeHtml(placeId) + '" placeholder="e.g. 2753915549" /></div>' +
+          '<div class="field"><label for="account-job-id">Default Server Job ID (optional)</label><input id="account-job-id" name="saved_job_id" maxlength="36" value="' + escapeHtml(savedJobId) + '" placeholder="Full 36-character ID" /><span class="mono">Use “Join this server” to fill the exact ID automatically.</span></div>' +
+          otherServersHtml +
           '<div class="field"><label for="account-fps">Instance FPS Cap</label><select id="account-fps" name="max_fps"><option value="0"' + (maxFps === 0 ? ' selected' : '') + '>Default (App Setting)</option><option value="30"' + (maxFps === 30 ? ' selected' : '') + '>30 FPS</option><option value="60"' + (maxFps === 60 ? ' selected' : '') + '>60 FPS</option><option value="120"' + (maxFps === 120 ? ' selected' : '') + '>120 FPS</option><option value="144"' + (maxFps === 144 ? ' selected' : '') + '>144 FPS</option><option value="240"' + (maxFps === 240 ? ' selected' : '') + '>240 FPS</option><option value="360"' + (maxFps === 360 ? ' selected' : '') + '>360 FPS</option></select></div>' +
           '<div class="field"><label for="account-color">Avatar color</label><select id="account-color" name="avatar_color"><option value="violet"' + (account.avatar_color === 'violet' ? ' selected' : '') + '>Violet</option><option value="mint"' + (account.avatar_color === 'mint' ? ' selected' : '') + '>Mint</option><option value="coral"' + (account.avatar_color === 'coral' ? ' selected' : '') + '>Coral</option><option value="blue"' + (account.avatar_color === 'blue' ? ' selected' : '') + '>Blue</option><option value="amber"' + (account.avatar_color === 'amber' ? ' selected' : '') + '>Amber</option></select></div>' +
           '<label class="form-check field"><input type="checkbox" name="potato_graphics"' + (potatoChecked ? ' checked' : '') + ' /> Enable Potato Mode (Minimum Graphics FastFlags)</label>' +
@@ -2490,6 +2532,29 @@ class OrbitApp {
       }
       return;
     }
+    if (action === 'set-target-job-id') {
+      const jobId = button.dataset.jobId;
+      const input = document.getElementById('account-job-id');
+      if (input && jobId) {
+        input.value = jobId;
+        this.toast('info', 'Job ID sélectionné', 'Le Job ID a été copié dans le champ du formulaire.');
+      }
+      return;
+    }
+    if (action === 'join-account-server') {
+      const accountId = button.dataset.accountId;
+      const placeId = button.dataset.placeId;
+      const jobId = button.dataset.jobId;
+      if (!accountId || !placeId || !jobId) return;
+      this.closeModal();
+      try {
+        await this.bridge.call('launch_account', accountId, { place_id: Number(placeId), job_id: jobId });
+        this.toast('success', 'Lancement en cours', 'Connexion au serveur de l\'autre compte...');
+      } catch (error) {
+        this.toast('error', 'Échec du lancement', error.message);
+      }
+      return;
+    }
     if (action === 'save-place-id') {
       const placeInput = $('#ram-place-id');
       const jobInput = $('#ram-job-id');
@@ -2499,6 +2564,10 @@ class OrbitApp {
       if (!selectedIds.length && this.state.accounts.length === 1) selectedIds.push(this.state.accounts[0].id);
       if (!selectedIds.length) { this.toast('info', 'Select Accounts', 'Select at least one account.'); return; }
       if (!Number.isSafeInteger(placeId) || placeId <= 0) { this.toast('error', 'Invalid Place ID', 'Enter a positive Roblox Place ID before saving.'); return; }
+      if (jobId && !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(jobId) && !/^[0-9a-f-]{8,35}$/i.test(jobId)) {
+        this.toast('error', 'Invalid Server Job ID', 'Paste the complete 36-character ID or use “Join this server”.');
+        return;
+      }
       try {
         for (const id of selectedIds) {
           await this.bridge.call('update_account', id, { saved_place_id: placeId, saved_job_id: jobId });
@@ -3128,6 +3197,9 @@ class OrbitApp {
         const placeIdRaw = String(values.saved_place_id || '').trim();
         if (placeIdRaw && (!/^[1-9][0-9]*$/.test(placeIdRaw) || Number(placeIdRaw) <= 0)) throw new Error('Roblox Place ID must be a valid positive whole number.');
         values.saved_place_id = placeIdRaw ? Number(placeIdRaw) : null;
+        const jobIdRaw = String(values.saved_job_id || '').trim();
+        if (jobIdRaw && !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(jobIdRaw) && !/^[0-9a-f-]{8,35}$/i.test(jobIdRaw)) throw new Error('Server Job ID must be the full 36-character ID or a recognisable fragment from an active server.');
+        values.saved_job_id = jobIdRaw ? jobIdRaw : null;
         
         const existingAccount = this.findAccount(form.dataset.id);
         const metadata = Object.assign({}, (existingAccount && existingAccount.metadata) || {});

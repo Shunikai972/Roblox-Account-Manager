@@ -60,7 +60,7 @@ node --check app/frontend/src/app.js
 node --check app/frontend/src/bridge.js
 ```
 
-Dernier résultat complet : **825 tests passés, 2 ignorés**, sans lancer ni fermer Roblox.
+Dernier résultat complet : **837 tests passés, 2 ignorés**.
 
 ## Build Windows
 
@@ -69,9 +69,9 @@ python -m pip install ".[dev]"
 python scripts/build_windows.py
 ```
 
-Artefact 5.1.0 reconstruit le 21 août 2026 :
-`dist/AstroAccountManager.exe`, **21 039 286 octets**, SHA-256
-`52CA90BF1D4863EDA85B75F7F4F372A63D42C05F6111DE10767E7057379C7757`.
+Artefact 5.1.1 reconstruit le 21 septembre 2026 :
+`dist/AstroAccountManager.exe`, **22 523 402 octets**, SHA-256
+`D2CE127E2E26F1DC7741EA4692D22C3D1FE39BABA68FBB299CA379718781A1D1`.
 Le build est un PyInstaller onefile/windowed et embarque `app/frontend`.
 
 Consultez aussi [l'audit d'intégration](docs/architecture/FINAL_AUDIT.md), le

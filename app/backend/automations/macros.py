@@ -8,6 +8,7 @@ from collections import deque
 from copy import deepcopy
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+import inspect
 import os
 import random
 import re
@@ -159,9 +160,20 @@ class MacroControlBackend(Protocol):
     client, and the run stops instead of typing into the wrong window.
     """
 
-    def launch(self, account_id: str) -> dict[str, Any] | None: ...
-    def teleport(self, account_id: str, place_id: str, job_id: str) -> dict[str, Any] | None: ...
-    def restart(self, account_id: str) -> dict[str, Any] | None: ...
+    def launch(
+        self, account_id: str, *, cancel: threading.Event | None = None
+    ) -> dict[str, Any] | None: ...
+    def teleport(
+        self,
+        account_id: str,
+        place_id: str,
+        job_id: str,
+        *,
+        cancel: threading.Event | None = None,
+    ) -> dict[str, Any] | None: ...
+    def restart(
+        self, account_id: str, *, cancel: threading.Event | None = None
+    ) -> dict[str, Any] | None: ...
     def is_running(self, account_id: str) -> bool: ...
 
 
@@ -445,6 +457,7 @@ class MacroRun:
     variables: dict[str, str] = field(default_factory=dict)
     cancel: threading.Event = field(default_factory=threading.Event, repr=False)
     resumed: threading.Event = field(default_factory=_started_event, repr=False)
+    input_target: Mapping[str, Any] | None = field(default=None, repr=False)
     log: deque = field(
         default_factory=lambda: deque(maxlen=MAX_LOG_ENTRIES), repr=False
     )
@@ -637,6 +650,7 @@ class MacroEngine:
                 session_target = self._backend.verify(run.pid, run.expected_created_at)
                 if session_target is None:
                     raise MacroParseError("The selected Roblox process or window could not be verified.")
+                run.input_target = session_target
                 begin_run = getattr(self._backend, "begin_run", None)
                 if callable(begin_run) and not begin_run(session_target):
                     raise MacroParseError("Roblox could not be focused for reliable input delivery.")
@@ -651,8 +665,9 @@ class MacroEngine:
             run.error = "Macro input delivery failed."
         finally:
             end_run = getattr(self._backend, "end_run", None)
-            if session_target is not None and callable(end_run):
-                end_run(session_target)
+            if run.input_target is not None and callable(end_run):
+                end_run(run.input_target)
+            run.input_target = None
             run.finished_at = datetime.now(UTC).isoformat()
 
     def _execute_actions(self, run: MacroRun, actions: list[dict[str, Any]], started: float) -> bool:
@@ -780,20 +795,70 @@ class MacroEngine:
             )
         if not run.account_id:
             raise MacroParseError("Launch, teleport and restart need a macro bound to an account.")
+
+        # A control action may replace both the process and its HWND.  Drop the
+        # current foreground-input session before touching the client so held
+        # keys, focus and the process-wide input lock cannot remain attached to
+        # a window that is about to disappear.
+        end_run = getattr(self._backend, "end_run", None)
+        if run.input_target is not None and callable(end_run):
+            end_run(run.input_target)
+        run.input_target = None
+        if run.cancel.is_set():
+            return
+
         kind = str(action.get("type"))
         if kind == "launch":
-            target = controller.launch(run.account_id)
+            target = self._invoke_control(controller.launch, run.account_id, cancel=run.cancel)
         elif kind == "teleport":
-            target = controller.teleport(run.account_id, str(action.get("place_id") or ""), str(action.get("job_id") or ""))
+            target = self._invoke_control(
+                controller.teleport,
+                run.account_id,
+                str(action.get("place_id") or ""),
+                str(action.get("job_id") or ""),
+                cancel=run.cancel,
+            )
         else:
-            target = controller.restart(run.account_id)
+            target = self._invoke_control(controller.restart, run.account_id, cancel=run.cancel)
+        if run.cancel.is_set():
+            return
         if not isinstance(target, Mapping) or not target.get("pid"):
             raise MacroParseError(f"The {kind} step did not produce a usable Roblox client.")
         # The client changed, so every later keystroke must follow it.
         run.pid = int(target["pid"])
         run.expected_created_at = target.get("created_at")
         run.checkpoint = None
+
+        session_target = self._backend.verify(run.pid, run.expected_created_at)
+        if session_target is None:
+            raise MacroParseError(f"The {kind} step produced a client whose window could not be verified.")
+        if run.cancel.is_set():
+            return
+        run.input_target = session_target
+        begin_run = getattr(self._backend, "begin_run", None)
+        if callable(begin_run) and not begin_run(session_target):
+            raise MacroParseError("Roblox could not be focused after the client changed.")
         run.record(f"{kind}_done", f"now pinned to pid {run.pid}")
+
+    @staticmethod
+    def _invoke_control(
+        method: Callable[..., dict[str, Any] | None],
+        *args: Any,
+        cancel: threading.Event,
+    ) -> dict[str, Any] | None:
+        """Pass cancellation to modern controllers without breaking old ones."""
+
+        try:
+            parameters = inspect.signature(method).parameters.values()
+        except (TypeError, ValueError):
+            return method(*args)
+        supports_cancel = any(
+            parameter.name == "cancel" or parameter.kind is inspect.Parameter.VAR_KEYWORD
+            for parameter in parameters
+        )
+        if supports_cancel:
+            return method(*args, cancel=cancel)
+        return method(*args)
 
 
 class Win32RobloxInputBackend:

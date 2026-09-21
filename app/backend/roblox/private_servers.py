@@ -58,8 +58,9 @@ class PrivateServerHelper:
         # invite that only Roblox can expand, and expanding it needs a signed-in
         # session.  Reporting "invalid link" here was simply wrong: the link
         # works, we just had not asked Roblox what it points at.
+        share_path = parsed.path.rstrip("/").casefold()
         share_code = (params.get("code") or params.get("linkId") or [None])[0]
-        if isinstance(share_code, str) and _SHARE_CODE.fullmatch(share_code):
+        if share_path == "/share" and isinstance(share_code, str) and _SHARE_CODE.fullmatch(share_code):
             share_type = str((params.get("type") or [""])[0] or "").strip().casefold()
             return {
                 "share_code": share_code,

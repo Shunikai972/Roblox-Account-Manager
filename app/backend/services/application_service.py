@@ -167,6 +167,12 @@ _SETTING_ALIASES = {
     "updates_install_on_exit": "updates.install_on_exit",
 }
 
+_ROBLOX_JOB_ID = re.compile(
+    r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+)
+_ROBLOX_JOB_ID_FRAGMENT = re.compile(r"^[0-9a-fA-F-]{8,35}$")
+_ROBLOX_LEGACY_JOB_ID = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
+
 _AVATAR_COLOR_TOKENS = frozenset({"violet", "mint", "coral", "blue", "amber"})
 _GROUP_COLOR_TOKENS = _AVATAR_COLOR_TOKENS | frozenset({"neutral"})
 _ROBLOX_SETTINGS_PROFILES_KEY = "roblox_settings.profiles"
@@ -996,9 +1002,16 @@ class ApplicationService(FleetFeaturesMixin):
         place_id = target_data.get("place_id") or target_data.get("placeId") or account.saved_place_id
         if place_id is None:
             raise ValidationError("Choose a Place ID before launching Roblox.")
+        normalized_place_id = self._positive_int(place_id, "Place ID")
+        if "job_id" in target_data or "jobId" in target_data:
+            raw_job_id = target_data.get("job_id")
+            if raw_job_id is None:
+                raw_job_id = target_data.get("jobId")
+        else:
+            raw_job_id = account.saved_job_id
         launch_target = LaunchTarget(
-            place_id=self._positive_int(place_id, "Place ID"),
-            job_id=self._optional_text(target_data.get("job_id") or target_data.get("jobId")),
+            place_id=normalized_place_id,
+            job_id=self._resolve_job_id_reference(raw_job_id, normalized_place_id),
         )
 
         categories = self.get_settings()["categories"]
@@ -1023,23 +1036,14 @@ class ApplicationService(FleetFeaturesMixin):
             )
             if multi_instance_enabled and not self.multi_instance.enable_multi_instance():
                 raise ConflictError(
-                    "Multi Roblox is enabled but Astro could not acquire its mutex. "
-                    "Close every Roblox client, restart Astro, then launch the accounts from Astro."
+                    "Multi Roblox is waiting for a client that was opened before Astro. "
+                    "Close every Roblox client once, then retry the launch from Astro."
                 )
             if multi_instance_enabled:
                 prepare_for_launch = getattr(self.multi_instance, "prepare_for_launch", None)
                 preparation = prepare_for_launch() if callable(prepare_for_launch) else {}
                 if preparation.get("error"):
-                    self.logger.warning(
-                        "Multi Roblox could not detach the modern singleton event: %s",
-                        preparation["error"],
-                    )
-                    self._notice(
-                        "warning",
-                        "Multi Roblox compatibility warning",
-                        "Astro kept the historic mutex, but Windows refused the modern event detachment. "
-                        "A previous Roblox window may close when the next account starts.",
-                    )
+                    raise ConflictError(str(preparation["error"]))
 
             # Apply per-account or per-launch FPS Cap & Potato Graphics settings
             launch_opts = account.metadata.get("launch_options", {}) if isinstance(account.metadata, dict) else {}
@@ -2731,6 +2735,12 @@ class ApplicationService(FleetFeaturesMixin):
                 self._log_disconnected_pids.discard(pid)
                 self._log_disconnect_codes.pop(account_id, None)
                 self._set_account_runtime_status(account_id, "in_game")
+                event_place = getattr(event, "place_id", None)
+                event_job = getattr(event, "job_id", None)
+                if event_place is not None or event_job is not None:
+                    update_game = getattr(self.monitor, "update_process_game", None)
+                    if callable(update_game):
+                        update_game(pid, place_id=event_place, job_id=event_job)
         self._seen_log_event_keys = current_keys
 
     def _log_watcher_payload(self) -> dict[str, Any]:
@@ -3678,6 +3688,70 @@ class ApplicationService(FleetFeaturesMixin):
         if len(normalized) > 120:
             raise ValidationError(f"{label} est trop long.")
         return normalized
+
+    def _resolve_job_id_reference(self, value: Any, place_id: int) -> str | None:
+        """Expand a unique Job ID fragment from trusted local observations."""
+
+        reference = self._optional_text(value)
+        if reference is None:
+            return None
+        if _ROBLOX_JOB_ID.fullmatch(reference):
+            return reference
+        if not _ROBLOX_JOB_ID_FRAGMENT.fullmatch(reference):
+            if _ROBLOX_LEGACY_JOB_ID.fullmatch(reference):
+                return reference
+            raise ValidationError("The Server Job ID contains invalid characters.")
+
+        candidates: set[str] = set()
+
+        def add_candidate(job_id: Any, candidate_place_id: Any = None) -> None:
+            if not isinstance(job_id, str) or not _ROBLOX_JOB_ID.fullmatch(job_id.strip()):
+                return
+            if candidate_place_id not in (None, ""):
+                try:
+                    if int(candidate_place_id) != place_id:
+                        return
+                except (TypeError, ValueError):
+                    return
+            candidates.add(job_id.strip())
+
+        try:
+            for instance in self.monitor.current_instances() or ():
+                add_candidate(
+                    getattr(instance, "job_id", None),
+                    getattr(instance, "place_id", None),
+                )
+        except (AttributeError, TypeError, ValueError):
+            pass
+
+        history_method = getattr(self._log_runtime, "history", None)
+        if callable(history_method):
+            try:
+                for event in history_method() or ():
+                    add_candidate(
+                        getattr(event, "job_id", None),
+                        getattr(event, "place_id", None),
+                    )
+            except (OSError, TypeError, ValueError):
+                pass
+
+        for row in self.repository.get_setting("fleet.server_history") or ():
+            if isinstance(row, Mapping):
+                add_candidate(row.get("job_id"), row.get("place_id"))
+
+        needle = reference.casefold()
+        matches = sorted(job_id for job_id in candidates if needle in job_id.casefold())
+        if len(matches) == 1:
+            return matches[0]
+        if len(matches) > 1:
+            raise ValidationError(
+                "This shortened Server Job ID matches more than one recent server. "
+                "Use the full 36-character ID."
+            )
+        raise ValidationError(
+            "This is only part of a Server Job ID and Astro cannot match it to an active server. "
+            "Use the full 36-character ID or the 'Join this server' button."
+        )
 
     @staticmethod
     def _optional_text(value: Any) -> str | None:
@@ -5250,8 +5324,24 @@ class ApplicationService(FleetFeaturesMixin):
             result = self.background_manager.close_running(confirm=confirm)
         except ValidationError:
             raise
+        multi_enabled = bool(
+            self.get_settings()["categories"].get("instances", {}).get("allow_multiple_launches", False)
+        )
+        if multi_enabled:
+            try:
+                self.multi_instance.enable_multi_instance()
+                deadline = time.monotonic() + 3.0
+                while not self.multi_instance.is_enabled and time.monotonic() < deadline:
+                    if not self.multi_instance.holder_thread_alive:
+                        self.multi_instance.enable_multi_instance()
+                    time.sleep(0.05)
+            except Exception:
+                pass
         self._activity("instances", "Existing Roblox clients were closed by explicit request")
-        return result
+        payload = dict(result)
+        payload["multi_instance_ready"] = bool(self.multi_instance.is_enabled)
+        return payload
+
 
     def launch_account_from_private_link(self, account_id: str, link: str) -> dict[str, Any]:
         parsed = PrivateServerHelper.parse_vip_link(str(link or "").strip())
